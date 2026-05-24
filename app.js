@@ -861,6 +861,7 @@ async function refreshShowStatus(show) {
 
     const episodes = await getOrderedEpisodes(show, { includeSpecials: false });
     const airedEpisodes = episodes.filter(isEpisodeAired);
+    const futureEpisodes = episodes.filter(ep => !isEpisodeAired(ep));
     const watchedEpisodes = airedEpisodes.filter(ep => show.capitulos_vistos?.includes(ep.id));
 
     if (previousState === 'dropped') {
@@ -869,9 +870,10 @@ async function refreshShowStatus(show) {
     }
 
     if (previousState === 'completed') {
-        show.estado = watchedEpisodes.length === airedEpisodes.length ? 'completed' : 'watching';
-        if (show.estado !== previousState) {
-            saveLocalData();
+        if (futureEpisodes.some(ep => !show.capitulos_vistos?.includes(ep.id))) {
+            show.estado = 'watching';
+        } else {
+            show.estado = 'completed';
         }
         return show;
     }
@@ -884,7 +886,7 @@ async function refreshShowStatus(show) {
     if (airedEpisodes.length === 0) {
         show.estado = watchedEpisodes.length > 0 ? 'watching' : 'pending';
     } else if (watchedEpisodes.length === airedEpisodes.length) {
-        show.estado = 'completed';
+        show.estado = futureEpisodes.length > 0 ? 'watching' : 'completed';
     } else if (watchedEpisodes.length > 0) {
         show.estado = 'watching';
     } else {
