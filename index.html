@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="es" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SeenIt - Seguimiento de Series y Películas</title>
+    <meta name="description" content="App privada para seguimiento de series y películas">
+    <meta name="theme-color" content="#1f2937">
+    <link rel="manifest" href="manifest.json">
+    <link rel="icon" type="image/png" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📺</text></svg>">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#6366f1',
+                        secondary: '#8b5cf6',
+                        dark: {
+                            bg: '#111827',
+                            card: '#1f2937',
+                            input: '#374151'
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        /* Custom scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #1f2937;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #4b5563;
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #6b7280;
+        }
+        
+        /* Smooth transitions */
+        .tab-content {
+            transition: opacity 0.3s ease-in-out;
+        }
+        
+        /* Modal backdrop */
+        .modal-backdrop {
+            backdrop-filter: blur(4px);
+        }
+        
+        /* Star rating */
+        .star {
+            cursor: pointer;
+            transition: transform 0.1s;
+        }
+        .star:hover {
+            transform: scale(1.2);
+        }
+    </style>
+</head>
+<body class="bg-gray-100 dark:bg-dark-bg text-gray-900 dark:text-gray-100 min-h-screen">
+    
+    <!-- Main App Container -->
+    <div id="app" class="flex flex-col min-h-screen">
+        
+        <!-- Header -->
+        <header class="bg-white dark:bg-dark-card shadow-lg sticky top-0 z-40">
+            <div class="max-w-7xl mx-auto px-4 py-3">
+                <div class="flex items-center justify-between">
+                    <h1 class="text-2xl font-bold bg-gradient-to-r from-primary to-secondary bg-clip-text text-transparent">
+                        SeenIt
+                    </h1>
+                    <div class="text-sm text-gray-500 dark:text-gray-400">
+                        Tu lista privada
+                    </div>
+                </div>
+            </div>
+        </header>
+        
+        <!-- Navigation Tabs -->
+        <nav class="bg-white dark:bg-dark-card border-b border-gray-200 dark:border-gray-700 sticky top-16 z-30">
+            <div class="max-w-7xl mx-auto px-4">
+                <div class="flex space-x-1 overflow-x-auto">
+                    <button onclick="switchTab('following')" id="tab-following" class="tab-btn px-4 py-3 text-sm font-medium border-b-2 border-primary text-primary whitespace-nowrap">
+                        📺 Galería
+                    </button>
+                    <button onclick="switchTab('search')" id="tab-search" class="tab-btn px-4 py-3 text-sm font-medium border-b-2 border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 whitespace-nowrap">
+                        🔍 Buscar
+                    </button>
+                    <button onclick="switchTab('settings')" id="tab-settings" class="tab-btn px-4 py-3 text-sm font-medium border-b-2 border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 whitespace-nowrap">
+                        ⚙️ Ajustes
+                    </button>
+                </div>
+            </div>
+        </nav>
+        
+        <!-- Main Content Area -->
+        <main class="flex-1 max-w-7xl mx-auto w-full px-4 py-6">
+            
+            <!-- Tab: Siguiendo/Pendiente -->
+            <div id="content-following" class="tab-content">
+                <!-- Filter buttons -->
+                <div class="flex flex-wrap gap-2 mb-6">
+                    <button onclick="filterContent('all')" class="filter-btn px-4 py-2 bg-primary text-white rounded-lg text-sm font-medium hover:bg-primary/90 transition">
+                        Todos
+                    </button>
+                    <button onclick="filterContent('series')" class="filter-btn px-4 py-2 bg-dark-input text-gray-300 rounded-lg text-sm font-medium hover:bg-gray-600 transition">
+                        Series
+                    </button>
+                    <button onclick="filterContent('movies')" class="filter-btn px-4 py-2 bg-dark-input text-gray-300 rounded-lg text-sm font-medium hover:bg-gray-600 transition">
+                        Películas
+                    </button>
+                    <button onclick="filterContent('watching')" class="filter-btn px-4 py-2 bg-dark-input text-gray-300 rounded-lg text-sm font-medium hover:bg-gray-600 transition">
+                        Viendo
+                    </button>
+                    <button onclick="filterContent('completed')" class="filter-btn px-4 py-2 bg-dark-input text-gray-300 rounded-lg text-sm font-medium hover:bg-gray-600 transition">
+                        Completados
+                    </button>
+                    <button onclick="filterContent('pending')" class="filter-btn px-4 py-2 bg-dark-input text-gray-300 rounded-lg text-sm font-medium hover:bg-gray-600 transition">
+                        Pendientes
+                    </button>
+                </div>
+                
+                <!-- Content Grid -->
+                <div id="following-grid" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+                    <!-- Items will be populated by JS -->
+                    <div class="text-center col-span-full py-12 text-gray-500 dark:text-gray-400">
+                        <div class="text-4xl mb-4">📺</div>
+                        <p>No hay contenido en tu lista</p>
+                        <p class="text-sm mt-2">Usa la pestaña "Buscar" para añadir series y películas</p>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Tab: Buscar -->
+            <div id="content-search" class="tab-content hidden">
+                <!-- Search Input -->
+                <div class="mb-6">
+                    <div class="relative">
+                        <input 
+                            type="text" 
+                            id="search-input" 
+                            placeholder="Buscar series o películas..." 
+                            class="w-full px-4 py-3 pl-12 bg-white dark:bg-dark-input border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent text-gray-900 dark:text-gray-100"
+                            onkeyup="handleSearch(event)"
+                        >
+                        <span class="absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-400">🔍</span>
+                    </div>
+                </div>
+                
+                <!-- Search Results -->
+                <div id="search-results" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+                    <!-- Results will be populated by JS -->
+                    <div class="text-center col-span-full py-12 text-gray-500 dark:text-gray-400">
+                        <div class="text-4xl mb-4">🔍</div>
+                        <p>Busca tu serie o película favorita</p>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Tab: Ajustes -->
+            <div id="content-settings" class="tab-content hidden">
+                <div class="max-w-2xl mx-auto">
+                    <!-- Google Drive Connection -->
+                    <div class="bg-white dark:bg-dark-card rounded-xl p-6 mb-6 shadow-lg">
+                        <h2 class="text-xl font-bold mb-4 flex items-center gap-2">
+                            <span>☁️</span> Conexión a Google Drive
+                        </h2>
+                        <p class="text-gray-600 dark:text-gray-400 mb-4 text-sm">
+                            Conecta tu cuenta de Google Drive para sincronizar tu lista de series y películas. 
+                            Tus datos se guardarán de forma privada en tu Drive.
+                        </p>
+                        
+                        <div id="drive-status" class="mb-4">
+                            <div class="flex items-center gap-2 text-yellow-600 dark:text-yellow-400">
+                                <span>⚠️</span>
+                                <span>No conectado</span>
+                            </div>
+                        </div>
+                        
+                        <button 
+                            id="btn-connect-drive" 
+                            onclick="connectDrive()" 
+                            class="w-full px-4 py-3 bg-primary text-white rounded-lg font-medium hover:bg-primary/90 transition flex items-center justify-center gap-2"
+                        >
+                            <span>🔗</span> Conectar Google Drive
+                        </button>
+                        
+                        <button 
+                            id="btn-disconnect-drive" 
+                            onclick="disconnectDrive()" 
+                            class="hidden w-full px-4 py-3 bg-red-600 text-white rounded-lg font-medium hover:bg-red-700 transition flex items-center justify-center gap-2 mt-2"
+                        >
+                            <span>🔓</span> Desconectar Google Drive
+                        </button>
+                    </div>
+                    
+                    <!-- Data Management -->
+                    <div class="bg-white dark:bg-dark-card rounded-xl p-6 mb-6 shadow-lg">
+                        <h2 class="text-xl font-bold mb-4 flex items-center gap-2">
+                            <span>💾</span> Gestión de Datos
+                        </h2>
+                        
+                        <div class="space-y-3">
+                            <button 
+                                onclick="exportData()" 
+                                class="w-full px-4 py-3 bg-dark-input text-gray-300 rounded-lg font-medium hover:bg-gray-600 transition flex items-center justify-center gap-2"
+                            >
+                                <span>📤</span> Exportar datos (JSON)
+                            </button>
+                            
+                            <button 
+                                onclick="importData()" 
+                                class="w-full px-4 py-3 bg-dark-input text-gray-300 rounded-lg font-medium hover:bg-gray-600 transition flex items-center justify-center gap-2"
+                            >
+                                <span>📥</span> Importar datos (JSON)
+                            </button>
+                            <input type="file" id="import-file" accept=".json" class="hidden" onchange="handleImport(event)">
+                            
+                            <button 
+                                onclick="clearAllData()" 
+                                class="w-full px-4 py-3 bg-red-600/20 text-red-400 border border-red-600 rounded-lg font-medium hover:bg-red-600/30 transition flex items-center justify-center gap-2"
+                            >
+                                <span>🗑️</span> Borrar todos los datos
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <!-- App Info -->
+                    <div class="bg-white dark:bg-dark-card rounded-xl p-6 shadow-lg">
+                        <h2 class="text-xl font-bold mb-4 flex items-center gap-2">
+                            <span>ℹ️</span> Información
+                        </h2>
+                        <div class="text-sm text-gray-600 dark:text-gray-400 space-y-2">
+                            <p><strong>Versión:</strong> 1.0.0</p>
+                            <p><strong>Almacenamiento:</strong> Local + Google Drive (opcional)</p>
+                            <p><strong>Privacidad:</strong> 100% privada, sin servidores externos</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+        </main>
+        
+        <!-- Bottom Navigation (Mobile) -->
+        <nav class="md:hidden bg-white dark:bg-dark-card border-t border-gray-200 dark:border-gray-700 fixed bottom-0 left-0 right-0 z-40">
+            <div class="flex justify-around">
+                <button onclick="switchTab('following')" class="mobile-tab-btn flex-1 py-3 text-center" data-tab="following">
+                    <div class="text-2xl">📺</div>
+                    <div class="text-xs mt-1">Lista</div>
+                </button>
+                <button onclick="switchTab('search')" class="mobile-tab-btn flex-1 py-3 text-center" data-tab="search">
+                    <div class="text-2xl">🔍</div>
+                    <div class="text-xs mt-1">Buscar</div>
+                </button>
+                <button onclick="switchTab('settings')" class="mobile-tab-btn flex-1 py-3 text-center" data-tab="settings">
+                    <div class="text-2xl">⚙️</div>
+                    <div class="text-xs mt-1">Ajustes</div>
+                </button>
+            </div>
+        </nav>
+        
+    </div>
+    
+    <!-- Detail Modal -->
+    <div id="detail-modal" class="fixed inset-0 z-50 hidden">
+        <div class="modal-backdrop absolute inset-0 bg-black/70" onclick="closeModal()"></div>
+        <div class="absolute inset-4 md:inset-10 lg:inset-20 bg-white dark:bg-dark-card rounded-2xl overflow-hidden flex flex-col">
+            
+            <!-- Modal Header -->
+            <div class="flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-700">
+                <h2 id="modal-title" class="text-xl font-bold truncate">Título</h2>
+                <button onclick="closeModal()" class="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition">
+                    ✕
+                </button>
+            </div>
+            
+            <!-- Modal Content -->
+            <div class="flex-1 overflow-y-auto p-4">
+                <!-- Poster and Info -->
+                <div class="flex flex-col md:flex-row gap-6 mb-6">
+                    <div id="modal-poster" class="w-full md:w-48 h-72 bg-gray-200 dark:bg-gray-700 rounded-lg flex-shrink-0 flex items-center justify-center">
+                        <span class="text-4xl">🎬</span>
+                    </div>
+                    <div class="flex-1">
+                        <div id="modal-meta" class="flex flex-wrap gap-2 mb-3">
+                            <!-- Meta tags will be populated by JS -->
+                        </div>
+                        <p id="modal-overview" class="text-gray-600 dark:text-gray-400 text-sm mb-4">
+                            Descripción...
+                        </p>
+                        
+                        <!-- Rating -->
+                        <div class="mb-4">
+                            <label class="block text-sm font-medium mb-2">Tu puntuación</label>
+                            <div id="modal-rating" class="flex gap-1">
+                                <!-- Stars will be populated by JS -->
+                            </div>
+                            <input 
+                                type="number" 
+                                id="modal-rating-input" 
+                                min="0" 
+                                max="10" 
+                                step="0.5" 
+                                placeholder="0-10"
+                                class="mt-2 w-24 px-3 py-2 bg-white dark:bg-dark-input border border-gray-300 dark:border-gray-600 rounded-lg text-sm"
+                                onchange="setRating(this.value)"
+                            >
+                        </div>
+                        
+                        <!-- Status -->
+                        <div class="mb-4">
+                            <label class="block text-sm font-medium mb-2">Estado</label>
+                            <select id="modal-status" class="w-full px-3 py-2 bg-white dark:bg-dark-input border border-gray-300 dark:border-gray-600 rounded-lg text-sm" onchange="setStatus(this.value)">
+                                <option value="pending">Pendiente</option>
+                                <option value="watching">Viendo</option>
+                                <option value="completed">Completado</option>
+                                <option value="dropped">Abandonado</option>
+                            </select>
+                        </div>
+                        
+                        <!-- Action Buttons -->
+                        <div class="flex gap-2">
+                            <button onclick="saveContent()" class="px-4 py-2 bg-primary text-white rounded-lg text-sm font-medium hover:bg-primary/90 transition">
+                                💾 Guardar
+                            </button>
+                            <button onclick="removeContent()" class="px-4 py-2 bg-red-600 text-white rounded-lg text-sm font-medium hover:bg-red-700 transition">
+                                🗑️ Eliminar
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Episodes Section (Series only) -->
+                <div id="modal-episodes" class="hidden">
+                    <h3 class="text-lg font-bold mb-4">Episodios</h3>
+                    <div id="episodes-list" class="space-y-2">
+                        <!-- Episodes will be populated by JS -->
+                    </div>
+                </div>
+            </div>
+            
+        </div>
+    </div>
+    
+    <!-- Loading Overlay -->
+    <div id="loading-overlay" class="fixed inset-0 z-50 bg-black/50 flex items-center justify-center hidden">
+        <div class="bg-white dark:bg-dark-card rounded-xl p-6 flex flex-col items-center gap-4">
+            <div class="w-12 h-12 border-4 border-primary border-t-transparent rounded-full animate-spin"></div>
+            <p class="text-gray-600 dark:text-gray-400">Cargando...</p>
+        </div>
+    </div>
+    
+    <!-- Toast Notification -->
+    <div id="toast" class="fixed bottom-20 md:bottom-4 left-1/2 transform -translate-x-1/2 bg-gray-900 dark:bg-white text-white dark:text-gray-900 px-6 py-3 rounded-lg shadow-lg z-50 hidden transition-opacity duration-300">
+        <span id="toast-message">Mensaje</span>
+    </div>
+    
+    <!-- Scripts will be loaded here -->
+    <script src="tmdb-service.js"></script>
+    <script src="drive-service.js"></script>
+    <script src="config.js"></script>
+    <script src="app.js"></script>
+    
+    <!-- Service Worker Registration and App Initialization -->
+    <script>
+        // Inicializar aplicación cuando el DOM esté listo
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', () => {
+                console.log('[App] DOM cargado, inicializando...');
+                initApp();
+            });
+        } else {
+            console.log('[App] DOM ya estaba cargado, inicializando...');
+            initApp();
+        }
+        
+        // Registrar Service Worker
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('./sw.js')
+                    .then((registration) => {
+                        console.log('[SW] Service Worker registrado con éxito:', registration.scope);
+                        
+                        // Escuchar actualizaciones del Service Worker
+                        registration.addEventListener('updatefound', () => {
+                            const newWorker = registration.installing;
+                            newWorker.addEventListener('statechange', () => {
+                                if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                                    // Nuevo SW disponible, mostrar notificación
+                                    console.log('[SW] Nueva versión disponible');
+                                    showToast('Nueva versión disponible, recarga la página');
+                                }
+                            });
+                        });
+                    })
+                    .catch((error) => {
+                        console.error('[SW] Error registrando Service Worker:', error);
+                    });
+            });
+        } else {
+            console.warn('[SW] Service Worker no soportado en este navegador');
+        }
+    </script>
+    
+</body>
+</html>

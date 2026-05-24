@@ -1,0 +1,330 @@
+/* Fallback CSS si Tailwind no carga */
+
+:root {
+    --primary: #6366f1;
+    --secondary: #8b5cf6;
+    --bg-dark: #111827;
+    --card-dark: #1f2937;
+    --input-dark: #374151;
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+html {
+    scroll-behavior: smooth;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    background: #f3f4f6;
+    color: #111827;
+    line-height: 1.5;
+}
+
+body.dark {
+    background: var(--bg-dark);
+    color: #e5e7eb;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+    width: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: var(--card-dark);
+}
+
+::-webkit-scrollbar-thumb {
+    background: #4b5563;
+    border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: #6b7280;
+}
+
+/* Header */
+header {
+    background: white;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+    position: sticky;
+    top: 0;
+    z-index: 40;
+}
+
+header.dark {
+    background: var(--card-dark);
+}
+
+header .max-w-7xl {
+    max-width: 80rem;
+    margin: 0 auto;
+    padding: 0.75rem 1rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+header h1 {
+    font-size: 1.5rem;
+    font-weight: bold;
+    background: linear-gradient(to right, var(--primary), var(--secondary));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+
+/* Navigation */
+nav {
+    background: white;
+    border-bottom: 1px solid #e5e7eb;
+    position: sticky;
+    top: 4rem;
+    z-index: 30;
+}
+
+nav.dark {
+    background: var(--card-dark);
+    border-bottom-color: #374151;
+}
+
+nav .max-w-7xl {
+    max-width: 80rem;
+    margin: 0 auto;
+    padding: 0 1rem;
+    display: flex;
+    gap: 0.25rem;
+    overflow-x: auto;
+}
+
+.tab-btn {
+    padding: 0.75rem 1rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+    border-bottom: 2px solid transparent;
+    white-space: nowrap;
+    cursor: pointer;
+    color: #6b7280;
+    background: transparent;
+    border: none;
+    transition: all 0.2s;
+}
+
+.tab-btn.dark {
+    color: #9ca3af;
+}
+
+.tab-btn:hover {
+    color: #111827;
+}
+
+.tab-btn.active {
+    border-bottom-color: var(--primary);
+    color: var(--primary);
+}
+
+/* Main content */
+main {
+    max-width: 80rem;
+    margin: 0 auto;
+    width: 100%;
+    padding: 1.5rem 1rem;
+    flex: 1;
+}
+
+/* Buttons */
+button {
+    font-family: inherit;
+    cursor: pointer;
+    border: none;
+    border-radius: 0.5rem;
+    transition: all 0.2s;
+}
+
+button:hover {
+    transform: translateY(-1px);
+}
+
+.btn-primary {
+    background: var(--primary);
+    color: white;
+    padding: 0.5rem 1rem;
+    font-weight: 500;
+}
+
+.btn-primary:hover {
+    opacity: 0.9;
+}
+
+.btn-secondary {
+    background: var(--input-dark);
+    color: #d1d5db;
+    padding: 0.5rem 1rem;
+    font-weight: 500;
+}
+
+.btn-secondary:hover {
+    background: #4b5563;
+}
+
+/* Cards */
+.card {
+    background: white;
+    border-radius: 0.75rem;
+    padding: 1.5rem;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+    margin-bottom: 1.5rem;
+}
+
+.card.dark {
+    background: var(--card-dark);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+.card h2 {
+    font-size: 1.25rem;
+    font-weight: bold;
+    margin-bottom: 1rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+/* Grid */
+.grid {
+    display: grid;
+    gap: 1rem;
+}
+
+.grid-2 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.grid-3 {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.grid-4 {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.grid-5 {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.grid-6 {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
+/* Input */
+input[type="text"],
+input[type="number"],
+select {
+    width: 100%;
+    padding: 0.75rem;
+    background: white;
+    border: 1px solid #d1d5db;
+    border-radius: 0.5rem;
+    font-family: inherit;
+    font-size: inherit;
+    color: #111827;
+}
+
+input[type="text"]:dark,
+input[type="number"]:dark,
+select.dark {
+    background: var(--input-dark);
+    border-color: #4b5563;
+    color: #e5e7eb;
+}
+
+/* Modal */
+.modal {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    background: rgba(0, 0, 0, 0.5);
+    align-items: center;
+    justify-content: center;
+}
+
+.modal.active {
+    display: flex;
+}
+
+.modal-content {
+    background: white;
+    border-radius: 1rem;
+    max-width: 90%;
+    max-height: 90%;
+    overflow-y: auto;
+    box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1);
+    padding: 1.5rem;
+}
+
+.modal-content.dark {
+    background: var(--card-dark);
+}
+
+/* Toast */
+.toast {
+    display: none;
+    position: fixed;
+    bottom: 1rem;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #1f2937;
+    color: white;
+    padding: 1rem 1.5rem;
+    border-radius: 0.5rem;
+    box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+    z-index: 50;
+    animation: slideUp 0.3s ease-out;
+}
+
+.toast.active {
+    display: block;
+}
+
+@keyframes slideUp {
+    from {
+        opacity: 0;
+        transform: translateX(-50%) translateY(10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateX(-50%) translateY(0);
+    }
+}
+
+/* Responsive */
+@media (max-width: 640px) {
+    .grid-4, .grid-5, .grid-6 {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    
+    nav .max-w-7xl {
+        gap: 0;
+    }
+    
+    .tab-btn {
+        padding: 0.5rem 0.75rem;
+        font-size: 0.75rem;
+    }
+    
+    header h1 {
+        font-size: 1.25rem;
+    }
+}
+
+@media (min-width: 641px) and (max-width: 1024px) {
+    .grid-5, .grid-6 {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+}
