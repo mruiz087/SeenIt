@@ -218,18 +218,27 @@ function updateRating(type, id_tmdb, rating) {
  * @param {number} id_tmdb - ID de TMDB
  * @param {string} status - Estado (pendiente, viendo, completado, etc.)
  */
-function updateStatus(type, id_tmdb, status) {
+async function updateStatus(type, id_tmdb, status) {
+    const normalizedStatus = normalizeStatus(status);
+
     if (type === 'movie') {
         const movie = AppState.movies.find(m => m.id_tmdb === id_tmdb);
         if (movie) {
-            movie.estado = status;
+            movie.estado = normalizedStatus;
         }
     } else if (type === 'tv') {
         const show = AppState.shows.find(s => s.id_tmdb === id_tmdb);
         if (show) {
-            show.estado = status;
+            show.estado = normalizedStatus;
+
+            if (normalizedStatus === 'completed') {
+                const episodes = await getOrderedEpisodes(show, { includeSpecials: false });
+                const airedEpisodeIds = episodes.filter(isEpisodeAired).map(ep => ep.id);
+                show.capitulos_vistos = [...new Set([...(show.capitulos_vistos || []), ...airedEpisodeIds])];
+            }
         }
     }
+
     saveLocalData();
     syncToDrive();
     renderFollowing();
@@ -243,6 +252,14 @@ function updateStatus(type, id_tmdb, status) {
 async function toggleEpisode(id_tmdb, episode) {
     const show = AppState.shows.find(s => s.id_tmdb === id_tmdb);
     if (!show) return;
+
+    const episodes = await getOrderedEpisodes(show, { includeSpecials: false });
+    const targetEpisode = episodes.find(ep => ep.id === episode);
+
+    if (targetEpisode && !isEpisodeAired(targetEpisode)) {
+        showToast('No puedes marcar episodios con fecha posterior a la actual');
+        return;
+    }
 
     if (!show.capitulos_vistos) {
         show.capitulos_vistos = [];
@@ -552,7 +569,9 @@ async function renderPendingList() {
         });
 
         if (nextEpisode) {
-            pendingEpisodes.push({ show, episode: nextEpisode });
+            const unseenEpisodes = episodes.filter(ep => !show.capitulos_vistos?.includes(ep.id));
+            const remainingCount = Math.max(0, unseenEpisodes.length - 1);
+            pendingEpisodes.push({ show, episode: nextEpisode, remainingCount });
         }
     }
 
@@ -571,7 +590,7 @@ async function renderPendingList() {
         return;
     }
 
-    container.innerHTML = pendingEpisodes.map(({ show, episode }) => `
+    container.innerHTML = pendingEpisodes.map(({ show, episode, remainingCount }) => `
         <div class="episode-card flex flex-row gap-4 items-center justify-between h-32 overflow-hidden">
             <div class="w-24 h-28 flex-shrink-0">
                 ${show.portada ? `<img src="${show.portada}" alt="${show.titulo}" class="w-full h-full rounded-lg object-cover" onerror="this.onerror=null;this.style.display='none';">` : '<div class="w-full h-full rounded-lg bg-gray-700 flex items-center justify-center text-2xl">📺</div>'}
@@ -580,7 +599,10 @@ async function renderPendingList() {
                 <p class="text-[11px] uppercase tracking-wide text-primary font-semibold">
                     <a href="#" onclick="openDetail('tv', ${show.id_tmdb});return false;" class="hover:underline">${show.titulo}</a>
                 </p>
-                <h3 class="font-semibold text-base leading-tight">${episode.id} — ${episode.name}</h3>
+                <h3 class="font-semibold text-base leading-tight">
+                    ${formatEpisodeLabel(episode.seasonNumber, episode.episodeNumber)}
+                    <span class="text-sm font-normal text-gray-500 dark:text-gray-400">(${remainingCount} episodios restantes)</span>
+                </h3>
                 <p class="text-sm text-gray-500 dark:text-gray-400">${episode.air_date ? new Date(episode.air_date).toLocaleDateString('es-ES') : 'Fecha sin definir'}</p>
             </div>
             <label class="flex items-center justify-center w-10 h-10 rounded-lg bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-100 cursor-pointer shrink-0">
@@ -771,6 +793,22 @@ function getSeasonLabel(season) {
     return season?.nombre || `Temporada ${season?.numero || 1}`;
 }
 
+function formatEpisodeLabel(seasonNumber, episodeNumber) {
+    return `T${String(seasonNumber || 0).padStart(2, '0')} | E${String(episodeNumber || 0).padStart(2, '0')}`;
+}
+
+function isEpisodeAired(episode) {
+    if (!episode?.air_date) {
+        return true;
+    }
+
+    const releaseDate = new Date(`${episode.air_date}T00:00:00`);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    return releaseDate <= today;
+}
+
 async function getOrderedEpisodes(show, options = {}) {
     const includeSpecials = options.includeSpecials !== false;
     const seasons = (show.temporadas || []).filter(season => includeSpecials || !season.especial);
@@ -809,42 +847,48 @@ async function refreshShowStatus(show) {
     if (!show) return show;
 
     const previousState = normalizeStatus(show.estado);
-    let nextState = previousState;
 
     if (show.tipo !== 'tv') {
-        show.estado = nextState;
+        show.estado = previousState;
         return show;
     }
 
     const regularSeasons = (show.temporadas || []).filter(season => !season.especial && season.numero !== 0);
     if (regularSeasons.length === 0) {
-        show.estado = nextState;
+        show.estado = previousState;
         return show;
     }
 
     const episodes = await getOrderedEpisodes(show, { includeSpecials: false });
-    const watchedEpisodes = episodes.filter(ep => show.capitulos_vistos?.includes(ep.id));
+    const airedEpisodes = episodes.filter(isEpisodeAired);
+    const watchedEpisodes = airedEpisodes.filter(ep => show.capitulos_vistos?.includes(ep.id));
 
-    if (previousState === 'dropped' && watchedEpisodes.length === 0) {
+    if (previousState === 'dropped') {
         show.estado = 'dropped';
         return show;
     }
 
-    if (episodes.length === 0) {
-        nextState = watchedEpisodes.length > 0 ? 'watching' : 'pending';
-    } else if (watchedEpisodes.length === episodes.length) {
-        nextState = 'completed';
-    } else if (watchedEpisodes.length > 0) {
-        nextState = 'watching';
-    } else {
-        nextState = 'pending';
+    if (previousState === 'completed') {
+        show.estado = watchedEpisodes.length === airedEpisodes.length ? 'completed' : 'watching';
+        if (show.estado !== previousState) {
+            saveLocalData();
+        }
+        return show;
     }
 
-    if (nextState !== previousState) {
-        show.estado = nextState;
-        saveLocalData();
+    if (previousState === 'watching' || previousState === 'pending') {
+        show.estado = previousState;
+        return show;
+    }
+
+    if (airedEpisodes.length === 0) {
+        show.estado = watchedEpisodes.length > 0 ? 'watching' : 'pending';
+    } else if (watchedEpisodes.length === airedEpisodes.length) {
+        show.estado = 'completed';
+    } else if (watchedEpisodes.length > 0) {
+        show.estado = 'watching';
     } else {
-        show.estado = nextState;
+        show.estado = 'pending';
     }
 
     return show;
@@ -930,10 +974,10 @@ async function renderEpisodes(show) {
             const seasonKey = `${show.id_tmdb}-season-${season.numero}`;
             const seasonLabel = getSeasonLabel(season);
             
-            // Contar episodios vistos en esta temporada
-            const seasonEpisodeIds = seasonDetails.episodes.map(ep => 
-                `S${String(season.numero).padStart(2, '0')}E${String(ep.episode_number).padStart(2, '0')}`
-            );
+            // Contar episodios vistos en esta temporada (solo episodios emitidos)
+            const seasonEpisodeIds = seasonDetails.episodes
+                .filter(isEpisodeAired)
+                .map(ep => `S${String(season.numero).padStart(2, '0')}E${String(ep.episode_number).padStart(2, '0')}`);
             const watchedInSeason = seasonEpisodeIds.filter(id => show.capitulos_vistos?.includes(id)).length;
             const totalInSeason = seasonEpisodeIds.length;
             const allWatchedInSeason = watchedInSeason === totalInSeason && totalInSeason > 0;
@@ -978,9 +1022,11 @@ async function renderEpisodes(show) {
             
             for (const episode of seasonDetails.episodes) {
                 const episodeId = `S${String(season.numero).padStart(2, '0')}E${String(episode.episode_number).padStart(2, '0')}`;
+                const episodeLabel = formatEpisodeLabel(season.numero, episode.episode_number);
                 const isWatched = show.capitulos_vistos?.includes(episodeId);
                 const episodeImage = episode.still_path ? getImageUrl(episode.still_path, 'w185') : null;
                 const episodeOverview = episode.overview || 'Sin descripción';
+                const aired = isEpisodeAired(episode);
                 
                 episodesHTML += `
                     <div class="flex items-start gap-2 p-2 bg-white dark:bg-gray-800 rounded hover:bg-gray-50 dark:hover:bg-gray-700 transition">
@@ -990,7 +1036,9 @@ async function renderEpisodes(show) {
                             data-show="${show.id_tmdb}"
                             data-season="${season.numero}"
                             data-episode="${episodeId}"
+                            data-aired="${aired}"
                             ${isWatched ? 'checked' : ''}
+                            ${aired ? '' : 'disabled'}
                             class="w-4 h-4 rounded cursor-pointer mt-0.5 flex-shrink-0 ep-checkbox"
                         >
                         
@@ -1007,7 +1055,7 @@ async function renderEpisodes(show) {
                             <div class="flex-1 min-w-0">
                                 <div class="flex items-baseline gap-1 mb-0.5">
                                     <span class="text-xs font-semibold text-primary flex-shrink-0">•</span>
-                                    <span class="font-medium text-xs">${episodeId}</span>
+                                    <span class="font-medium text-xs">${episodeLabel}</span>
                                     <span class="text-gray-600 dark:text-gray-400 text-xs truncate">${episode.name}</span>
                                 </div>
                                 <p class="text-xs text-gray-500 dark:text-gray-400 line-clamp-1">
@@ -1080,6 +1128,14 @@ async function toggleEpisodeAndUpdateSeason(id_tmdb, episode, seasonNumber, seas
     const show = AppState.shows.find(s => s.id_tmdb === id_tmdb);
     if (!show) return;
 
+    const episodes = await getOrderedEpisodes(show, { includeSpecials: false });
+    const targetEpisode = episodes.find(ep => ep.id === episode);
+
+    if (targetEpisode && !isEpisodeAired(targetEpisode)) {
+        showToast('No puedes marcar episodios con fecha posterior a la actual');
+        return;
+    }
+
     if (!show.capitulos_vistos) {
         show.capitulos_vistos = [];
     }
@@ -1098,8 +1154,10 @@ async function toggleEpisodeAndUpdateSeason(id_tmdb, episode, seasonNumber, seas
     const seasonContent = document.getElementById(seasonId);
     let seasonEpisodeIds = [];
     if (seasonContent) {
-        const episodeCheckboxes = seasonContent.querySelectorAll('input[id^="ep-S"]');
-        seasonEpisodeIds = Array.from(episodeCheckboxes).map(cb => cb.id.replace(/^ep-/, ''));
+        const episodeCheckboxes = seasonContent.querySelectorAll('input[id^="ep-"]');
+        seasonEpisodeIds = Array.from(episodeCheckboxes)
+            .filter(cb => cb.dataset.aired !== 'false')
+            .map(cb => cb.id.replace(/^ep-/, ''));
     }
 
     updateSeasonUI(id_tmdb, seasonNumber, seasonEpisodeIds, seasonId);
@@ -1220,7 +1278,14 @@ async function toggleSeasonWatched(id_tmdb, seasonNumber, seasonId, event) {
     let episodeIds = [];
     if (seasonContent) {
         const episodeCheckboxes = seasonContent.querySelectorAll('input[id^="ep-"]');
-        episodeIds = Array.from(episodeCheckboxes).map(cb => cb.id.replace(/^ep-/, ''));
+        episodeIds = Array.from(episodeCheckboxes)
+            .filter(cb => cb.dataset.aired !== 'false')
+            .map(cb => cb.id.replace(/^ep-/, ''));
+    }
+
+    if (watched && episodeIds.length === 0) {
+        showToast('No hay episodios disponibles para marcar en esta temporada');
+        return;
     }
 
     episodeIds.forEach(episodeId => {
@@ -1380,7 +1445,7 @@ function closeModal() {
 /**
  * Guarda los cambios del modal
  */
-function saveContent() {
+async function saveContent() {
     if (!AppState.selectedItem) return;
     
     const item = AppState.selectedItem;
@@ -1388,7 +1453,7 @@ function saveContent() {
     const status = document.getElementById('modal-status').value;
     
     updateRating(item.tipo, item.id_tmdb, rating);
-    updateStatus(item.tipo, item.id_tmdb, status);
+    await updateStatus(item.tipo, item.id_tmdb, status);
     
     closeModal();
     renderFollowing();
