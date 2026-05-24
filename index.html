@@ -61,6 +61,87 @@
         .star:hover {
             transform: scale(1.2);
         }
+
+        #app {
+            min-height: 100vh;
+            padding-bottom: calc(5rem + env(safe-area-inset-bottom));
+        }
+
+        html {
+            scroll-padding-bottom: 10rem;
+        }
+
+        main {
+            padding-bottom: 10rem;
+        }
+
+        @media (min-width: 768px) {
+            main {
+                padding-bottom: 2rem;
+            }
+
+            #app {
+                padding-bottom: 0;
+            }
+        }
+
+        .mobile-nav {
+            left: 0.75rem;
+            right: 0.75rem;
+            bottom: max(0.75rem, env(safe-area-inset-bottom));
+        }
+
+        .mobile-nav-shell {
+            background: rgba(255, 255, 255, 0.92);
+            border: 1px solid rgba(255, 255, 255, 0.8);
+            box-shadow: 0 20px 60px -20px rgba(15, 23, 42, 0.45);
+            backdrop-filter: blur(18px);
+        }
+
+        .dark .mobile-nav-shell {
+            background: rgba(15, 23, 42, 0.9);
+            border-color: rgba(71, 85, 105, 0.75);
+        }
+
+        .mobile-tab-btn {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 0.25rem;
+            border-radius: 1.2rem;
+            padding: 0.6rem 0.5rem;
+            color: #6b7280;
+            transition: all 0.2s ease;
+        }
+
+        .mobile-tab-btn:hover {
+            background: rgba(99, 102, 241, 0.08);
+            color: #4f46e5;
+        }
+
+        .mobile-tab-icon {
+            width: 2.1rem;
+            height: 2.1rem;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 9999px;
+            font-size: 1.05rem;
+            transition: all 0.2s ease;
+        }
+
+        .mobile-tab-btn.text-primary .mobile-tab-icon {
+            background: rgba(99, 102, 241, 0.16);
+            color: #4f46e5;
+        }
+
+        .mobile-tab-label {
+            font-size: 0.7rem;
+            line-height: 1;
+            font-weight: 700;
+            letter-spacing: 0.02em;
+        }
     </style>
 </head>
 <body class="bg-gray-100 dark:bg-dark-bg text-gray-900 dark:text-gray-100 min-h-screen">
@@ -68,8 +149,8 @@
     <!-- Main App Container -->
     <div id="app" class="flex flex-col min-h-screen">
         
-        <!-- Header -->
-        <header class="bg-white dark:bg-dark-card shadow-lg sticky top-0 z-40">
+        <!-- Header (solo escritorio) -->
+        <header class="bg-white dark:bg-dark-card shadow-lg sticky top-0 z-40 hidden md:block">
             <div class="max-w-7xl mx-auto px-4 py-3">
                 <div class="flex items-center justify-between">
                     <h1 class="text-2xl font-bold bg-gradient-to-r from-primary to-secondary bg-clip-text text-transparent">
@@ -82,15 +163,18 @@
             </div>
         </header>
         
-        <!-- Navigation Tabs -->
-        <nav class="bg-white dark:bg-dark-card border-b border-gray-200 dark:border-gray-700 sticky top-16 z-30">
+        <!-- Navigation Tabs (solo escritorio) -->
+        <nav class="bg-white dark:bg-dark-card border-b border-gray-200 dark:border-gray-700 sticky top-16 z-30 hidden md:block">
             <div class="max-w-7xl mx-auto px-4">
                 <div class="flex space-x-1 overflow-x-auto">
-                    <button onclick="switchTab('following')" id="tab-following" class="tab-btn px-4 py-3 text-sm font-medium border-b-2 border-primary text-primary whitespace-nowrap">
-                        📺 Galería
+                    <button onclick="switchTab('series')" id="tab-series" class="tab-btn px-4 py-3 text-sm font-medium border-b-2 border-primary text-primary whitespace-nowrap">
+                        📺 Series
                     </button>
-                    <button onclick="switchTab('search')" id="tab-search" class="tab-btn px-4 py-3 text-sm font-medium border-b-2 border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 whitespace-nowrap">
-                        🔍 Buscar
+                    <button onclick="switchTab('explore')" id="tab-explore" class="tab-btn px-4 py-3 text-sm font-medium border-b-2 border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 whitespace-nowrap">
+                        🔍 Explorar
+                    </button>
+                    <button onclick="switchTab('profile')" id="tab-profile" class="tab-btn px-4 py-3 text-sm font-medium border-b-2 border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 whitespace-nowrap">
+                        👤 Perfil
                     </button>
                     <button onclick="switchTab('settings')" id="tab-settings" class="tab-btn px-4 py-3 text-sm font-medium border-b-2 border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 whitespace-nowrap">
                         ⚙️ Ajustes
@@ -102,44 +186,36 @@
         <!-- Main Content Area -->
         <main class="flex-1 max-w-7xl mx-auto w-full px-4 py-6">
             
-            <!-- Tab: Siguiendo/Pendiente -->
-            <div id="content-following" class="tab-content">
-                <!-- Filter buttons -->
+            <!-- Tab: Series -->
+            <div id="content-series" class="tab-content">
                 <div class="flex flex-wrap gap-2 mb-6">
-                    <button onclick="filterContent('all')" class="filter-btn px-4 py-2 bg-primary text-white rounded-lg text-sm font-medium hover:bg-primary/90 transition">
-                        Todos
+                    <button onclick="switchSubTab('pending-list')" id="subtab-pending-list" class="subtab-btn px-4 py-2 rounded-lg bg-primary text-white">
+                        Lista Pendiente
                     </button>
-                    <button onclick="filterContent('series')" class="filter-btn px-4 py-2 bg-dark-input text-gray-300 rounded-lg text-sm font-medium hover:bg-gray-600 transition">
-                        Series
-                    </button>
-                    <button onclick="filterContent('movies')" class="filter-btn px-4 py-2 bg-dark-input text-gray-300 rounded-lg text-sm font-medium hover:bg-gray-600 transition">
-                        Películas
-                    </button>
-                    <button onclick="filterContent('watching')" class="filter-btn px-4 py-2 bg-dark-input text-gray-300 rounded-lg text-sm font-medium hover:bg-gray-600 transition">
-                        Viendo
-                    </button>
-                    <button onclick="filterContent('completed')" class="filter-btn px-4 py-2 bg-dark-input text-gray-300 rounded-lg text-sm font-medium hover:bg-gray-600 transition">
-                        Completados
-                    </button>
-                    <button onclick="filterContent('pending')" class="filter-btn px-4 py-2 bg-dark-input text-gray-300 rounded-lg text-sm font-medium hover:bg-gray-600 transition">
-                        Pendientes
+                    <button onclick="switchSubTab('upcoming')" id="subtab-upcoming" class="subtab-btn px-4 py-2 rounded-lg bg-dark-input text-gray-200">
+                        Próximamente
                     </button>
                 </div>
-                
-                <!-- Content Grid -->
-                <div id="following-grid" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
-                    <!-- Items will be populated by JS -->
-                    <div class="text-center col-span-full py-12 text-gray-500 dark:text-gray-400">
-                        <div class="text-4xl mb-4">📺</div>
-                        <p>No hay contenido en tu lista</p>
-                        <p class="text-sm mt-2">Usa la pestaña "Buscar" para añadir series y películas</p>
+                <div id="subtab-content-pending-list" class="subtab-content">
+                    <div class="space-y-4" id="pending-list-container">
+                        <div class="text-center py-12 text-gray-500 dark:text-gray-400">
+                            <div class="text-4xl mb-4">📺</div>
+                            <p>Cargando tus episodios pendientes...</p>
+                        </div>
+                    </div>
+                </div>
+                <div id="subtab-content-upcoming" class="subtab-content hidden">
+                    <div class="space-y-4" id="upcoming-list-container">
+                        <div class="text-center py-12 text-gray-500 dark:text-gray-400">
+                            <div class="text-4xl mb-4">🗓️</div>
+                            <p>Cargando tus próximos episodios...</p>
+                        </div>
                     </div>
                 </div>
             </div>
-            
-            <!-- Tab: Buscar -->
-            <div id="content-search" class="tab-content hidden">
-                <!-- Search Input -->
+
+            <!-- Tab: Explorar -->
+            <div id="content-explore" class="tab-content hidden">
                 <div class="mb-6">
                     <div class="relative">
                         <input 
@@ -152,115 +228,123 @@
                         <span class="absolute left-4 top-1/2 transform -translate-y-1/2 text-gray-400">🔍</span>
                     </div>
                 </div>
-                
-                <!-- Search Results -->
                 <div id="search-results" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
-                    <!-- Results will be populated by JS -->
                     <div class="text-center col-span-full py-12 text-gray-500 dark:text-gray-400">
-                        <div class="text-4xl mb-4">🔍</div>
-                        <p>Busca tu serie o película favorita</p>
+                        <div class="text-4xl mb-4">🔎</div>
+                        <p>Escribe al menos 2 caracteres para buscar</p>
                     </div>
                 </div>
             </div>
-            
-            <!-- Tab: Ajustes -->
-            <div id="content-settings" class="tab-content hidden">
-                <div class="max-w-2xl mx-auto">
-                    <!-- Google Drive Connection -->
-                    <div class="bg-white dark:bg-dark-card rounded-xl p-6 mb-6 shadow-lg">
-                        <h2 class="text-xl font-bold mb-4 flex items-center gap-2">
-                            <span>☁️</span> Conexión a Google Drive
-                        </h2>
-                        <p class="text-gray-600 dark:text-gray-400 mb-4 text-sm">
-                            Conecta tu cuenta de Google Drive para sincronizar tu lista de series y películas. 
-                            Tus datos se guardarán de forma privada en tu Drive.
-                        </p>
-                        
-                        <div id="drive-status" class="mb-4">
-                            <div class="flex items-center gap-2 text-yellow-600 dark:text-yellow-400">
-                                <span>⚠️</span>
-                                <span>No conectado</span>
+
+            <!-- Tab: Perfil -->
+            <div id="content-profile" class="tab-content hidden">
+                <div class="flex flex-wrap gap-2 mb-6">
+                    <button onclick="switchProfileTab('series')" id="profile-tab-series" class="px-4 py-2 rounded-lg bg-primary text-white">
+                        Series
+                    </button>
+                    <button onclick="switchProfileTab('movies')" id="profile-tab-movies" class="px-4 py-2 rounded-lg bg-dark-input text-gray-200">
+                        Películas
+                    </button>
+                </div>
+
+                <div id="profile-series-content" class="profile-content">
+                    <div class="bg-white dark:bg-dark-card rounded-xl p-4 shadow-lg">
+                        <div class="flex items-center justify-between gap-3 mb-4">
+                            <div>
+                                <p class="text-sm text-gray-500 dark:text-gray-400">Series</p>
+                                <h2 class="text-lg font-bold">Seguimiento por categoría</h2>
+                            </div>
+                            <select id="profile-series-filter" onchange="renderProfileView()" class="w-40 px-3 py-2 bg-white dark:bg-dark-input border border-gray-300 dark:border-gray-600 rounded-lg text-sm">
+                                <option value="all">Todas</option>
+                                <option value="pending">Pendiente</option>
+                                <option value="watching">Viendo</option>
+                                <option value="completed">Completada</option>
+                                <option value="dropped">Abandonada</option>
+                            </select>
+                        </div>
+                        <div id="profile-series-container" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+                            <div class="text-center col-span-full py-10 text-gray-500 dark:text-gray-400">
+                                <div class="text-3xl mb-3">📺</div>
+                                <p>No hay series para mostrar</p>
                             </div>
                         </div>
-                        
-                        <button 
-                            id="btn-connect-drive" 
-                            onclick="connectDrive()" 
-                            class="w-full px-4 py-3 bg-primary text-white rounded-lg font-medium hover:bg-primary/90 transition flex items-center justify-center gap-2"
-                        >
-                            <span>🔗</span> Conectar Google Drive
-                        </button>
-                        
-                        <button 
-                            id="btn-disconnect-drive" 
-                            onclick="disconnectDrive()" 
-                            class="hidden w-full px-4 py-3 bg-red-600 text-white rounded-lg font-medium hover:bg-red-700 transition flex items-center justify-center gap-2 mt-2"
-                        >
-                            <span>🔓</span> Desconectar Google Drive
-                        </button>
                     </div>
-                    
-                    <!-- Data Management -->
-                    <div class="bg-white dark:bg-dark-card rounded-xl p-6 mb-6 shadow-lg">
-                        <h2 class="text-xl font-bold mb-4 flex items-center gap-2">
-                            <span>💾</span> Gestión de Datos
-                        </h2>
-                        
-                        <div class="space-y-3">
-                            <button 
-                                onclick="exportData()" 
-                                class="w-full px-4 py-3 bg-dark-input text-gray-300 rounded-lg font-medium hover:bg-gray-600 transition flex items-center justify-center gap-2"
-                            >
-                                <span>📤</span> Exportar datos (JSON)
-                            </button>
-                            
-                            <button 
-                                onclick="importData()" 
-                                class="w-full px-4 py-3 bg-dark-input text-gray-300 rounded-lg font-medium hover:bg-gray-600 transition flex items-center justify-center gap-2"
-                            >
-                                <span>📥</span> Importar datos (JSON)
-                            </button>
-                            <input type="file" id="import-file" accept=".json" class="hidden" onchange="handleImport(event)">
-                            
-                            <button 
-                                onclick="clearAllData()" 
-                                class="w-full px-4 py-3 bg-red-600/20 text-red-400 border border-red-600 rounded-lg font-medium hover:bg-red-600/30 transition flex items-center justify-center gap-2"
-                            >
-                                <span>🗑️</span> Borrar todos los datos
-                            </button>
+                </div>
+
+                <div id="profile-movies-content" class="profile-content hidden">
+                    <div class="bg-white dark:bg-dark-card rounded-xl p-4 shadow-lg">
+                        <div class="flex items-center justify-between gap-3 mb-4">
+                            <div>
+                                <p class="text-sm text-gray-500 dark:text-gray-400">Películas</p>
+                                <h2 class="text-lg font-bold">Seguimiento personal</h2>
+                            </div>
+                            <select id="profile-movies-filter" onchange="renderProfileView()" class="w-40 px-3 py-2 bg-white dark:bg-dark-input border border-gray-300 dark:border-gray-600 rounded-lg text-sm">
+                                <option value="all">Todas</option>
+                                <option value="pending">Pendiente</option>
+                                <option value="completed">Vista</option>
+                            </select>
                         </div>
-                    </div>
-                    
-                    <!-- App Info -->
-                    <div class="bg-white dark:bg-dark-card rounded-xl p-6 shadow-lg">
-                        <h2 class="text-xl font-bold mb-4 flex items-center gap-2">
-                            <span>ℹ️</span> Información
-                        </h2>
-                        <div class="text-sm text-gray-600 dark:text-gray-400 space-y-2">
-                            <p><strong>Versión:</strong> 1.0.0</p>
-                            <p><strong>Almacenamiento:</strong> Local + Google Drive (opcional)</p>
-                            <p><strong>Privacidad:</strong> 100% privada, sin servidores externos</p>
+                        <div id="profile-movies-container" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+                            <div class="text-center col-span-full py-10 text-gray-500 dark:text-gray-400">
+                                <div class="text-3xl mb-3">🎬</div>
+                                <p>No hay películas para mostrar</p>
+                            </div>
                         </div>
                     </div>
                 </div>
             </div>
-            
+
+            <!-- Tab: Ajustes -->
+            <div id="content-settings" class="tab-content hidden">
+                <div class="max-w-3xl mx-auto space-y-6">
+                    <div class="bg-white dark:bg-dark-card rounded-xl p-5 shadow-lg">
+                        <h2 class="text-lg font-bold mb-3">🔗 Google Drive</h2>
+                        <p id="drive-status" class="text-sm text-gray-500 dark:text-gray-400 mb-4">Cargando estado de sincronización...</p>
+                        <div class="flex flex-wrap gap-3">
+                            <button id="btn-connect-drive" onclick="connectDrive()" class="px-4 py-2 bg-primary text-white rounded-lg text-sm font-medium hover:bg-primary/90 transition">
+                                🔗 Conectar Google Drive
+                            </button>
+                            <button id="btn-disconnect-drive" onclick="disconnectDrive()" class="hidden px-4 py-2 bg-gray-700 text-white rounded-lg text-sm font-medium hover:bg-gray-800 transition">
+                                🔒 Desconectar
+                            </button>
+                        </div>
+                    </div>
+                    <div class="bg-white dark:bg-dark-card rounded-xl p-5 shadow-lg">
+                        <h2 class="text-lg font-bold mb-3">💾 Backup y restauración</h2>
+                        <div class="flex flex-wrap gap-3">
+                            <button onclick="exportData()" class="px-4 py-2 bg-gray-800 text-white rounded-lg text-sm font-medium hover:bg-gray-700 transition">
+                                📤 Exportar datos
+                            </button>
+                            <button onclick="importData()" class="px-4 py-2 bg-gray-800 text-white rounded-lg text-sm font-medium hover:bg-gray-700 transition">
+                                📥 Importar datos
+                            </button>
+                            <button onclick="clearAllData()" class="px-4 py-2 bg-red-600 text-white rounded-lg text-sm font-medium hover:bg-red-700 transition">
+                                🗑️ Borrar todos los datos
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </main>
         
-        <!-- Bottom Navigation (Mobile) -->
-        <nav class="md:hidden bg-white dark:bg-dark-card border-t border-gray-200 dark:border-gray-700 fixed bottom-0 left-0 right-0 z-40">
-            <div class="flex justify-around">
-                <button onclick="switchTab('following')" class="mobile-tab-btn flex-1 py-3 text-center" data-tab="following">
-                    <div class="text-2xl">📺</div>
-                    <div class="text-xs mt-1">Lista</div>
+        <!-- Bottom Navigation (solo móvil) -->
+        <nav class="mobile-nav block md:hidden fixed z-40">
+            <div class="mobile-nav-shell mx-auto flex max-w-md items-center justify-between rounded-[28px] px-2 py-2">
+                <button onclick="switchTab('series')" class="mobile-tab-btn flex-1 text-center" data-tab="series">
+                    <span class="mobile-tab-icon">📺</span>
+                    <span class="mobile-tab-label">Series</span>
                 </button>
-                <button onclick="switchTab('search')" class="mobile-tab-btn flex-1 py-3 text-center" data-tab="search">
-                    <div class="text-2xl">🔍</div>
-                    <div class="text-xs mt-1">Buscar</div>
+                <button onclick="switchTab('explore')" class="mobile-tab-btn flex-1 text-center" data-tab="explore">
+                    <span class="mobile-tab-icon">🔍</span>
+                    <span class="mobile-tab-label">Explorar</span>
                 </button>
-                <button onclick="switchTab('settings')" class="mobile-tab-btn flex-1 py-3 text-center" data-tab="settings">
-                    <div class="text-2xl">⚙️</div>
-                    <div class="text-xs mt-1">Ajustes</div>
+                <button onclick="switchTab('profile')" class="mobile-tab-btn flex-1 text-center" data-tab="profile">
+                    <span class="mobile-tab-icon">👤</span>
+                    <span class="mobile-tab-label">Perfil</span>
+                </button>
+                <button onclick="switchTab('settings')" class="mobile-tab-btn flex-1 text-center" data-tab="settings">
+                    <span class="mobile-tab-icon">⚙️</span>
+                    <span class="mobile-tab-label">Ajustes</span>
                 </button>
             </div>
         </nav>
@@ -360,6 +444,8 @@
     <div id="toast" class="fixed bottom-20 md:bottom-4 left-1/2 transform -translate-x-1/2 bg-gray-900 dark:bg-white text-white dark:text-gray-900 px-6 py-3 rounded-lg shadow-lg z-50 hidden transition-opacity duration-300">
         <span id="toast-message">Mensaje</span>
     </div>
+
+    <input type="file" id="import-file" accept=".json" class="hidden" onchange="handleImport(event)">
     
     <!-- Scripts will be loaded here -->
     <script src="tmdb-service.js"></script>

@@ -236,7 +236,7 @@ function normalizeMovieData(data) {
  * @returns {Object} Datos normalizados
  */
 function normalizeTVData(data) {
-    const seasons = data.seasons?.filter(s => s.season_number > 0) || [];
+    const seasons = data.seasons || [];
     
     return {
         id_tmdb: data.id,
@@ -245,7 +245,7 @@ function normalizeTVData(data) {
         portada: getImageUrl(data.poster_path),
         backdrop: getImageUrl(data.backdrop_path, 'w780'),
         puntuacion: 0,
-        estado: 'pendiente',
+        estado: 'pending',
         tipo: 'tv',
         fecha_estreno: data.first_air_date,
         generos: data.genres?.map(g => g.name) || [],
@@ -254,9 +254,10 @@ function normalizeTVData(data) {
         numero_temporadas: data.number_of_seasons,
         temporadas: seasons.map(s => ({
             numero: s.season_number,
-            nombre: s.name,
+            nombre: s.season_number === 0 ? 'Especiales' : (s.name || `Temporada ${s.season_number}`),
             episodio_count: s.episode_count,
             poster: getImageUrl(s.poster_path, 'w342'),
+            especial: s.season_number === 0,
         })),
         capitulos_vistos: [],
     };

@@ -23,6 +23,10 @@ body {
     background: #f3f4f6;
     color: #111827;
     line-height: 1.5;
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+    margin: 0;
 }
 
 body.dark {
@@ -135,6 +139,8 @@ main {
     width: 100%;
     padding: 1.5rem 1rem;
     flex: 1;
+    overflow-y: auto;
+    padding-bottom: 4rem; /* Espacio para el menú inferior */
 }
 
 /* Buttons */
@@ -243,6 +249,104 @@ select.dark {
     color: #e5e7eb;
 }
 
+/* New UI helpers */
+.subtab-btn {
+    border: 1px solid transparent;
+}
+
+.subtab-btn.active {
+    border-color: transparent;
+}
+
+.episode-card {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: var(--card-dark);
+    border-radius: 0.75rem;
+    padding: 1rem;
+    margin-bottom: 1rem;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+    height: 100px;
+}
+
+.episode-card img {
+    width: 80px;
+    height: 80px;
+    border-radius: 0.5rem;
+    object-fit: cover;
+}
+
+.episode-card .info {
+    flex: 1;
+    margin-left: 1rem;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+}
+
+.episode-card .info h3 {
+    font-size: 1rem;
+    font-weight: bold;
+    margin: 0;
+    color: #ffffff;
+}
+
+.episode-card .info p {
+    font-size: 0.875rem;
+    color: #9ca3af;
+    margin: 0.25rem 0;
+}
+
+.episode-card .info .tags {
+    display: flex;
+    gap: 0.5rem;
+    margin-top: 0.5rem;
+}
+
+.episode-card .info .tags span {
+    font-size: 0.75rem;
+    font-weight: bold;
+    color: #ffffff;
+    background: #4b5563;
+    padding: 0.25rem 0.5rem;
+    border-radius: 0.25rem;
+}
+
+.episode-card .checkbox {
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #10b981;
+    border-radius: 50%;
+    cursor: pointer;
+}
+
+.episode-card .checkbox input {
+    width: 16px;
+    height: 16px;
+    accent-color: #10b981;
+}
+
+.dark .episode-card {
+    background: rgba(31, 41, 55, 0.9);
+    border-color: rgba(55, 65, 81, 0.8);
+}
+
+.profile-card {
+    background: white;
+    border-radius: 0.75rem;
+    padding: 1rem;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+    width: 100%;
+}
+
+.dark .profile-card {
+    background: #1f2937;
+}
+
 /* Modal */
 .modal {
     display: none;
@@ -327,4 +431,49 @@ select.dark {
     .grid-5, .grid-6 {
         grid-template-columns: repeat(4, minmax(0, 1fr));
     }
+}
+
+/* Tabs */
+.tabs {
+    display: flex;
+    justify-content: start;
+    gap: 1rem;
+    margin-bottom: 1rem;
+    border-bottom: 2px solid var(--card-dark);
+}
+
+.subtab-btn {
+    padding: 0.5rem 1rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+    border-bottom: 2px solid transparent;
+    cursor: pointer;
+    color: var(--primary);
+    background: transparent;
+    transition: all 0.2s;
+}
+
+.subtab-btn.active {
+    border-bottom-color: var(--primary);
+    font-weight: bold;
+}
+
+.subtab-btn:hover {
+    color: var(--secondary);
+}
+
+.subtab-content {
+    display: none;
+}
+
+.subtab-content.active {
+    display: block;
+}
+
+footer {
+    position: sticky;
+    bottom: 0;
+    width: 100%;
+    background-color: var(--dark-bg);
+    z-index: 10;
 }
