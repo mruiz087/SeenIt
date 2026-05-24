@@ -34,6 +34,7 @@ if (CLIENT_ID === '797642945177-qi6vaqh10ldb89p339snodostrbvfue8.apps.googleuser
 }
 
 const DATA_FILE_NAME = 'tv_showtime_data.json';
+const DRIVE_TOKEN_STORAGE_KEY = 'seenit_drive_token';
 
 // ============================================
 // ESTADO GLOBAL
@@ -58,11 +59,68 @@ async function initDriveService() {
 
     // Cargar Google Identity Services
     await loadGIS();
-    
+
     // Cargar Google API Client
     await loadGAPI();
-    
+
+    await restoreAccessToken();
+
     console.log('[Drive] Servicio inicializado');
+}
+
+function persistDriveToken(token, expiresIn = 3600) {
+    const expiresAt = Date.now() + ((expiresIn || 3600) * 1000);
+    localStorage.setItem(DRIVE_TOKEN_STORAGE_KEY, JSON.stringify({
+        accessToken: token,
+        expiresAt,
+    }));
+}
+
+function clearPersistedDriveToken() {
+    localStorage.removeItem(DRIVE_TOKEN_STORAGE_KEY);
+}
+
+function getPersistedDriveToken() {
+    try {
+        const raw = localStorage.getItem(DRIVE_TOKEN_STORAGE_KEY);
+        if (!raw) return null;
+
+        const parsed = JSON.parse(raw);
+        if (!parsed?.accessToken || !parsed?.expiresAt) return null;
+
+        if (Date.now() >= parsed.expiresAt) {
+            clearPersistedDriveToken();
+            return null;
+        }
+
+        return parsed;
+    } catch (error) {
+        console.warn('[Drive] Error leyendo token guardado:', error);
+        clearPersistedDriveToken();
+        return null;
+    }
+}
+
+function syncTokenToGapi() {
+    if (!gapiInited || !accessToken) return;
+    try {
+        gapi.client.setToken({ access_token: accessToken });
+    } catch (error) {
+        console.warn('[Drive] No se pudo sincronizar el token con gapi:', error);
+    }
+}
+
+async function restoreAccessToken() {
+    const persisted = getPersistedDriveToken();
+
+    if (!persisted) {
+        accessToken = null;
+        return;
+    }
+
+    accessToken = persisted.accessToken;
+    syncTokenToGapi();
+    console.log('[Drive] Token restaurado desde localStorage');
 }
 
 /**
@@ -78,16 +136,6 @@ function loadGIS() {
             tokenClient = google.accounts.oauth2.initTokenClient({
                 client_id: CLIENT_ID,
                 scope: SCOPES,
-                callback: (response) => {
-                    if (response.error) {
-                        console.error('[Drive] Error de autenticación:', response);
-                        reject(response);
-                    } else {
-                        accessToken = response.access_token;
-                        console.log('[Drive] Token obtenido exitosamente');
-                        resolve(response);
-                    }
-                },
             });
             gisInited = true;
             resolve();
@@ -139,18 +187,34 @@ function authenticate() {
             reject(new Error('Servicio no inicializado. Llama a initDriveService() primero.'));
             return;
         }
-        
-        tokenClient.requestAccessToken({
-            prompt: 'consent',
-            callback: (response) => {
-                if (response.error) {
-                    reject(response);
-                } else {
-                    accessToken = response.access_token;
-                    resolve(response);
-                }
-            },
-        });
+
+        if (accessToken) {
+            resolve({ access_token: accessToken });
+            return;
+        }
+
+        tokenClient.callback = (response) => {
+            if (response.error) {
+                console.error('[Drive] Error de autenticación:', response);
+                reject(response);
+                return;
+            }
+
+            accessToken = response.access_token;
+            persistDriveToken(accessToken, response.expires_in);
+            syncTokenToGapi();
+            console.log('[Drive] Token obtenido exitosamente');
+            resolve(response);
+        };
+
+        try {
+            tokenClient.requestAccessToken({
+                prompt: 'consent',
+            });
+        } catch (error) {
+            console.error('[Drive] Error iniciando autenticación:', error);
+            reject(error);
+        }
     });
 }
 
@@ -164,6 +228,7 @@ function signOut() {
         });
         accessToken = null;
         dataFileId = null;
+        clearPersistedDriveToken();
     }
 }
 

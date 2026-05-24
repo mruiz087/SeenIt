@@ -367,17 +367,18 @@
             <!-- Modal Content -->
             <div class="flex-1 overflow-y-auto p-4">
                 <!-- Poster and Info -->
-                <div class="flex flex-col md:flex-row gap-6 mb-6">
-                    <div id="modal-poster" class="w-full md:w-48 h-72 bg-gray-200 dark:bg-gray-700 rounded-lg flex-shrink-0 flex items-center justify-center">
+                <div class="flex flex-col md:flex-row gap-6 mb-6 items-start">
+                    <div id="modal-poster" class="w-full max-w-[180px] md:max-w-[180px] mx-auto md:mx-0 aspect-[2/3] bg-gray-200 dark:bg-gray-700 rounded-lg overflow-hidden flex-shrink-0 flex items-center justify-center shadow-lg">
                         <span class="text-4xl">🎬</span>
                     </div>
-                    <div class="flex-1">
+                    <div class="flex-1 min-w-0">
                         <div id="modal-meta" class="flex flex-wrap gap-2 mb-3">
                             <!-- Meta tags will be populated by JS -->
                         </div>
-                        <p id="modal-overview" class="text-gray-600 dark:text-gray-400 text-sm mb-4">
+                        <p id="modal-overview" class="text-gray-600 dark:text-gray-400 text-sm mb-4 leading-relaxed">
                             Descripción...
                         </p>
+                        <div id="modal-watch-providers" class="hidden mb-4"></div>
                         
                         <!-- Rating -->
                         <div class="mb-4">

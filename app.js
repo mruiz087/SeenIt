@@ -44,7 +44,12 @@ async function initApp() {
     // Inicializar servicio de Drive
     try {
         await initDriveService();
+        updateDriveStatus(isAuthenticated());
         console.log('[App] Drive service inicializado');
+
+        if (isAuthenticated()) {
+            await loadFromDrive();
+        }
     } catch (error) {
         console.warn('[App] No se pudo inicializar Drive service:', error);
     }
@@ -1295,9 +1300,43 @@ async function openDetail(type, id_tmdb) {
         // Poster
         const posterContainer = document.getElementById('modal-poster');
         if (item.portada) {
-            posterContainer.innerHTML = `<img src="${item.portada}" alt="${item.titulo}" class="w-full h-full object-cover rounded-lg">`;
+            posterContainer.innerHTML = `<img src="${item.portada}" alt="${item.titulo}" class="w-full h-full object-contain rounded-lg bg-black/5">`;
         } else {
             posterContainer.innerHTML = '<span class="text-4xl">🎬</span>';
+        }
+
+        if (type === 'tv') {
+            if (!item.watch_providers || item.watch_providers.length === 0) {
+                const watchProviders = await window.getWatchProviders?.('tv', item.id_tmdb);
+                if (watchProviders?.length) {
+                    item.watch_providers = watchProviders;
+                }
+            }
+
+            const watchProvidersContainer = document.getElementById('modal-watch-providers');
+            if (item.watch_providers?.length) {
+                watchProvidersContainer.classList.remove('hidden');
+                watchProvidersContainer.innerHTML = `
+                    <div class="rounded-xl border border-gray-200 dark:border-gray-700 bg-white/60 dark:bg-dark-card/70 p-3">
+                        <p class="text-sm font-semibold text-gray-900 dark:text-white mb-3">Dónde ver</p>
+                        <div class="flex flex-wrap gap-2">
+                            ${item.watch_providers.map(provider => `
+                                <div class="inline-flex items-center gap-2 rounded-full bg-gray-100 dark:bg-dark-input px-3 py-1.5 text-sm">
+                                    ${provider.logo_path ? `<img src="${window.getImageUrl(provider.logo_path, 'w92')}" alt="${provider.provider_name}" class="h-5 w-5 rounded-full object-cover">` : ''}
+                                    <span class="text-gray-800 dark:text-gray-100">${provider.provider_name}</span>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                `;
+            } else {
+                watchProvidersContainer.classList.add('hidden');
+                watchProvidersContainer.innerHTML = '';
+            }
+        } else {
+            const watchProvidersContainer = document.getElementById('modal-watch-providers');
+            watchProvidersContainer.classList.add('hidden');
+            watchProvidersContainer.innerHTML = '';
         }
         
         // Meta tags
@@ -1477,12 +1516,19 @@ function disconnectDrive() {
  */
 function updateDriveStatus(connected) {
     console.log('[App] updateDriveStatus llamado con:', connected);
+    AppState.isDriveConnected = !!connected;
+
     const statusDiv = document.getElementById('drive-status');
     const connectBtn = document.getElementById('btn-connect-drive');
     const disconnectBtn = document.getElementById('btn-disconnect-drive');
-    
+
     console.log('[App] Elementos DOM:', { statusDiv, connectBtn, disconnectBtn });
-    
+
+    if (!statusDiv || !connectBtn || !disconnectBtn) {
+        console.warn('[App] No se encontraron elementos de UI de Drive');
+        return;
+    }
+
     if (connected) {
         statusDiv.innerHTML = `
             <div class="flex items-center gap-2 text-green-600 dark:text-green-400">

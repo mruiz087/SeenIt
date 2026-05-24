@@ -298,6 +298,36 @@ function normalizeSearchResult(item) {
     return baseData;
 }
 
+/**
+ * Obtiene proveedores de visualización de una serie o película
+ * @param {string} type - 'tv' o 'movie'
+ * @param {number} id - ID de TMDB
+ * @returns {Promise<Array>} Lista de proveedores normalizados
+ */
+async function getWatchProviders(type, id) {
+    try {
+        const response = await fetchTMDB(`/${type}/${id}/watch/providers`);
+        const countries = response.results || {};
+        const countryKey = Object.keys(countries).find(key => key.toUpperCase() === 'ES') || Object.keys(countries)[0];
+        const countryData = countryKey ? countries[countryKey] : {};
+
+        const providers = [
+            ...(countryData.flatrate || []),
+            ...(countryData.rent || []),
+            ...(countryData.buy || []),
+        ];
+
+        return providers.map(provider => ({
+            provider_name: provider.provider_name,
+            logo_path: provider.logo_path,
+            link_type: provider.link_type,
+        }));
+    } catch (error) {
+        console.error('[TMDB] Error obteniendo proveedores:', error);
+        return [];
+    }
+}
+
 // ============================================
 // BÚSQUEDA CON DEBOUNCE
 // ============================================
@@ -346,6 +376,7 @@ window.TMDBService = {
     normalizeMovieData,
     normalizeTVData,
     normalizeSearchResult,
+    getWatchProviders,
     searchWithDebounce,
 };
 
@@ -360,6 +391,7 @@ window.getImageUrl = getImageUrl;
 window.normalizeMovieData = normalizeMovieData;
 window.normalizeTVData = normalizeTVData;
 window.normalizeSearchResult = normalizeSearchResult;
+window.getWatchProviders = getWatchProviders;
 window.searchWithDebounce = searchWithDebounce;
 
 console.log('[TMDB] tmdb-service.js cargado');
