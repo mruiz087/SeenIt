@@ -259,6 +259,7 @@ function normalizeTVData(data) {
             poster: getImageUrl(s.poster_path, 'w342'),
             especial: s.season_number === 0,
         })),
+        status: data.status || 'Unknown',
         capitulos_vistos: [],
     };
 }

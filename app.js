@@ -96,6 +96,9 @@ function normalizeStoredShow(show) {
         ...season,
         especial: Boolean(season.especial || season.numero === 0),
     })) : [];
+    normalized.status = normalized.status || 'Unknown';
+    normalized.episodios_emitidos = Number(normalized.episodios_emitidos) || 0;
+    normalized.episodios_vistos_count = Number(normalized.episodios_vistos_count) || normalized.capitulos_vistos.length;
     return normalized;
 }
 
@@ -325,8 +328,8 @@ async function loadFromDrive() {
     
     try {
         const data = await loadUserData();
-        AppState.movies = data.movies || [];
-        AppState.shows = data.shows || [];
+        AppState.movies = (data.movies || []).map(normalizeStoredMovie);
+        AppState.shows = (data.shows || []).map(normalizeStoredShow);
         saveLocalData();
         renderFollowing();
         updateDriveStatus(true);
@@ -712,6 +715,38 @@ async function renderProfileView() {
     moviesContainer.innerHTML = renderProfileCards(filteredMovies, 'movie');
 }
 
+function getOfficialStatus(show) {
+    return String(show?.status || show?.tmdb_status || show?.official_status || 'Unknown')
+        .trim()
+        .toLowerCase();
+}
+
+function getShowProgressInfo(show) {
+    const watchedCount = Number(show.episodios_vistos_count || 0);
+    const airedCount = Number(show.episodios_emitidos || 0);
+    const progress = airedCount > 0 ? Math.min(100, Math.round((watchedCount / airedCount) * 100)) : 0;
+    const normalizedStatus = normalizeStatus(show.estado);
+    const officialStatus = getOfficialStatus(show);
+    const isOfficialEnded = officialStatus === 'ended' || officialStatus === 'canceled';
+
+    let colorClass = 'bg-gray-400';
+    if (normalizedStatus === 'dropped') {
+        colorClass = 'bg-red-500';
+    } else if (normalizedStatus === 'completed' && isOfficialEnded) {
+        colorClass = 'bg-purple-500';
+    } else if (normalizedStatus === 'watching' || normalizedStatus === 'completed') {
+        colorClass = 'bg-green-500';
+    }
+
+    return {
+        progress,
+        colorClass,
+        label: `${progress}%`,
+        airedCount,
+        watchedCount,
+    };
+}
+
 function filterProfileSeries(show) {
     const status = normalizeStatus(show.estado);
     if (AppState.profileSeriesFilter === 'all') return true;
@@ -736,6 +771,7 @@ function renderProfileCards(items, type) {
 
     return items.map(item => {
         const personalRating = item.puntuacion && item.puntuacion > 0 ? item.puntuacion : null;
+        const progressData = type === 'tv' ? getShowProgressInfo(item) : null;
 
         return `
         <div class="profile-card cursor-pointer hover:shadow-xl transition flex flex-col items-center w-full" onclick="openDetail('${type}', ${item.id_tmdb})">
@@ -748,6 +784,17 @@ function renderProfileCards(items, type) {
                 ` : ''}
             </div>
             <h3 class="font-semibold text-sm truncate w-full text-center">${item.titulo}</h3>
+            ${progressData ? `
+                <div class="w-full mt-2">
+                    <div class="flex justify-between items-center text-[10px] uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-1">
+                        <span>Progreso ${progressData.progress}%</span>
+                        <span class="text-xs font-semibold ${progressData.colorClass === 'bg-red-500' ? 'text-red-500' : progressData.colorClass === 'bg-purple-500' ? 'text-purple-500' : progressData.colorClass === 'bg-green-500' ? 'text-green-500' : 'text-gray-400'}">${progressData.label}</span>
+                    </div>
+                    <div class="h-2 rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
+                        <div class="h-full rounded-full ${progressData.colorClass}" style="width: ${progressData.progress}%;"></div>
+                    </div>
+                </div>
+            ` : ''}
             <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">${getStatusBadge(item.estado)}</p>
         </div>
     `;
@@ -853,6 +900,20 @@ async function refreshShowStatus(show) {
         return show;
     }
 
+    if (!show.status || show.status === 'Unknown' || show.status === 'unknown') {
+        try {
+            const freshDetails = await getTVDetails(show.id_tmdb);
+            if (freshDetails?.status) {
+                show.status = freshDetails.status;
+            }
+            if (!show.temporadas?.length && freshDetails?.temporadas?.length) {
+                show.temporadas = freshDetails.temporadas;
+            }
+        } catch (error) {
+            console.warn('[App] No se pudo refrescar el estado TMDB de la serie:', error);
+        }
+    }
+
     const regularSeasons = (show.temporadas || []).filter(season => !season.especial && season.numero !== 0);
     if (regularSeasons.length === 0) {
         show.estado = previousState;
@@ -863,6 +924,9 @@ async function refreshShowStatus(show) {
     const airedEpisodes = episodes.filter(isEpisodeAired);
     const futureEpisodes = episodes.filter(ep => !isEpisodeAired(ep));
     const watchedEpisodes = airedEpisodes.filter(ep => show.capitulos_vistos?.includes(ep.id));
+
+    show.episodios_emitidos = airedEpisodes.length;
+    show.episodios_vistos_count = watchedEpisodes.length;
 
     if (previousState === 'dropped') {
         show.estado = 'dropped';
@@ -875,11 +939,6 @@ async function refreshShowStatus(show) {
         } else {
             show.estado = 'completed';
         }
-        return show;
-    }
-
-    if (previousState === 'watching' || previousState === 'pending') {
-        show.estado = previousState;
         return show;
     }
 
