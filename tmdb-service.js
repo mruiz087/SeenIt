@@ -227,6 +227,19 @@ function normalizeMovieData(data) {
         overview: data.overview,
         vote_average: data.vote_average,
         runtime: data.runtime,
+        credits: {
+            cast: (data.credits?.cast || []).slice(0, 8).map(person => ({
+                name: person.name,
+                character: person.character,
+                profile_path: getImageUrl(person.profile_path, 'w185'),
+            })),
+        },
+        recommendations: (data.recommendations?.results || []).slice(0, 6).map(item => ({
+            id_tmdb: item.id,
+            titulo: item.title || item.name,
+            portada: getImageUrl(item.poster_path, 'w342'),
+            tipo: item.media_type === 'tv' ? 'tv' : 'movie',
+        })),
     };
 }
 
@@ -252,6 +265,19 @@ function normalizeTVData(data) {
         overview: data.overview,
         vote_average: data.vote_average,
         numero_temporadas: data.number_of_seasons,
+        credits: {
+            cast: (data.credits?.cast || []).slice(0, 8).map(person => ({
+                name: person.name,
+                character: person.character,
+                profile_path: getImageUrl(person.profile_path, 'w185'),
+            })),
+        },
+        recommendations: (data.recommendations?.results || []).slice(0, 6).map(item => ({
+            id_tmdb: item.id,
+            titulo: item.title || item.name,
+            portada: getImageUrl(item.poster_path, 'w342'),
+            tipo: item.media_type === 'tv' ? 'tv' : 'movie',
+        })),
         temporadas: seasons.map(s => ({
             numero: s.season_number,
             nombre: s.season_number === 0 ? 'Especiales' : (s.name || `Temporada ${s.season_number}`),

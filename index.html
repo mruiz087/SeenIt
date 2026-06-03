@@ -381,7 +381,7 @@
                         <div id="modal-watch-providers" class="hidden mb-4"></div>
                         
                         <!-- Rating -->
-                        <div class="mb-4">
+                        <div class="mb-4 border border-gray-200 dark:border-gray-700 rounded-xl p-3 bg-gray-50/80 dark:bg-dark-input/70">
                             <label class="block text-sm font-medium mb-2">Tu puntuación</label>
                             <div id="modal-rating" class="flex gap-1">
                                 <!-- Stars will be populated by JS -->
@@ -399,7 +399,7 @@
                         </div>
                         
                         <!-- Status -->
-                        <div class="mb-4">
+                        <div class="mb-4 border border-gray-200 dark:border-gray-700 rounded-xl p-3 bg-gray-50/80 dark:bg-dark-input/70">
                             <label class="block text-sm font-medium mb-2">Estado</label>
                             <select id="modal-status" class="w-full px-3 py-2 bg-white dark:bg-dark-input border border-gray-300 dark:border-gray-600 rounded-lg text-sm" onchange="setStatus(this.value)">
                                 <option value="pending">Pendiente</option>
@@ -421,6 +421,15 @@
                     </div>
                 </div>
                 
+                <div id="detail-tabs" class="hidden mb-4">
+                    <div class="flex gap-2">
+                        <button id="detail-info-tab" onclick="switchDetailTab('info')" class="px-4 py-2 rounded-lg text-sm font-medium transition bg-primary text-white">Información</button>
+                        <button id="detail-episodes-tab" onclick="switchDetailTab('episodes')" class="px-4 py-2 rounded-lg text-sm font-medium transition bg-gray-100 dark:bg-dark-input text-gray-700 dark:text-gray-200">Episodios</button>
+                    </div>
+                </div>
+
+                <div id="detail-info-panel" class="mb-6"></div>
+
                 <!-- Episodes Section (Series only) -->
                 <div id="modal-episodes" class="hidden">
                     <h3 class="text-lg font-bold mb-4">Episodios</h3>

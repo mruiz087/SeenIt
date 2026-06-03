@@ -804,6 +804,69 @@ function renderProfileCards(items, type) {
 /**
  * Renderiza la pestaña Ajustes
  */
+function renderDetailInfo(item) {
+    const container = document.getElementById('detail-info-panel');
+    if (!container) return;
+
+    const cast = item?.credits?.cast || [];
+    const recommendations = item?.recommendations || [];
+
+    container.innerHTML = `
+        <div class="space-y-6">
+            <section>
+                <h3 class="text-base font-semibold mb-3">Reparto</h3>
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    ${cast.length ? cast.map(person => `
+                        <article class="rounded-xl border border-gray-200 dark:border-gray-700 bg-white/70 dark:bg-dark-input/70 p-3 flex items-center gap-3">
+                            ${person.profile_path ? `<img src="${person.profile_path}" alt="${person.name}" class="w-12 h-12 rounded-full object-cover" onerror="this.onerror=null;this.style.display='none';">` : '<div class="w-12 h-12 rounded-full bg-gray-200 dark:bg-gray-700 flex items-center justify-center text-xs">🎭</div>'}
+                            <div class="min-w-0">
+                                <p class="text-sm font-semibold truncate">${person.name}</p>
+                                <p class="text-xs text-gray-500 dark:text-gray-400 truncate">${person.character || 'Actor'}</p>
+                            </div>
+                        </article>
+                    `).join('') : '<p class="text-sm text-gray-500 dark:text-gray-400">No hay reparto disponible.</p>'}
+                </div>
+            </section>
+
+            <section>
+                <h3 class="text-base font-semibold mb-3">Si te gustó esta ${item?.tipo === 'tv' ? 'serie' : 'película'}, también te gustará</h3>
+                <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
+                    ${recommendations.length ? recommendations.map(rec => `
+                        <article class="rounded-xl overflow-hidden border border-gray-200 dark:border-gray-700 bg-white/70 dark:bg-dark-input/70 cursor-pointer hover:shadow-lg transition" onclick="openDetail('${rec.tipo}', ${rec.id_tmdb})">
+                            ${rec.portada ? `<img src="${rec.portada}" alt="${rec.titulo}" class="w-full aspect-[2/3] object-cover">` : '<div class="w-full aspect-[2/3] bg-gray-200 dark:bg-gray-700 flex items-center justify-center text-2xl">🎬</div>'}
+                            <p class="p-3 text-sm font-medium truncate">${rec.titulo}</p>
+                        </article>
+                    `).join('') : '<p class="text-sm text-gray-500 dark:text-gray-400">No hay recomendaciones disponibles.</p>'}
+                </div>
+            </section>
+        </div>
+    `;
+}
+
+function switchDetailTab(tab) {
+    const infoTab = document.getElementById('detail-info-tab');
+    const episodesTab = document.getElementById('detail-episodes-tab');
+    const infoPanel = document.getElementById('detail-info-panel');
+    const episodesPanel = document.getElementById('modal-episodes');
+
+    if (!infoTab || !episodesTab || !infoPanel || !episodesPanel) return;
+
+    const active = 'bg-primary text-white';
+    const inactive = 'bg-gray-100 dark:bg-dark-input text-gray-700 dark:text-gray-200';
+
+    if (tab === 'episodes') {
+        infoTab.className = `px-4 py-2 rounded-lg text-sm font-medium transition ${inactive}`;
+        episodesTab.className = `px-4 py-2 rounded-lg text-sm font-medium transition ${active}`;
+        infoPanel.classList.add('hidden');
+        episodesPanel.classList.remove('hidden');
+    } else {
+        infoTab.className = `px-4 py-2 rounded-lg text-sm font-medium transition ${active}`;
+        episodesTab.className = `px-4 py-2 rounded-lg text-sm font-medium transition ${inactive}`;
+        infoPanel.classList.remove('hidden');
+        episodesPanel.classList.add('hidden');
+    }
+}
+
 function renderSettings() {
     if (typeof window.isAuthenticated === 'function') {
         updateDriveStatus(window.isAuthenticated());
@@ -1412,9 +1475,15 @@ async function openDetail(type, id_tmdb) {
     try {
         let item;
         if (type === 'movie') {
-            item = AppState.movies.find(m => m.id_tmdb === id_tmdb) || await getMovieDetails(id_tmdb);
+            item = AppState.movies.find(m => m.id_tmdb === id_tmdb);
+            if (!item?.credits?.cast?.length && !item?.recommendations?.length) {
+                item = await getMovieDetails(id_tmdb);
+            }
         } else {
-            item = AppState.shows.find(s => s.id_tmdb === id_tmdb) || await getTVDetails(id_tmdb);
+            item = AppState.shows.find(s => s.id_tmdb === id_tmdb);
+            if (!item?.credits?.cast?.length && !item?.recommendations?.length) {
+                item = await getTVDetails(id_tmdb);
+            }
         }
         
         AppState.selectedItem = { ...item, tipo: type };
@@ -1470,8 +1539,10 @@ async function openDetail(type, id_tmdb) {
         metaContainer.innerHTML = `
             <span class="px-2 py-1 bg-primary/20 text-primary text-xs rounded">${item.tipo === 'tv' ? 'Serie' : 'Película'}</span>
             ${item.fecha_estreno ? `<span class="px-2 py-1 bg-gray-200 dark:bg-gray-700 text-xs rounded">${new Date(item.fecha_estreno).getFullYear()}</span>` : ''}
-            ${item.vote_average ? `<span class="px-2 py-1 bg-yellow-500/20 text-yellow-500 text-xs rounded">TMDB: ${item.vote_average.toFixed(1)}</span>` : ''}
+            ${item.vote_average !== undefined && item.vote_average !== null ? `<span class="px-2 py-1 bg-yellow-500/20 text-yellow-500 text-xs rounded">⭐ TMDB ${Number(item.vote_average).toFixed(1)}</span>` : ''}
         `;
+
+        renderDetailInfo(item);
         
         // Rating
         document.getElementById('modal-rating-input').value = item.puntuacion || '';
@@ -1480,11 +1551,17 @@ async function openDetail(type, id_tmdb) {
         // Status
         document.getElementById('modal-status').value = item.estado || 'pending';
         
-        // Episodes (si es serie)
+        // Tabs / contenido detallado
         if (type === 'tv') {
+            document.getElementById('detail-tabs').classList.remove('hidden');
+            document.getElementById('detail-episodes-tab').classList.remove('hidden');
             await renderEpisodes(item);
+            switchDetailTab('info');
         } else {
+            document.getElementById('detail-tabs').classList.add('hidden');
+            document.getElementById('detail-episodes-tab').classList.add('hidden');
             document.getElementById('modal-episodes').classList.add('hidden');
+            switchDetailTab('info');
         }
         
     } catch (error) {
