@@ -252,6 +252,19 @@ async function updateStatus(type, id_tmdb, status) {
  * @param {number} id_tmdb - ID de TMDB de la serie
  * @param {string} episode - Formato "S01E01"
  */
+function compareEpisodeOrder(a, b) {
+    if (a.seasonNumber !== b.seasonNumber) return a.seasonNumber - b.seasonNumber;
+    return a.episodeNumber - b.episodeNumber;
+}
+
+function shouldAskToMarkPreviousEpisodes(show, episodes, episodeId) {
+    const targetEpisode = episodes.find(ep => ep.id === episodeId);
+    if (!targetEpisode || !isEpisodeAired(targetEpisode)) return false;
+    const airedEpisodes = episodes.filter(isEpisodeAired);
+    const previousEpisodes = airedEpisodes.filter(ep => compareEpisodeOrder(ep, targetEpisode) < 0);
+    return previousEpisodes.length > 0 && previousEpisodes.some(ep => !show.capitulos_vistos?.includes(ep.id));
+}
+
 async function toggleEpisode(id_tmdb, episode) {
     const show = AppState.shows.find(s => s.id_tmdb === id_tmdb);
     if (!show) return;
@@ -272,6 +285,12 @@ async function toggleEpisode(id_tmdb, episode) {
     if (index > -1) {
         show.capitulos_vistos.splice(index, 1);
     } else {
+        const previousEpisodes = episodes.filter(isEpisodeAired).filter(ep => compareEpisodeOrder(ep, targetEpisode) < 0 && !show.capitulos_vistos?.includes(ep.id));
+        if (previousEpisodes.length > 0 && !show.capitulos_vistos?.length && confirm('¿Quieres marcar también los episodios anteriores como vistos?')) {
+            previousEpisodes.forEach(ep => {
+                if (!show.capitulos_vistos.includes(ep.id)) show.capitulos_vistos.push(ep.id);
+            });
+        }
         show.capitulos_vistos.push(episode);
     }
 
@@ -483,6 +502,8 @@ function getFilteredItems() {
             return allItems.filter(item => item.estado === 'completed' || item.estado === 'terminada');
         case 'pending':
             return allItems.filter(item => item.estado === 'pending' || item.estado === 'pendiente');
+        case 'standby':
+            return allItems.filter(item => normalizeStatus(item.estado) === 'standby');
         default:
             return allItems;
     }
@@ -579,6 +600,8 @@ async function renderPendingList() {
     }
 
     pendingEpisodes.sort((a, b) => {
+        const titleCompare = (a.show.titulo || '').localeCompare(b.show.titulo || '', 'es', { sensitivity: 'base' });
+        if (titleCompare !== 0) return titleCompare;
         const dateA = a.episode.air_date || '9999-12-31';
         const dateB = b.episode.air_date || '9999-12-31';
         return dateA.localeCompare(dateB);
@@ -593,26 +616,25 @@ async function renderPendingList() {
         return;
     }
 
-    container.innerHTML = pendingEpisodes.map(({ show, episode, remainingCount }) => `
-        <div class="episode-card flex flex-row gap-4 items-center justify-between h-32 overflow-hidden">
-            <div class="w-24 h-28 flex-shrink-0">
-                ${show.portada ? `<img src="${show.portada}" alt="${show.titulo}" class="w-full h-full rounded-lg object-cover" onerror="this.onerror=null;this.style.display='none';">` : '<div class="w-full h-full rounded-lg bg-gray-700 flex items-center justify-center text-2xl">📺</div>'}
+    container.className = 'grid gap-4 md:grid-cols-2';
+    container.innerHTML = pendingEpisodes.map(({ show, episode, remainingCount }) => {
+        const watched = show.capitulos_vistos?.includes(episode.id);
+        return `
+        <article class="episode-card flex flex-row gap-4 items-center justify-between rounded-2xl border border-gray-200 dark:border-gray-700 bg-white/80 dark:bg-dark-card/90 p-4 shadow-sm hover:shadow-md transition">
+            <div class="w-24 h-28 flex-shrink-0 rounded-xl overflow-hidden">
+                ${show.portada ? `<img src="${show.portada}" alt="${show.titulo}" class="w-full h-full object-cover" onerror="this.onerror=null;this.style.display='none';">` : '<div class="w-full h-full bg-gray-700 flex items-center justify-center text-2xl">📺</div>'}
             </div>
             <div class="flex-1 min-w-0 flex flex-col justify-center gap-1">
-                <p class="text-[11px] uppercase tracking-wide text-primary font-semibold">
-                    <a href="#" onclick="openDetail('tv', ${show.id_tmdb});return false;" class="hover:underline">${show.titulo}</a>
-                </p>
-                <h3 class="font-semibold text-base leading-tight">
-                    ${formatEpisodeLabel(episode.seasonNumber, episode.episodeNumber)}
-                    <span class="text-sm font-normal text-gray-500 dark:text-gray-400">(${remainingCount} episodios restantes)</span>
-                </h3>
-                <p class="text-sm text-gray-500 dark:text-gray-400">${episode.air_date ? new Date(episode.air_date).toLocaleDateString('es-ES') : 'Fecha sin definir'}</p>
+                <p class="text-[11px] uppercase tracking-wide text-primary font-semibold"><a href="#" onclick="openDetail('tv', ${show.id_tmdb});return false;" class="hover:underline">${show.titulo}</a></p>
+                <h3 class="font-semibold text-base leading-tight">${formatEpisodeLabel(episode.seasonNumber, episode.episodeNumber)} <span class="text-sm font-normal text-gray-500 dark:text-gray-400">(${remainingCount} restantes)</span></h3>
+                <p class="text-sm text-gray-500 dark:text-gray-400">${episode.name || 'Sin título'}</p>
+                <p class="text-xs text-gray-400">${episode.air_date ? new Date(episode.air_date).toLocaleDateString('es-ES') : 'Fecha sin definir'}</p>
             </div>
-            <label class="flex items-center justify-center w-10 h-10 rounded-lg bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-100 cursor-pointer shrink-0">
-                <input type="checkbox" class="h-5 w-5 accent-green-600" onchange="toggleEpisode(${show.id_tmdb}, '${episode.id}')" ${show.capitulos_vistos?.includes(episode.id) ? 'checked' : ''}>
-            </label>
-        </div>
-    `).join('');
+            <button type="button" onclick="toggleEpisode(${show.id_tmdb}, '${episode.id}')" class="shrink-0 inline-flex h-12 w-12 items-center justify-center rounded-full border ${watched ? 'bg-green-500 border-green-500 text-white' : 'bg-gray-100 dark:bg-gray-700 border-gray-200 dark:border-gray-600 text-gray-500 dark:text-gray-200'} shadow-sm hover:scale-105 transition" aria-label="Marcar episodio como visto">
+                ✓
+            </button>
+        </article>`;
+    }).join('');
 }
 
 /**
@@ -643,7 +665,11 @@ async function renderUpcomingList() {
         futureEpisodes.forEach(episode => upcomingEpisodes.push({ show, episode }));
     }
 
-    upcomingEpisodes.sort((a, b) => (a.episode.air_date || '9999-12-31').localeCompare(b.episode.air_date || '9999-12-31'));
+    upcomingEpisodes.sort((a, b) => {
+        const titleCompare = (a.show.titulo || '').localeCompare(b.show.titulo || '', 'es', { sensitivity: 'base' });
+        if (titleCompare !== 0) return titleCompare;
+        return (a.episode.air_date || '9999-12-31').localeCompare(b.episode.air_date || '9999-12-31');
+    });
 
     if (upcomingEpisodes.length === 0) {
         container.innerHTML = `
@@ -663,27 +689,32 @@ async function renderUpcomingList() {
 
     const sortedDates = Object.keys(grouped).sort((a, b) => a.localeCompare(b));
 
-    container.innerHTML = sortedDates.map(date => `
-        <div>
-            <h3 class="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-3">${new Date(date).toLocaleDateString('es-ES')}</h3>
-            <div class="space-y-3">
-                ${grouped[date].map(({ show, episode }) => `
-                    <div class="episode-card flex flex-row gap-4 items-center h-32 overflow-hidden">
-                        <div class="w-24 h-28 flex-shrink-0">
-                            ${show.portada ? `<img src="${show.portada}" alt="${show.titulo}" class="w-full h-full rounded-lg object-cover" onerror="this.onerror=null;this.style.display='none';">` : '<div class="w-full h-full rounded-lg bg-gray-700 flex items-center justify-center text-2xl">📺</div>'}
+    container.className = 'space-y-5';
+    container.innerHTML = sortedDates.map(date => {
+        const items = grouped[date];
+        const collapsed = items.length > 3;
+        return `
+        <section class="rounded-2xl border border-gray-200 dark:border-gray-700 bg-white/80 dark:bg-dark-card/90 p-4 shadow-sm">
+            <button type="button" class="w-full flex items-center justify-between text-left mb-3" onclick="this.parentElement.querySelector('.upcoming-day-items').classList.toggle('hidden'); this.querySelector('span:last-child').textContent = this.parentElement.querySelector('.upcoming-day-items').classList.contains('hidden') ? '＋' : '−';">
+                <span class="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">${new Date(date).toLocaleDateString('es-ES')}</span>
+                <span class="text-xs text-primary">${collapsed ? '＋' : '−'}</span>
+            </button>
+            <div class="upcoming-day-items ${collapsed ? 'hidden' : ''} grid gap-3 md:grid-cols-2">
+                ${items.map(({ show, episode }) => `
+                    <article class="episode-card flex flex-row gap-4 items-center rounded-2xl border border-gray-100 dark:border-gray-700 bg-gray-50/80 dark:bg-dark-input/80 p-4 shadow-sm hover:shadow-md transition">
+                        <div class="w-24 h-28 flex-shrink-0 rounded-xl overflow-hidden">
+                            ${show.portada ? `<img src="${show.portada}" alt="${show.titulo}" class="w-full h-full object-cover" onerror="this.onerror=null;this.style.display='none';">` : '<div class="w-full h-full bg-gray-700 flex items-center justify-center text-2xl">📺</div>'}
                         </div>
                         <div class="flex-1 min-w-0 flex flex-col justify-center gap-1">
-                            <p class="text-[11px] uppercase tracking-wide text-primary font-semibold">
-                                <a href="#" onclick="openDetail('tv', ${show.id_tmdb});return false;" class="hover:underline">${show.titulo}</a>
-                            </p>
+                            <p class="text-[11px] uppercase tracking-wide text-primary font-semibold"><a href="#" onclick="openDetail('tv', ${show.id_tmdb});return false;" class="hover:underline">${show.titulo}</a></p>
                             <h4 class="font-semibold text-base leading-tight">${episode.id} — ${episode.name}</h4>
                             <p class="text-sm text-gray-500 dark:text-gray-400">${episode.air_date ? new Date(episode.air_date).toLocaleDateString('es-ES') : 'Fecha sin definir'}</p>
                         </div>
-                    </div>
+                    </article>
                 `).join('')}
             </div>
-        </div>
-    `).join('');
+        </section>`;
+    }).join('');
 }
 
 /**
@@ -708,8 +739,12 @@ async function renderProfileView() {
 
     await Promise.all(AppState.shows.map(show => refreshShowStatus(show)));
 
-    const filteredSeries = AppState.shows.filter(show => filterProfileSeries(show));
-    const filteredMovies = AppState.movies.filter(movie => filterProfileMovies(movie));
+    const filteredSeries = AppState.shows
+        .filter(show => filterProfileSeries(show))
+        .sort((a, b) => (a.titulo || '').localeCompare(b.titulo || '', 'es', { sensitivity: 'base' }));
+    const filteredMovies = AppState.movies
+        .filter(movie => filterProfileMovies(movie))
+        .sort((a, b) => (a.titulo || '').localeCompare(b.titulo || '', 'es', { sensitivity: 'base' }));
 
     seriesContainer.innerHTML = renderProfileCards(filteredSeries, 'tv');
     moviesContainer.innerHTML = renderProfileCards(filteredMovies, 'movie');
@@ -810,14 +845,25 @@ function renderDetailInfo(item) {
 
     const cast = item?.credits?.cast || [];
     const recommendations = item?.recommendations || [];
+    const overview = item?.overview || 'Sin descripción disponible.';
+    const voteAverage = item?.vote_average !== undefined && item?.vote_average !== null ? Number(item.vote_average).toFixed(1) : 'N/D';
 
     container.innerHTML = `
         <div class="space-y-6">
+            <section class="rounded-2xl border border-gray-200 dark:border-gray-700 bg-white/70 dark:bg-dark-input/70 p-4">
+                <h3 class="text-base font-semibold mb-2">Información</h3>
+                <p class="text-sm text-gray-600 dark:text-gray-300 leading-relaxed">${overview}</p>
+                <div class="mt-3 flex flex-wrap gap-2 text-xs">
+                    <span class="px-2.5 py-1 rounded-full bg-yellow-100 dark:bg-yellow-900/40 text-yellow-700 dark:text-yellow-200">⭐ Puntuación TMDB: ${voteAverage}</span>
+                    ${item?.generos?.length ? `<span class="px-2.5 py-1 rounded-full bg-primary/10 text-primary">${item.generos.slice(0, 3).join(' · ')}</span>` : ''}
+                </div>
+            </section>
+
             <section>
                 <h3 class="text-base font-semibold mb-3">Reparto</h3>
-                <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div class="flex gap-3 overflow-x-auto pb-2 snap-x snap-mandatory">
                     ${cast.length ? cast.map(person => `
-                        <article class="rounded-xl border border-gray-200 dark:border-gray-700 bg-white/70 dark:bg-dark-input/70 p-3 flex items-center gap-3">
+                        <article class="min-w-[180px] snap-start rounded-xl border border-gray-200 dark:border-gray-700 bg-white/70 dark:bg-dark-input/70 p-3 flex items-center gap-3">
                             ${person.profile_path ? `<img src="${person.profile_path}" alt="${person.name}" class="w-12 h-12 rounded-full object-cover" onerror="this.onerror=null;this.style.display='none';">` : '<div class="w-12 h-12 rounded-full bg-gray-200 dark:bg-gray-700 flex items-center justify-center text-xs">🎭</div>'}
                             <div class="min-w-0">
                                 <p class="text-sm font-semibold truncate">${person.name}</p>
@@ -830,10 +876,13 @@ function renderDetailInfo(item) {
 
             <section>
                 <h3 class="text-base font-semibold mb-3">Si te gustó esta ${item?.tipo === 'tv' ? 'serie' : 'película'}, también te gustará</h3>
-                <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
+                <div class="flex gap-3 overflow-x-auto pb-2 snap-x snap-mandatory">
                     ${recommendations.length ? recommendations.map(rec => `
-                        <article class="rounded-xl overflow-hidden border border-gray-200 dark:border-gray-700 bg-white/70 dark:bg-dark-input/70 cursor-pointer hover:shadow-lg transition" onclick="openDetail('${rec.tipo}', ${rec.id_tmdb})">
-                            ${rec.portada ? `<img src="${rec.portada}" alt="${rec.titulo}" class="w-full aspect-[2/3] object-cover">` : '<div class="w-full aspect-[2/3] bg-gray-200 dark:bg-gray-700 flex items-center justify-center text-2xl">🎬</div>'}
+                        <article class="min-w-[140px] max-w-[140px] snap-start rounded-xl overflow-hidden border border-gray-200 dark:border-gray-700 bg-white/70 dark:bg-dark-input/70 hover:shadow-lg transition">
+                            <div class="relative" onclick="openDetail('${rec.tipo}', ${rec.id_tmdb})">
+                                ${rec.portada ? `<img src="${rec.portada}" alt="${rec.titulo}" class="w-full aspect-[2/3] object-cover">` : '<div class="w-full aspect-[2/3] bg-gray-200 dark:bg-gray-700 flex items-center justify-center text-2xl">🎬</div>'}
+                                <button type="button" onclick="event.stopPropagation(); addItem('${rec.tipo}', ${rec.id_tmdb});" class="absolute top-2 right-2 rounded-full bg-black/70 text-white w-8 h-8 flex items-center justify-center text-sm shadow-lg hover:bg-primary transition">＋</button>
+                            </div>
                             <p class="p-3 text-sm font-medium truncate">${rec.titulo}</p>
                         </article>
                     `).join('') : '<p class="text-sm text-gray-500 dark:text-gray-400">No hay recomendaciones disponibles.</p>'}
@@ -893,6 +942,7 @@ function normalizeStatus(status) {
     if (normalized === 'abandonado') return 'dropped';
     if (normalized === 'completado') return 'completed';
     if (normalized === 'vista') return 'completed';
+    if (normalized === 'standby' || normalized === 'ver en otro momento') return 'standby';
     return normalized;
 }
 
@@ -996,6 +1046,10 @@ async function refreshShowStatus(show) {
         return show;
     }
 
+    if (previousState === 'pending' || previousState === 'standby') {
+        return show;
+    }
+
     if (previousState === 'completed') {
         if (futureEpisodes.some(ep => !show.capitulos_vistos?.includes(ep.id))) {
             show.estado = 'watching';
@@ -1036,34 +1090,31 @@ function renderSearchResults(results) {
         return;
     }
 
-    grid.innerHTML = AppState.lastSearchResults.map(item => {
+    const sortedResults = [...AppState.lastSearchResults].sort((a, b) => (a.titulo || '').localeCompare(b.titulo || '', 'es', { sensitivity: 'base' }));
+
+    grid.innerHTML = sortedResults.map(item => {
         const added = isItemAlreadyAdded(item.tipo, item.id_tmdb);
 
         return `
-        <div class="bg-white dark:bg-dark-card rounded-xl overflow-hidden shadow-lg hover:shadow-xl transition group">
-            <div class="aspect-[2/3] bg-gray-200 dark:bg-gray-700 relative">
-                ${item.portada 
+        <article class="bg-white dark:bg-dark-card rounded-xl overflow-hidden shadow-lg hover:shadow-xl transition group border border-transparent hover:border-primary/30">
+            <div class="aspect-[2/3] bg-gray-200 dark:bg-gray-700 relative cursor-pointer" onclick="openDetail('${item.tipo}', ${item.id_tmdb})">
+                ${item.portada
                     ? `<img src="${item.portada}" alt="${item.titulo}" class="w-full h-full object-cover group-hover:scale-105 transition duration-300" onerror="this.onerror=null;this.src='https://via.placeholder.com/500x750?text=Sin+imagen';">`
                     : `<div class="w-full h-full flex items-center justify-center text-4xl">🎬</div>`
                 }
-                <div class="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-2">
-                    <span class="text-white text-xs font-medium">${item.tipo === 'tv' ? '📺 Serie' : '🎬 Película'}</span>
+                <button type="button" onclick="event.stopPropagation();${added ? '' : `addItem('${item.tipo}', ${item.id_tmdb})`}" class="absolute top-2 right-2 rounded-full ${added ? 'bg-emerald-600' : 'bg-black/75'} text-white w-8 h-8 flex items-center justify-center text-sm shadow-lg hover:scale-105 transition" ${added ? 'disabled' : ''}>
+                    ${added ? '✓' : '+'}
+                </button>
+                <div class="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/85 to-transparent p-2">
+                    <span class="text-white text-[11px] uppercase tracking-wide font-semibold">${item.tipo === 'tv' ? '📺 Serie' : '🎬 Película'}</span>
                 </div>
             </div>
             <div class="p-3">
                 <h3 class="font-semibold text-sm truncate">${item.titulo}</h3>
-                <p class="text-xs text-gray-500 dark:text-gray-400 mt-1 mb-2">
-                    ${item.fecha_estreno ? new Date(item.fecha_estreno).getFullYear() : 'Sin fecha'}
-                </p>
-                <button 
-                    onclick="${added ? '' : `addItem('${item.tipo}', ${item.id_tmdb})` }"
-                    class="w-full px-3 py-2 rounded-lg text-xs font-medium transition ${added ? 'bg-gray-600 text-white cursor-not-allowed' : 'bg-primary text-white hover:bg-primary/90'}"
-                    ${added ? 'disabled' : ''}
-                >
-                    ${added ? 'Añadida' : '+ Añadir'}
-                </button>
+                <p class="text-xs text-gray-500 dark:text-gray-400 mt-1 mb-2">${item.fecha_estreno ? new Date(item.fecha_estreno).getFullYear() : 'Sin fecha'}</p>
+                <p class="text-[11px] text-gray-500 dark:text-gray-400 line-clamp-2">${item.overview || 'Sin descripción disponible.'}</p>
             </div>
-        </div>`;
+        </article>`;
     }).join('');
 }
 
@@ -1268,6 +1319,12 @@ async function toggleEpisodeAndUpdateSeason(id_tmdb, episode, seasonNumber, seas
     if (index > -1) {
         show.capitulos_vistos.splice(index, 1);
     } else {
+        const previousEpisodes = episodes.filter(isEpisodeAired).filter(ep => compareEpisodeOrder(ep, targetEpisode) < 0 && !show.capitulos_vistos?.includes(ep.id));
+        if (previousEpisodes.length > 0 && !show.capitulos_vistos?.length && confirm('¿Quieres marcar también los episodios anteriores como vistos?')) {
+            previousEpisodes.forEach(ep => {
+                if (!show.capitulos_vistos.includes(ep.id)) show.capitulos_vistos.push(ep.id);
+            });
+        }
         show.capitulos_vistos.push(episode);
     }
 
@@ -1466,6 +1523,23 @@ function renderStars(rating) {
  * @param {string} type - 'movie' o 'tv'
  * @param {number} id_tmdb - ID de TMDB
  */
+function mergeDetailItem(existingItem, freshDetails) {
+    if (!existingItem) return freshDetails;
+    return {
+        ...existingItem,
+        ...freshDetails,
+        tipo: existingItem.tipo || freshDetails.tipo || 'tv',
+        estado: existingItem.estado || freshDetails.estado || 'pending',
+        puntuacion: existingItem.puntuacion ?? freshDetails.puntuacion ?? 0,
+        capitulos_vistos: existingItem.capitulos_vistos || freshDetails.capitulos_vistos || [],
+        credits: {
+            ...(existingItem.credits || {}),
+            ...(freshDetails.credits || {}),
+        },
+        recommendations: freshDetails.recommendations || existingItem.recommendations || [],
+    };
+}
+
 async function openDetail(type, id_tmdb) {
     const modal = document.getElementById('detail-modal');
     modal.classList.remove('hidden');
@@ -1473,17 +1547,16 @@ async function openDetail(type, id_tmdb) {
     showLoading(true);
     
     try {
-        let item;
-        if (type === 'movie') {
-            item = AppState.movies.find(m => m.id_tmdb === id_tmdb);
-            if (!item?.credits?.cast?.length && !item?.recommendations?.length) {
-                item = await getMovieDetails(id_tmdb);
-            }
-        } else {
-            item = AppState.shows.find(s => s.id_tmdb === id_tmdb);
-            if (!item?.credits?.cast?.length && !item?.recommendations?.length) {
-                item = await getTVDetails(id_tmdb);
-            }
+        let item = type === 'movie'
+            ? AppState.movies.find(m => m.id_tmdb === id_tmdb)
+            : AppState.shows.find(s => s.id_tmdb === id_tmdb);
+
+        const needsFreshDetails = !item?.overview || !item?.credits?.cast?.length || !item?.recommendations?.length;
+
+        if (needsFreshDetails) {
+            item = type === 'movie'
+                ? mergeDetailItem(item, await getMovieDetails(id_tmdb))
+                : mergeDetailItem(item, await getTVDetails(id_tmdb));
         }
         
         AppState.selectedItem = { ...item, tipo: type };
@@ -1870,17 +1943,16 @@ function showLoading(show) {
  * @returns {string} HTML del badge
  */
 function getStatusBadge(status) {
+    const normalized = normalizeStatus(status);
     const badges = {
         'pending': '<span class="px-2 py-1 bg-gray-200 dark:bg-gray-700 text-xs rounded">Pendiente</span>',
-        'pendiente': '<span class="px-2 py-1 bg-gray-200 dark:bg-gray-700 text-xs rounded">Pendiente</span>',
         'watching': '<span class="px-2 py-1 bg-blue-200 dark:bg-blue-900 text-blue-800 dark:text-blue-200 text-xs rounded">Viendo</span>',
-        'siguiendo': '<span class="px-2 py-1 bg-blue-200 dark:bg-blue-900 text-blue-800 dark:text-blue-200 text-xs rounded">Siguiendo</span>',
         'completed': '<span class="px-2 py-1 bg-green-200 dark:bg-green-900 text-green-800 dark:text-green-200 text-xs rounded">Completado</span>',
-        'terminada': '<span class="px-2 py-1 bg-green-200 dark:bg-green-900 text-green-800 dark:text-green-200 text-xs rounded">Terminada</span>',
         'dropped': '<span class="px-2 py-1 bg-red-200 dark:bg-red-900 text-red-800 dark:text-red-200 text-xs rounded">Abandonado</span>',
+        'standby': '<span class="px-2 py-1 bg-amber-200 dark:bg-amber-900 text-amber-800 dark:text-amber-100 text-xs rounded">Ver en otro momento</span>',
     };
-    
-    return badges[status] || badges['pending'];
+
+    return badges[normalized] || badges['pending'];
 }
 
 /**
