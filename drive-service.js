@@ -30,7 +30,7 @@ const DISCOVERY_DOC = 'https://www.googleapis.com/discovery/v1/apis/drive/v3/res
 
 if (CLIENT_ID === '797642945177-qi6vaqh10ldb89p339snodostrbvfue8.apps.googleusercontent.com' ||
     API_KEY === 'AIzaSyD2XPrBEzt54z3hvNFT6YbHR9SSIzmCbQ') {
-    console.warn('[Drive] ⚠️ Usando credenciales por defecto. Reemplaza CONFIG_GOOGLE_CLIENT_ID/CONFIG_GOOGLE_API_KEY en config.js');
+    console.warn('[Drive] ⚠️ Usando credenciales por defecto. Copia config.example.js → config.js con tus credenciales.');
 }
 
 const DATA_FILE_NAME = 'tv_showtime_data.json';
@@ -209,7 +209,7 @@ function authenticate() {
 
         try {
             tokenClient.requestAccessToken({
-                prompt: 'consent',
+                prompt: getPersistedDriveToken() ? '' : 'consent',
             });
         } catch (error) {
             console.error('[Drive] Error iniciando autenticación:', error);
@@ -369,6 +369,10 @@ async function saveUserData(data) {
         // Validar estructura
         if (!data.movies || !data.shows) {
             throw new Error('Estructura de datos inválida. Debe contener movies y shows.');
+        }
+
+        if (!dataFileId) {
+            await findOrCreateDataFile();
         }
         
         // Actualizar el archivo

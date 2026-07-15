@@ -13,15 +13,15 @@
  * - Sincronización con Google Drive
  */
 
-const CACHE_NAME = 'seenit-v1';
-const STATIC_CACHE = 'seenit-static-v1';
-const DYNAMIC_CACHE = 'seenit-dynamic-v1';
+const STATIC_CACHE = 'seenit-static-v13';
+const DYNAMIC_CACHE = 'seenit-dynamic-v13';
 
 // Archivos estáticos que se cachearán al instalar
 const STATIC_FILES = [
     './',
     './index.html',
     './manifest.json',
+    './styles.css',
     './app.js',
     './drive-service.js',
     './tmdb-service.js',

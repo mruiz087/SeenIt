@@ -17,16 +17,24 @@ const AppState = {
     shows: [],
     currentTab: 'series',
     currentSubTab: 'pending-list',
+    currentMoviesSubTab: 'pending-list',
     currentProfileTab: 'series',
     currentFilter: 'all',
     profileSeriesFilter: 'all',
     profileMoviesFilter: 'all',
+    profileExpanded: { series: false, movies: false },
+    detailRecsExpanded: false,
     lastSearchResults: [],
     selectedItem: null,
     isDriveConnected: false,
     isSyncing: false,
     expandedSeasons: {}, // Guardar qué temporadas están expandidas
+    timelineHistoryVisible: { 'pending-list': 0, upcoming: 4 },
+    timelineHistoryCache: {},
 };
+
+let appInitialized = false;
+let syncToDriveTimeout = null;
 
 // ============================================
 // INICIALIZACIÓN
@@ -36,6 +44,12 @@ const AppState = {
  * Inicializa la aplicación
  */
 async function initApp() {
+    if (appInitialized) {
+        console.log('[App] initApp ya ejecutado, omitiendo');
+        return;
+    }
+    appInitialized = true;
+
     console.log('[App] Inicializando aplicación...');
     
     // Cargar datos locales
@@ -83,6 +97,7 @@ function loadLocalData() {
 
 function normalizeStoredMovie(movie) {
     const normalized = { ...movie };
+    normalized.tipo = 'movie';
     normalized.estado = normalizeStatus(normalized.estado);
     normalized.capitulos_vistos = Array.isArray(normalized.capitulos_vistos) ? normalized.capitulos_vistos : [];
     return normalized;
@@ -90,8 +105,12 @@ function normalizeStoredMovie(movie) {
 
 function normalizeStoredShow(show) {
     const normalized = { ...show };
+    normalized.tipo = 'tv';
     normalized.estado = normalizeStatus(normalized.estado);
     normalized.capitulos_vistos = Array.isArray(normalized.capitulos_vistos) ? normalized.capitulos_vistos : [];
+    normalized.capitulos_vistos_fecha = normalized.capitulos_vistos_fecha && typeof normalized.capitulos_vistos_fecha === 'object'
+        ? normalized.capitulos_vistos_fecha
+        : {};
     normalized.temporadas = Array.isArray(normalized.temporadas) ? normalized.temporadas.map(season => ({
         ...season,
         especial: Boolean(season.especial || season.numero === 0),
@@ -110,6 +129,7 @@ function saveLocalData() {
         const data = {
             movies: AppState.movies,
             shows: AppState.shows,
+            lastModified: new Date().toISOString(),
         };
         localStorage.setItem('seenit_data', JSON.stringify(data));
     } catch (error) {
@@ -281,17 +301,36 @@ async function toggleEpisode(id_tmdb, episode) {
         show.capitulos_vistos = [];
     }
 
+    const wasStandby = normalizeStatus(show.estado) === 'standby';
+    const wasDropped = normalizeStatus(show.estado) === 'dropped';
     const index = show.capitulos_vistos.indexOf(episode);
+    let markedWatched = false;
+    const newlyWatchedIds = [];
     if (index > -1) {
         show.capitulos_vistos.splice(index, 1);
+        clearEpisodeWatchedRecord(show, episode);
     } else {
         const previousEpisodes = episodes.filter(isEpisodeAired).filter(ep => compareEpisodeOrder(ep, targetEpisode) < 0 && !show.capitulos_vistos?.includes(ep.id));
-        if (previousEpisodes.length > 0 && !show.capitulos_vistos?.length && confirm('¿Quieres marcar también los episodios anteriores como vistos?')) {
+        if (shouldAskToMarkPreviousEpisodes(show, episodes, episode) && confirm('¿Quieres marcar también los episodios anteriores como vistos?')) {
             previousEpisodes.forEach(ep => {
-                if (!show.capitulos_vistos.includes(ep.id)) show.capitulos_vistos.push(ep.id);
+                if (!show.capitulos_vistos.includes(ep.id)) {
+                    show.capitulos_vistos.push(ep.id);
+                    newlyWatchedIds.push(ep.id);
+                }
             });
         }
         show.capitulos_vistos.push(episode);
+        newlyWatchedIds.push(episode);
+        markedWatched = true;
+        recordEpisodesWatched(show, newlyWatchedIds);
+        bumpPendingHistoryAfterWatch();
+    }
+
+    if (wasStandby && markedWatched) {
+        show.estado = 'watching';
+    }
+    if (wasDropped && markedWatched) {
+        show.estado = 'watching';
     }
 
     await refreshShowStatus(show);
@@ -300,8 +339,9 @@ async function toggleEpisode(id_tmdb, episode) {
     if (AppState.selectedItem?.tipo === 'tv' && AppState.selectedItem.id_tmdb === id_tmdb) {
         AppState.selectedItem = { ...show, tipo: 'tv' };
         await renderEpisodes(AppState.selectedItem);
+        updateDetailHero(AppState.selectedItem);
     }
-    renderCurrentView();
+    await renderCurrentView();
 }
 
 
@@ -311,9 +351,20 @@ async function toggleEpisode(id_tmdb, episode) {
 // ============================================
 
 /**
- * Sincroniza datos con Google Drive en segundo plano
+ * Sincroniza datos con Google Drive en segundo plano (con debounce)
  */
-async function syncToDrive() {
+function syncToDrive() {
+    if (!isAuthenticated()) {
+        return;
+    }
+
+    clearTimeout(syncToDriveTimeout);
+    syncToDriveTimeout = setTimeout(() => {
+        syncToDriveNow();
+    }, 2000);
+}
+
+async function syncToDriveNow() {
     if (!isAuthenticated() || AppState.isSyncing) {
         return;
     }
@@ -324,6 +375,7 @@ async function syncToDrive() {
         const data = {
             movies: AppState.movies,
             shows: AppState.shows,
+            lastModified: new Date().toISOString(),
         };
         await saveUserData(data);
         console.log('[App] Datos sincronizados con Drive');
@@ -371,66 +423,54 @@ async function loadFromDrive() {
  */
 function switchTab(tab) {
     AppState.currentTab = tab;
-    
-    document.querySelectorAll('.tab-content').forEach(el => {
-        el.classList.add('hidden');
-    });
 
-    const content = document.getElementById(`content-${tab}`);
-    if (content) {
-        content.classList.remove('hidden');
+    if (tab === 'series') {
+        // Al entrar en Series siempre partimos de "Ver a continuación" (historial arriba, oculto)
+        AppState.timelineHistoryVisible['pending-list'] = 0;
+        AppState.timelineHistoryVisible['upcoming'] = 4;
+        window.__seenitHistoryLoadReady = false;
     }
 
-    document.querySelectorAll('.tab-btn').forEach(btn => {
-        btn.classList.remove('border-primary', 'text-primary');
-        btn.classList.add('border-transparent', 'text-gray-500', 'dark:text-gray-400');
-    });
+    document.querySelectorAll('.tab-content').forEach(el => el.classList.add('hidden'));
+    document.getElementById(`content-${tab}`)?.classList.remove('hidden');
 
-    const desktopTab = document.getElementById(`tab-${tab}`);
-    if (desktopTab) {
-        desktopTab.classList.remove('border-transparent', 'text-gray-500', 'dark:text-gray-400');
-        desktopTab.classList.add('border-primary', 'text-primary');
+    document.querySelectorAll('.tvst-bottom-nav-btn').forEach(btn => btn.classList.remove('is-active'));
+    document.querySelector(`.tvst-bottom-nav-btn[data-tab="${tab}"]`)?.classList.add('is-active');
+
+    renderCurrentView();
+}
+
+function switchSubTab(subTab) {
+    AppState.currentSubTab = subTab;
+    if (subTab === 'pending-list') {
+        AppState.timelineHistoryVisible['pending-list'] = 0;
+        window.__seenitHistoryLoadReady = false;
+    } else {
+        AppState.timelineHistoryVisible[subTab] = 4;
     }
 
-    document.querySelectorAll('.mobile-tab-btn').forEach(btn => {
-        btn.classList.remove('text-primary');
-        btn.classList.add('text-gray-500');
-    });
+    document.querySelectorAll('#content-series .tvst-subnav-tab').forEach(btn => btn.classList.remove('is-active'));
+    document.getElementById(`series-subtab-${subTab}`)?.classList.add('is-active');
 
-    const mobileTab = document.querySelector(`.mobile-tab-btn[data-tab="${tab}"]`);
-    if (mobileTab) {
-        mobileTab.classList.remove('text-gray-500');
-        mobileTab.classList.add('text-primary');
+    document.querySelectorAll('#content-series .tvst-tab-panel').forEach(el => el.classList.add('hidden'));
+    document.getElementById(`subtab-content-${subTab}`)?.classList.remove('hidden');
+
+    const continueBar = document.getElementById('series-continue-bar');
+    if (continueBar) {
+        continueBar.classList.toggle('is-hidden', subTab === 'upcoming');
     }
 
     renderCurrentView();
 }
 
-/**
- * Cambia entre subtabs de la sección Series o Perfil
- */
-function switchSubTab(subTab) {
-    AppState.currentSubTab = subTab;
+function switchMoviesSubTab(subTab) {
+    AppState.currentMoviesSubTab = subTab;
 
-    document.querySelectorAll('[id^="subtab-"]').forEach(btn => {
-        btn.classList.remove('bg-primary', 'text-white');
-        btn.classList.add('bg-dark-input', 'text-gray-200');
-    });
+    document.querySelectorAll('#content-movies .tvst-subnav-tab').forEach(btn => btn.classList.remove('is-active'));
+    document.getElementById(`movies-subtab-${subTab}`)?.classList.add('is-active');
 
-    const activeBtn = document.getElementById(`subtab-${subTab}`);
-    if (activeBtn) {
-        activeBtn.classList.remove('bg-dark-input', 'text-gray-200');
-        activeBtn.classList.add('bg-primary', 'text-white');
-    }
-
-    document.querySelectorAll('[id^="subtab-content-"]').forEach(el => {
-        el.classList.add('hidden');
-    });
-
-    const activeContent = document.getElementById(`subtab-content-${subTab}`);
-    if (activeContent) {
-        activeContent.classList.remove('hidden');
-    }
+    document.querySelectorAll('#content-movies .tvst-tab-panel').forEach(el => el.classList.add('hidden'));
+    document.getElementById(`movies-subtab-content-${subTab}`)?.classList.remove('hidden');
 
     renderCurrentView();
 }
@@ -438,75 +478,18 @@ function switchSubTab(subTab) {
 function switchProfileTab(tab) {
     AppState.currentProfileTab = tab;
 
-    document.getElementById('profile-tab-series')?.classList.remove('bg-primary', 'text-white');
-    document.getElementById('profile-tab-series')?.classList.add('bg-dark-input', 'text-gray-200');
-    document.getElementById('profile-tab-movies')?.classList.remove('bg-primary', 'text-white');
-    document.getElementById('profile-tab-movies')?.classList.add('bg-dark-input', 'text-gray-200');
+    document.querySelectorAll('.tvst-profile-tab').forEach(btn => btn.classList.remove('is-active'));
+    document.getElementById(`profile-tab-${tab}`)?.classList.add('is-active');
 
     if (tab === 'series') {
-        document.getElementById('profile-tab-series')?.classList.remove('bg-dark-input', 'text-gray-200');
-        document.getElementById('profile-tab-series')?.classList.add('bg-primary', 'text-white');
         document.getElementById('profile-series-content')?.classList.remove('hidden');
         document.getElementById('profile-movies-content')?.classList.add('hidden');
     } else {
-        document.getElementById('profile-tab-movies')?.classList.remove('bg-dark-input', 'text-gray-200');
-        document.getElementById('profile-tab-movies')?.classList.add('bg-primary', 'text-white');
         document.getElementById('profile-series-content')?.classList.add('hidden');
         document.getElementById('profile-movies-content')?.classList.remove('hidden');
     }
 
     renderProfileView();
-}
-
-// ============================================
-// FILTROS
-// ============================================
-
-/**
- * Filtra el contenido según el criterio
- * @param {string} filter - Criterio de filtro
- */
-function filterContent(filter) {
-    AppState.currentFilter = filter;
-
-    if (event?.target) {
-        document.querySelectorAll('.filter-btn').forEach(btn => {
-            btn.classList.remove('bg-primary', 'text-white');
-            btn.classList.add('bg-dark-input', 'text-gray-300');
-        });
-        event.target.classList.remove('bg-dark-input', 'text-gray-300');
-        event.target.classList.add('bg-primary', 'text-white');
-    }
-
-    renderCurrentView();
-}
-
-/**
- * Obtiene los items filtrados
- * @returns {Array} Items filtrados
- */
-function getFilteredItems() {
-    const allItems = [
-        ...AppState.movies.map(m => ({ ...m, tipo: 'movie' })),
-        ...AppState.shows.map(s => ({ ...s, tipo: 'tv' })),
-    ];
-    
-    switch (AppState.currentFilter) {
-        case 'series':
-            return allItems.filter(item => item.tipo === 'tv');
-        case 'movies':
-            return allItems.filter(item => item.tipo === 'movie');
-        case 'watching':
-            return allItems.filter(item => item.estado === 'watching' || item.estado === 'siguiendo');
-        case 'completed':
-            return allItems.filter(item => item.estado === 'completed' || item.estado === 'terminada');
-        case 'pending':
-            return allItems.filter(item => item.estado === 'pending' || item.estado === 'pendiente');
-        case 'standby':
-            return allItems.filter(item => normalizeStatus(item.estado) === 'standby');
-        default:
-            return allItems;
-    }
 }
 
 // ============================================
@@ -522,12 +505,13 @@ async function renderCurrentView() {
         return;
     }
 
-    if (AppState.currentTab === 'profile') {
-        await renderProfileView();
+    if (AppState.currentTab === 'movies') {
+        await renderMoviesView();
         return;
     }
 
-    if (AppState.currentTab === 'settings') {
+    if (AppState.currentTab === 'profile') {
+        await renderProfileView();
         renderSettings();
         return;
     }
@@ -553,88 +537,534 @@ async function renderSeriesView() {
     }
 }
 
+function parseReleaseDate(dateString) {
+    if (!dateString) return null;
+    const parsed = new Date(`${dateString}T00:00:00`);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function isMovieReleased(movie) {
+    const release = parseReleaseDate(movie.fecha_estreno);
+    if (!release) return true;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    return release <= today;
+}
+
+function getDaysUntilRelease(dateString) {
+    const release = parseReleaseDate(dateString);
+    if (!release) return null;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    return Math.round((release - today) / 86400000);
+}
+
+function formatMovieCountdown(dateString) {
+    const diffDays = getDaysUntilRelease(dateString);
+    if (diffDays === null) return 'Próximamente';
+    if (diffDays === 0) return 'HOY';
+    if (diffDays === 1) return 'MAÑANA';
+    if (diffDays > 1) return `${diffDays} DÍAS`;
+    return formatUpcomingDateLabel(dateString).toUpperCase();
+}
+
+function renderMoviePosterGrid(movies, { showCountdown = false } = {}) {
+    if (!movies.length) {
+        return `
+            <div class="tvst-empty" style="grid-column: 1 / -1;">
+                <div class="tvst-empty-icon">🎬</div>
+                <p>No hay películas en esta categoría</p>
+            </div>`;
+    }
+
+    return movies.map(movie => {
+        const countdown = showCountdown ? formatMovieCountdown(movie.fecha_estreno) : '';
+        return `
+        <article class="tvst-poster-cell" onclick="openDetail('movie', ${movie.id_tmdb})">
+            ${movie.portada
+                ? `<img src="${movie.portada}" alt="${movie.titulo}">`
+                : `<div class="w-full h-full flex items-center justify-center text-2xl">🎬</div>`}
+            ${showCountdown && countdown ? `<div class="tvst-poster-countdown">${countdown}</div>` : ''}
+        </article>`;
+    }).join('');
+}
+
+async function renderMoviesView() {
+    if (AppState.currentMoviesSubTab === 'pending-list') {
+        renderMoviesPendingList();
+    } else {
+        renderMoviesUpcomingList();
+    }
+}
+
+function renderMoviesPendingList() {
+    const container = document.getElementById('movies-pending-list-container');
+    if (!container) return;
+
+    const pending = AppState.movies
+        .filter(movie => normalizeStatus(movie.estado) !== 'completed')
+        .filter(movie => isMovieReleased(movie))
+        .sort((a, b) => (a.titulo || '').localeCompare(b.titulo || '', 'es', { sensitivity: 'base' }));
+
+    container.className = 'tvst-poster-grid';
+    container.innerHTML = renderMoviePosterGrid(pending);
+}
+
+function renderMoviesUpcomingList() {
+    const container = document.getElementById('movies-upcoming-list-container');
+    if (!container) return;
+
+    const upcoming = AppState.movies
+        .filter(movie => normalizeStatus(movie.estado) !== 'completed')
+        .filter(movie => {
+            const days = getDaysUntilRelease(movie.fecha_estreno);
+            return days !== null && days > 0;
+        })
+        .sort((a, b) => (a.fecha_estreno || '9999-12-31').localeCompare(b.fecha_estreno || '9999-12-31'));
+
+    if (!upcoming.length) {
+        container.innerHTML = `
+            <div class="tvst-empty">
+                <div class="tvst-empty-icon">🗓️</div>
+                <p>No tienes estrenos próximos en tu lista</p>
+            </div>`;
+        return;
+    }
+
+    const grouped = upcoming.reduce((acc, movie) => {
+        const label = formatUpcomingDateLabel(movie.fecha_estreno);
+        if (!acc[label]) acc[label] = [];
+        acc[label].push(movie);
+        return acc;
+    }, {});
+
+    const labels = Object.keys(grouped).sort((a, b) => {
+        const dateA = grouped[a][0].fecha_estreno || '9999-12-31';
+        const dateB = grouped[b][0].fecha_estreno || '9999-12-31';
+        return dateA.localeCompare(dateB);
+    });
+
+    container.innerHTML = labels.map(label => `
+        <section class="mb-4">
+            <div class="tvst-day-capsule-wrap"><span class="tvst-day-capsule">${label}</span></div>
+            <div class="tvst-poster-grid">${renderMoviePosterGrid(grouped[label], { showCountdown: true })}</div>
+        </section>
+    `).join('');
+}
+
+function formatUpcomingDateLabel(dateString) {
+    if (!dateString) return 'MÁS TARDE';
+
+    const dateOnly = String(dateString).slice(0, 10);
+    const target = new Date(`${dateOnly}T00:00:00`);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const diffDays = Math.round((target - today) / 86400000);
+    if (diffDays === 0) return 'HOY';
+    if (diffDays === 1) return 'MAÑANA';
+
+    const weekdays = ['DOMINGO', 'LUNES', 'MARTES', 'MIÉRCOLES', 'JUEVES', 'VIERNES', 'SÁBADO'];
+    if (diffDays > 1 && diffDays <= 7) return weekdays[target.getDay()];
+
+    return 'MÁS TARDE';
+}
+
+function getDaysUntilAir(dateString) {
+    if (!dateString) return null;
+    const dateOnly = String(dateString).slice(0, 10);
+    const target = new Date(`${dateOnly}T00:00:00`);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    return Math.round((target - today) / 86400000);
+}
+
+function getAirTimeMeta(airDate, bucketLabel) {
+    if (bucketLabel === 'MÁS TARDE') {
+        const days = getDaysUntilAir(airDate);
+        if (days == null) return '—';
+        return days === 1 ? 'En 1 día' : `En ${Math.max(1, days)} días`;
+    }
+
+    // TMDB almost always returns YYYY-MM-DD only → show em dash, not a fake hour
+    if (!airDate || String(airDate).length <= 10) return '—';
+
+    try {
+        const parsed = new Date(airDate);
+        if (Number.isNaN(parsed.getTime())) return '—';
+        return parsed.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
+    } catch {
+        return '—';
+    }
+}
+
+function getDaysSinceAir(airDate) {
+    if (!airDate) return 0;
+    const dateOnly = String(airDate).slice(0, 10);
+    const aired = new Date(`${dateOnly}T00:00:00`);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    return Math.round((today - aired) / 86400000);
+}
+
+function getEpisodeWatchedAt(show, episodeId) {
+    return show?.capitulos_vistos_fecha?.[episodeId] || null;
+}
+
+function recordEpisodesWatched(show, episodeIds) {
+    if (!show) return;
+    if (!show.capitulos_vistos_fecha || typeof show.capitulos_vistos_fecha !== 'object') {
+        show.capitulos_vistos_fecha = {};
+    }
+    const now = new Date().toISOString();
+    episodeIds.forEach(id => {
+        if (id) show.capitulos_vistos_fecha[id] = now;
+    });
+}
+
+function clearEpisodeWatchedRecord(show, episodeId) {
+    if (show?.capitulos_vistos_fecha && episodeId) {
+        delete show.capitulos_vistos_fecha[episodeId];
+    }
+}
+
+function getShowLastWatchActivity(show) {
+    const dates = show?.capitulos_vistos_fecha ? Object.values(show.capitulos_vistos_fecha) : [];
+    if (!dates.length) return null;
+    return dates.sort((a, b) => b.localeCompare(a))[0];
+}
+
+function getDaysSinceWatchActivity(isoDate) {
+    if (!isoDate) return Infinity;
+    const watched = new Date(isoDate);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    watched.setHours(0, 0, 0, 0);
+    return Math.round((today - watched) / 86400000);
+}
+
+/** Serie en "Ver a continuación" si el próximo ep es reciente o hubo actividad de visionado reciente (retomada). */
+function isShowInContinueSection(show, nextEpisode) {
+    if (getDaysSinceAir(nextEpisode?.air_date) <= 14) return true;
+    const lastActivity = getShowLastWatchActivity(show);
+    return getDaysSinceWatchActivity(lastActivity) <= 14;
+}
+
+function bumpPendingHistoryAfterWatch() {
+    if (AppState.currentTab !== 'series' || AppState.currentSubTab !== 'pending-list') return;
+    // Mantener ancla en "Ver a continuación"; el episodio recién visto queda arriba en historial
+    const current = AppState.timelineHistoryVisible['pending-list'] || 0;
+    AppState.timelineHistoryVisible['pending-list'] = Math.max(current, 1);
+}
+
+function getEpisodeBadges(show, episode, allAiredEpisodes) {
+    const badges = [];
+    const isUnwatched = !show.capitulos_vistos?.includes(episode.id);
+    const orderedAired = [...(allAiredEpisodes || [])].sort((a, b) => {
+        if (a.seasonNumber !== b.seasonNumber) return a.seasonNumber - b.seasonNumber;
+        return a.episodeNumber - b.episodeNumber;
+    });
+    const lastAiredSeries = orderedAired.length ? orderedAired[orderedAired.length - 1] : null;
+    const isLastOfSeries = lastAiredSeries?.id === episode.id;
+
+    if (episode.air_date) {
+        const daysSince = getDaysSinceAir(episode.air_date);
+        if (daysSince >= 0 && daysSince <= 7 && isUnwatched) {
+            badges.push({ label: 'Nuevo', className: 'tvst-badge tvst-badge--new' });
+        }
+    }
+
+    if (isLastOfSeries && isUnwatched) {
+        badges.push({ label: 'Último', className: 'tvst-badge tvst-badge--last' });
+    }
+
+    return badges;
+}
+
+function createEpisodeCardMarkup({
+    show,
+    episode,
+    variant = 'pending',
+    allAiredEpisodes = [],
+    remainingCount = 0,
+    showAction = false,
+    airMeta = '',
+}) {
+    const badges = (variant === 'pending' || variant === 'upcoming')
+        ? getEpisodeBadges(show, episode, allAiredEpisodes)
+        : [];
+    const episodeCode = formatEpisodeLabel(episode.seasonNumber, episode.episodeNumber);
+    const poster = show.portada
+        ? `<img src="${show.portada}" alt="">`
+        : '<span style="display:flex;align-items:center;justify-content:center;height:100%;font-size:1.1rem">TV</span>';
+
+    let rightSide = '';
+    if (showAction) {
+        rightSide = `<button type="button" class="tvst-check-btn" onclick="toggleEpisode(${show.id_tmdb}, '${episode.id}')" aria-label="Marcar visto">✓</button>`;
+    } else if (variant === 'history') {
+        rightSide = `<span class="tvst-check-btn is-watched" aria-hidden="true">✓</span>`;
+    } else if (airMeta) {
+        rightSide = `<div class="tvst-row-meta"><span class="tvst-air-time">${airMeta}</span></div>`;
+    }
+
+    return `
+        <article class="tvst-episode-row${variant === 'history' ? ' is-history' : ''}${normalizeStatus(show.estado) === 'standby' ? ' is-standby' : ''}">
+            <div class="tvst-episode-poster">${poster}</div>
+            <div class="tvst-episode-body">
+                <a href="#" onclick="openDetail('tv', ${show.id_tmdb});return false;" class="tvst-show-pill">${show.titulo} ›</a>
+                <div class="tvst-episode-code-row">
+                    <span class="tvst-episode-code">${episodeCode}</span>
+                    ${remainingCount > 0 ? `<span class="tvst-remaining">+${remainingCount}</span>` : ''}
+                </div>
+                ${episode.name ? `<p class="tvst-episode-title">${episode.name}</p>` : ''}
+                ${badges.length ? `<div class="tvst-badges">${badges.map(b => `<span class="${b.className}">${b.label}</span>`).join('')}</div>` : ''}
+            </div>
+            ${rightSide}
+        </article>`;
+}
+
+function getTimelineStickyOffset() {
+    // Solo la subnav: la barra "Ver a continuación" queda arriba del viewport
+    // para que la vista inicial coincida con VER A CONTINUACIÓN + lista + hueco
+    const subnav = document.querySelector('#content-series .tvst-subnav');
+    return subnav?.offsetHeight || 48;
+}
+
+function anchorTimelineToNow(tabKey, behavior = 'auto') {
+    const anchor = document.querySelector(`[data-timeline-anchor="${tabKey}"]`);
+    if (!anchor) return;
+
+    const scroll = () => {
+        const stickyOffset = getTimelineStickyOffset();
+        const top = anchor.getBoundingClientRect().top + window.scrollY - stickyOffset;
+        window.scrollTo({ top: Math.max(0, top), behavior });
+    };
+
+    // Varios intentos: layout / posters pueden desplazar el ancla
+    requestAnimationFrame(() => {
+        requestAnimationFrame(scroll);
+    });
+    setTimeout(scroll, 60);
+    setTimeout(scroll, 200);
+    setTimeout(() => {
+        scroll();
+        window.__seenitHistoryLoadReady = true;
+        window.__seenitLastScrollY = window.scrollY;
+    }, 350);
+}
+
+function scrollToNowAnchor() {
+    if (AppState.currentTab === 'series' && AppState.currentSubTab === 'upcoming') {
+        const upcoming = document.getElementById('upcoming-list-container');
+        if (upcoming) upcoming.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        return;
+    }
+    window.__seenitHistoryLoadReady = false;
+    anchorTimelineToNow('pending-list', 'smooth');
+}
+
+function handleTimelineScroll() {
+    if (AppState.currentTab !== 'series' || AppState.currentSubTab !== 'pending-list') return;
+    if (!window.__seenitHistoryLoadReady) return;
+
+    const y = window.scrollY;
+    const lastY = window.__seenitLastScrollY ?? y;
+    const scrollingUp = y < lastY - 2;
+    window.__seenitLastScrollY = y;
+
+    // Solo cargar historial al subir hacia el borde superior
+    if (scrollingUp && y < 120) {
+        loadMorePendingHistory();
+    }
+}
+
+function loadMorePendingHistory() {
+    const tabKey = 'pending-list';
+    const cache = AppState.timelineHistoryCache[tabKey];
+    if (!cache?.length || window.__seenitLoadingMoreHistory) return;
+
+    const currentCount = AppState.timelineHistoryVisible[tabKey] || 0;
+    if (currentCount >= cache.length) return;
+
+    window.__seenitLoadingMoreHistory = true;
+    const anchor = document.querySelector(`[data-timeline-anchor="${tabKey}"]`);
+    const anchorOffset = anchor ? anchor.getBoundingClientRect().top : 0;
+    // Primera carga: bastantes ítems para poder seguir subiendo; luego de 8 en 8
+    const step = currentCount === 0 ? Math.min(10, cache.length) : 8;
+    AppState.timelineHistoryVisible[tabKey] = Math.min(currentCount + step, cache.length);
+
+    Promise.resolve(renderPendingList({ preserveAnchor: true, anchorOffset })).finally(() => {
+        window.__seenitLoadingMoreHistory = false;
+    });
+}
+
+function attachPendingHistoryObserver() {
+    if (window.__seenitPendingHistoryObserver) {
+        window.__seenitPendingHistoryObserver.disconnect();
+        window.__seenitPendingHistoryObserver = null;
+    }
+
+    const sentinel = document.getElementById('pending-history-sentinel');
+    if (!sentinel) return;
+
+    window.__seenitPendingHistoryObserver = new IntersectionObserver((entries) => {
+        if (!window.__seenitHistoryLoadReady) return;
+        if (entries.some(e => e.isIntersecting)) {
+            loadMorePendingHistory();
+        }
+    }, { root: null, rootMargin: '40px', threshold: 0 });
+
+    window.__seenitPendingHistoryObserver.observe(sentinel);
+}
+
+function attachTimelineScrollPersistence() {
+    if (window.__seenitTimelineListenerAttached) return;
+    window.addEventListener('scroll', handleTimelineScroll, { passive: true });
+    window.__seenitTimelineListenerAttached = true;
+}
+
+function preserveAnchorAfterHistoryLoad(tabKey, previousOffset) {
+    const anchor = document.querySelector(`[data-timeline-anchor="${tabKey}"]`);
+    if (!anchor || previousOffset === undefined) return;
+    const newOffset = anchor.getBoundingClientRect().top;
+    const delta = newOffset - previousOffset;
+    if (Math.abs(delta) > 1) {
+        window.scrollBy(0, delta);
+    }
+}
+
 /**
  * Renderiza la lista pendiente
  */
-async function renderPendingList() {
+async function renderPendingList(options = {}) {
     const container = document.getElementById('pending-list-container');
     if (!container) return;
 
-    const allTvShows = AppState.shows.filter(show => show.tipo === 'tv');
+    const allTvShows = AppState.shows;
     await Promise.all(allTvShows.map(show => refreshShowStatus(show)));
     const watchingShows = allTvShows.filter(show => normalizeStatus(show.estado) === 'watching');
 
-    if (watchingShows.length === 0) {
+    if (watchingShows.length === 0 && allTvShows.length === 0) {
         container.innerHTML = `
-            <div class="text-center py-12 text-gray-500 dark:text-gray-400">
-                <div class="text-4xl mb-4">✨</div>
-                <p>No tienes series en estado "Viendo"</p>
+            <div class="tvst-empty">
+                <div class="tvst-empty-icon">✨</div>
+                <p>Pon series en estado "Viendo" para ver episodios aquí</p>
             </div>`;
         return;
     }
 
     const pendingEpisodes = [];
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const historyEpisodes = [];
+
+    for (const show of allTvShows) {
+        const episodes = await getOrderedEpisodes(show, { includeSpecials: false });
+        const airedEpisodes = episodes.filter(isEpisodeAired);
+
+        airedEpisodes.filter(ep => show.capitulos_vistos?.includes(ep.id)).forEach(episode => {
+            historyEpisodes.push({ show, episode, airedEpisodes });
+        });
+    }
 
     for (const show of watchingShows) {
         const episodes = await getOrderedEpisodes(show, { includeSpecials: false });
-        const nextEpisode = episodes.find(ep => {
-            if (show.capitulos_vistos?.includes(ep.id)) {
-                return false;
-            }
-
-            if (!ep.air_date) {
-                return true;
-            }
-
-            const releaseDate = new Date(`${ep.air_date}T00:00:00`);
-            return releaseDate <= today;
-        });
+        const airedEpisodes = episodes.filter(isEpisodeAired);
+        const nextEpisode = airedEpisodes.find(ep => !show.capitulos_vistos?.includes(ep.id));
 
         if (nextEpisode) {
-            const unseenEpisodes = episodes.filter(ep => !show.capitulos_vistos?.includes(ep.id));
-            const remainingCount = Math.max(0, unseenEpisodes.length - 1);
-            pendingEpisodes.push({ show, episode: nextEpisode, remainingCount });
+            const remainingCount = Math.max(0, airedEpisodes.filter(ep => !show.capitulos_vistos?.includes(ep.id)).length - 1);
+            pendingEpisodes.push({ show, episode: nextEpisode, airedEpisodes, remainingCount });
         }
     }
 
-    pendingEpisodes.sort((a, b) => {
+    const sortPending = (a, b) => {
         const titleCompare = (a.show.titulo || '').localeCompare(b.show.titulo || '', 'es', { sensitivity: 'base' });
         if (titleCompare !== 0) return titleCompare;
+        return (a.episode.air_date || '9999-12-31').localeCompare(b.episode.air_date || '9999-12-31');
+    };
+
+    const continueWatching = pendingEpisodes
+        .filter(({ show, episode }) => isShowInContinueSection(show, episode))
+        .sort(sortPending);
+    const staleWatching = pendingEpisodes
+        .filter(({ show, episode }) => !isShowInContinueSection(show, episode))
+        .sort(sortPending);
+
+    historyEpisodes.sort((a, b) => {
+        const watchedAtA = getEpisodeWatchedAt(a.show, a.episode.id);
+        const watchedAtB = getEpisodeWatchedAt(b.show, b.episode.id);
+        if (watchedAtA && watchedAtB && watchedAtA !== watchedAtB) {
+            return watchedAtA.localeCompare(watchedAtB);
+        }
+        if (watchedAtA && !watchedAtB) return 1;
+        if (!watchedAtA && watchedAtB) return -1;
         const dateA = a.episode.air_date || '9999-12-31';
         const dateB = b.episode.air_date || '9999-12-31';
-        return dateA.localeCompare(dateB);
+        if (dateA !== dateB) return dateA.localeCompare(dateB);
+        return (a.episode.seasonNumber || 0) - (b.episode.seasonNumber || 0) || (a.episode.episodeNumber || 0) - (b.episode.episodeNumber || 0);
     });
 
-    if (pendingEpisodes.length === 0) {
+    AppState.timelineHistoryCache['pending-list'] = historyEpisodes;
+
+    // Vista fresca: historial oculto encima (0 ítems). Al subir se va revelando.
+    // Al cargar más (preserveAnchor) se respeta el contador actual.
+    if (!options.preserveAnchor && !options.keepHistoryCount) {
+        AppState.timelineHistoryVisible['pending-list'] = 0;
+    }
+    const historyVisibleCount = Math.min(
+        AppState.timelineHistoryVisible['pending-list'] || 0,
+        historyEpisodes.length,
+    );
+    AppState.timelineHistoryVisible['pending-list'] = historyVisibleCount;
+    const visibleHistory = historyVisibleCount > 0
+        ? historyEpisodes.slice(-historyVisibleCount)
+        : [];
+    const hasMoreHistory = historyEpisodes.length > historyVisibleCount;
+    const showHistoryPull = hasMoreHistory || (historyEpisodes.length > 0 && historyVisibleCount === 0);
+
+    if (pendingEpisodes.length === 0 && historyEpisodes.length === 0) {
         container.innerHTML = `
-            <div class="text-center py-12 text-gray-500 dark:text-gray-400">
-                <div class="text-4xl mb-4">✅</div>
+            <div class="tvst-empty">
+                <div class="tvst-empty-icon">✅</div>
                 <p>Todo al día. No hay episodios pendientes.</p>
             </div>`;
         return;
     }
 
-    container.className = 'grid gap-4 md:grid-cols-2';
-    container.innerHTML = pendingEpisodes.map(({ show, episode, remainingCount }) => {
-        const watched = show.capitulos_vistos?.includes(episode.id);
-        return `
-        <article class="episode-card flex flex-row gap-4 items-center justify-between rounded-2xl border border-gray-200 dark:border-gray-700 bg-white/80 dark:bg-dark-card/90 p-4 shadow-sm hover:shadow-md transition">
-            <div class="w-24 h-28 flex-shrink-0 rounded-xl overflow-hidden">
-                ${show.portada ? `<img src="${show.portada}" alt="${show.titulo}" class="w-full h-full object-cover" onerror="this.onerror=null;this.style.display='none';">` : '<div class="w-full h-full bg-gray-700 flex items-center justify-center text-2xl">📺</div>'}
+    const renderPendingCards = (items) => items.map(({ show, episode, airedEpisodes, remainingCount }) => createEpisodeCardMarkup({
+        show, episode, variant: 'pending', allAiredEpisodes: airedEpisodes, remainingCount, showAction: true,
+    })).join('');
+
+    container.className = 'tvst-episode-list';
+    container.innerHTML = `
+        ${showHistoryPull ? `
+            <div id="pending-history-sentinel" class="tvst-history-pull${historyVisibleCount === 0 ? ' is-empty' : ''}" aria-hidden="true">
+                <span class="tvst-history-pull-label">${historyVisibleCount === 0 ? 'Desliza para ver el historial' : 'Cargar más historial'}</span>
             </div>
-            <div class="flex-1 min-w-0 flex flex-col justify-center gap-1">
-                <p class="text-[11px] uppercase tracking-wide text-primary font-semibold"><a href="#" onclick="openDetail('tv', ${show.id_tmdb});return false;" class="hover:underline">${show.titulo}</a></p>
-                <h3 class="font-semibold text-base leading-tight">${formatEpisodeLabel(episode.seasonNumber, episode.episodeNumber)} <span class="text-sm font-normal text-gray-500 dark:text-gray-400">(${remainingCount} restantes)</span></h3>
-                <p class="text-sm text-gray-500 dark:text-gray-400">${episode.name || 'Sin título'}</p>
-                <p class="text-xs text-gray-400">${episode.air_date ? new Date(episode.air_date).toLocaleDateString('es-ES') : 'Fecha sin definir'}</p>
-            </div>
-            <button type="button" onclick="toggleEpisode(${show.id_tmdb}, '${episode.id}')" class="shrink-0 inline-flex h-12 w-12 items-center justify-center rounded-full border ${watched ? 'bg-green-500 border-green-500 text-white' : 'bg-gray-100 dark:bg-gray-700 border-gray-200 dark:border-gray-600 text-gray-500 dark:text-gray-200'} shadow-sm hover:scale-105 transition" aria-label="Marcar episodio como visto">
-                ✓
-            </button>
-        </article>`;
-    }).join('');
+        ` : ''}
+        ${visibleHistory.map(({ show, episode, airedEpisodes }) => createEpisodeCardMarkup({
+            show, episode, variant: 'history', allAiredEpisodes: airedEpisodes || [], showAction: false,
+        })).join('')}
+        <div data-timeline-anchor="pending-list" class="tvst-timeline-marker">Ver a continuación</div>
+        ${continueWatching.length
+            ? renderPendingCards(continueWatching)
+            : '<div class="tvst-empty"><p>No hay episodios recientes por ver</p></div>'}
+        ${staleWatching.length ? `
+            <div class="tvst-section-marker">Sin ver por un tiempo</div>
+            ${renderPendingCards(staleWatching)}
+        ` : ''}
+        <div class="tvst-timeline-spacer" aria-hidden="true"></div>
+    `;
+
+    attachTimelineScrollPersistence();
+    attachPendingHistoryObserver();
+
+    if (options.preserveAnchor) {
+        preserveAnchorAfterHistoryLoad('pending-list', options.anchorOffset);
+    } else {
+        window.__seenitHistoryLoadReady = false;
+        // Arrancar siempre en "Ver a continuación" (como 224450)
+        anchorTimelineToNow('pending-list', 'auto');
+    }
 }
 
 /**
@@ -644,15 +1074,15 @@ async function renderUpcomingList() {
     const container = document.getElementById('upcoming-list-container');
     if (!container) return;
 
-    const allTvShows = AppState.shows.filter(show => show.tipo === 'tv');
+    const allTvShows = AppState.shows;
     await Promise.all(allTvShows.map(show => refreshShowStatus(show)));
     const watchingShows = allTvShows.filter(show => normalizeStatus(show.estado) === 'watching');
 
     if (watchingShows.length === 0) {
         container.innerHTML = `
-            <div class="text-center py-12 text-gray-500 dark:text-gray-400">
-                <div class="text-4xl mb-4">✨</div>
-                <p>No tienes series en estado "Viendo"</p>
+            <div class="tvst-empty">
+                <div class="tvst-empty-icon">✨</div>
+                <p>Pon series en "Viendo" para ver próximos episodios</p>
             </div>`;
         return;
     }
@@ -661,60 +1091,57 @@ async function renderUpcomingList() {
 
     for (const show of watchingShows) {
         const episodes = await getOrderedEpisodes(show, { includeSpecials: false });
-        const futureEpisodes = episodes.filter(ep => !show.capitulos_vistos?.includes(ep.id) && ep.air_date && new Date(ep.air_date) > new Date());
-        futureEpisodes.forEach(episode => upcomingEpisodes.push({ show, episode }));
+        const airedEpisodes = episodes.filter(isEpisodeAired);
+        episodes.forEach(episode => {
+            if (!episode.air_date) return;
+            const daysUntil = getDaysUntilAir(episode.air_date);
+            if (daysUntil != null && daysUntil > 0) {
+                upcomingEpisodes.push({ show, episode, airedEpisodes });
+            }
+        });
     }
 
-    upcomingEpisodes.sort((a, b) => {
-        const titleCompare = (a.show.titulo || '').localeCompare(b.show.titulo || '', 'es', { sensitivity: 'base' });
-        if (titleCompare !== 0) return titleCompare;
-        return (a.episode.air_date || '9999-12-31').localeCompare(b.episode.air_date || '9999-12-31');
-    });
+    upcomingEpisodes.sort((a, b) => (a.episode.air_date || '9999').localeCompare(b.episode.air_date || '9999'));
 
     if (upcomingEpisodes.length === 0) {
         container.innerHTML = `
-            <div class="text-center py-12 text-gray-500 dark:text-gray-400">
-                <div class="text-4xl mb-4">🗓️</div>
-                <p>No hay episodios futuros programados todavía.</p>
+            <div class="tvst-empty">
+                <div class="tvst-empty-icon">🗓️</div>
+                <p>No hay episodios futuros programados</p>
             </div>`;
         return;
     }
 
-    const grouped = upcomingEpisodes.reduce((acc, item) => {
-        const key = item.episode.air_date;
-        if (!acc[key]) acc[key] = [];
-        acc[key].push(item);
+    const groupedUpcoming = upcomingEpisodes.reduce((acc, item) => {
+        const label = formatUpcomingDateLabel(item.episode.air_date);
+        if (!acc[label]) acc[label] = [];
+        acc[label].push(item);
         return acc;
     }, {});
 
-    const sortedDates = Object.keys(grouped).sort((a, b) => a.localeCompare(b));
+    const bucketOrder = ['HOY', 'MAÑANA', 'LUNES', 'MARTES', 'MIÉRCOLES', 'JUEVES', 'VIERNES', 'SÁBADO', 'DOMINGO', 'MÁS TARDE'];
+    const dayKeys = Object.keys(groupedUpcoming).sort((a, b) => {
+        if (a === 'MÁS TARDE' && b !== 'MÁS TARDE') return 1;
+        if (b === 'MÁS TARDE' && a !== 'MÁS TARDE') return -1;
+        const aDate = groupedUpcoming[a][0].episode.air_date;
+        const bDate = groupedUpcoming[b][0].episode.air_date;
+        const byDate = (aDate || '9999').localeCompare(bDate || '9999');
+        if (byDate !== 0) return byDate;
+        return bucketOrder.indexOf(a) - bucketOrder.indexOf(b);
+    });
 
-    container.className = 'space-y-5';
-    container.innerHTML = sortedDates.map(date => {
-        const items = grouped[date];
-        const collapsed = items.length > 3;
-        return `
-        <section class="rounded-2xl border border-gray-200 dark:border-gray-700 bg-white/80 dark:bg-dark-card/90 p-4 shadow-sm">
-            <button type="button" class="w-full flex items-center justify-between text-left mb-3" onclick="this.parentElement.querySelector('.upcoming-day-items').classList.toggle('hidden'); this.querySelector('span:last-child').textContent = this.parentElement.querySelector('.upcoming-day-items').classList.contains('hidden') ? '＋' : '−';">
-                <span class="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide">${new Date(date).toLocaleDateString('es-ES')}</span>
-                <span class="text-xs text-primary">${collapsed ? '＋' : '−'}</span>
-            </button>
-            <div class="upcoming-day-items ${collapsed ? 'hidden' : ''} grid gap-3 md:grid-cols-2">
-                ${items.map(({ show, episode }) => `
-                    <article class="episode-card flex flex-row gap-4 items-center rounded-2xl border border-gray-100 dark:border-gray-700 bg-gray-50/80 dark:bg-dark-input/80 p-4 shadow-sm hover:shadow-md transition">
-                        <div class="w-24 h-28 flex-shrink-0 rounded-xl overflow-hidden">
-                            ${show.portada ? `<img src="${show.portada}" alt="${show.titulo}" class="w-full h-full object-cover" onerror="this.onerror=null;this.style.display='none';">` : '<div class="w-full h-full bg-gray-700 flex items-center justify-center text-2xl">📺</div>'}
-                        </div>
-                        <div class="flex-1 min-w-0 flex flex-col justify-center gap-1">
-                            <p class="text-[11px] uppercase tracking-wide text-primary font-semibold"><a href="#" onclick="openDetail('tv', ${show.id_tmdb});return false;" class="hover:underline">${show.titulo}</a></p>
-                            <h4 class="font-semibold text-base leading-tight">${episode.id} — ${episode.name}</h4>
-                            <p class="text-sm text-gray-500 dark:text-gray-400">${episode.air_date ? new Date(episode.air_date).toLocaleDateString('es-ES') : 'Fecha sin definir'}</p>
-                        </div>
-                    </article>
-                `).join('')}
-            </div>
-        </section>`;
-    }).join('');
+    container.className = 'tvst-episode-list';
+    container.innerHTML = dayKeys.map(label => `
+        <div class="tvst-day-capsule-wrap"><span class="tvst-day-capsule">${label}</span></div>
+        ${groupedUpcoming[label].map(({ show, episode, airedEpisodes }) => createEpisodeCardMarkup({
+            show,
+            episode,
+            variant: 'upcoming',
+            allAiredEpisodes: airedEpisodes || [],
+            showAction: false,
+            airMeta: getAirTimeMeta(episode.air_date, label),
+        })).join('')}
+    `).join('');
 }
 
 /**
@@ -746,8 +1173,24 @@ async function renderProfileView() {
         .filter(movie => filterProfileMovies(movie))
         .sort((a, b) => (a.titulo || '').localeCompare(b.titulo || '', 'es', { sensitivity: 'base' }));
 
+    const seriesExpanded = Boolean(AppState.profileExpanded.series);
+    const moviesExpanded = Boolean(AppState.profileExpanded.movies);
+
+    seriesContainer.className = `tvst-profile-rail${seriesExpanded ? ' is-expanded' : ''}`;
+    moviesContainer.className = `tvst-profile-rail${moviesExpanded ? ' is-expanded' : ''}`;
+
+    const seriesMoreBtn = document.getElementById('profile-series-more');
+    const moviesMoreBtn = document.getElementById('profile-movies-more');
+    if (seriesMoreBtn) seriesMoreBtn.textContent = seriesExpanded ? 'Mostrar menos' : 'Mostrar más';
+    if (moviesMoreBtn) moviesMoreBtn.textContent = moviesExpanded ? 'Mostrar menos' : 'Mostrar más';
+
     seriesContainer.innerHTML = renderProfileCards(filteredSeries, 'tv');
     moviesContainer.innerHTML = renderProfileCards(filteredMovies, 'movie');
+}
+
+function toggleProfileExpanded(kind) {
+    AppState.profileExpanded[kind] = !AppState.profileExpanded[kind];
+    renderProfileView();
 }
 
 function getOfficialStatus(show) {
@@ -764,13 +1207,17 @@ function getShowProgressInfo(show) {
     const officialStatus = getOfficialStatus(show);
     const isOfficialEnded = officialStatus === 'ended' || officialStatus === 'canceled';
 
-    let colorClass = 'bg-gray-400';
+    let colorClass = 'tvst-progress-gray';
     if (normalizedStatus === 'dropped') {
-        colorClass = 'bg-red-500';
+        colorClass = 'tvst-progress-red';
+    } else if (normalizedStatus === 'standby') {
+        colorClass = 'tvst-progress-amber';
     } else if (normalizedStatus === 'completed' && isOfficialEnded) {
-        colorClass = 'bg-purple-500';
+        colorClass = 'tvst-progress-purple';
     } else if (normalizedStatus === 'watching' || normalizedStatus === 'completed') {
-        colorClass = 'bg-green-500';
+        colorClass = 'tvst-progress-green';
+    } else if (normalizedStatus === 'pending') {
+        colorClass = 'tvst-progress-gray';
     }
 
     return {
@@ -798,8 +1245,8 @@ function filterProfileMovies(movie) {
 function renderProfileCards(items, type) {
     if (items.length === 0) {
         return `
-            <div class="text-center col-span-full py-10 text-gray-500 dark:text-gray-400">
-                <div class="text-3xl mb-3">${type === 'tv' ? '📺' : '🎬'}</div>
+            <div class="tvst-empty" style="grid-column: 1 / -1;">
+                <div class="tvst-empty-icon">${type === 'tv' ? '📺' : '🎬'}</div>
                 <p>No hay contenido en esta categoría</p>
             </div>`;
     }
@@ -807,37 +1254,33 @@ function renderProfileCards(items, type) {
     return items.map(item => {
         const personalRating = item.puntuacion && item.puntuacion > 0 ? item.puntuacion : null;
         const progressData = type === 'tv' ? getShowProgressInfo(item) : null;
+        const statusBadge = getStatusBadge(item.estado);
 
         return `
-        <div class="profile-card cursor-pointer hover:shadow-xl transition flex flex-col items-center w-full" onclick="openDetail('${type}', ${item.id_tmdb})">
-            <div class="relative aspect-[2/3] bg-gray-200 dark:bg-gray-700 rounded-lg overflow-hidden mb-3 w-full max-w-[170px]">
-                ${item.portada ? `<img src="${item.portada}" alt="${item.titulo}" class="w-full h-full object-cover">` : '<div class="w-full h-full flex items-center justify-center text-3xl">🎬</div>'}
-                ${personalRating !== null ? `
-                    <div class="absolute top-2 right-2 rounded-full bg-black/75 text-white px-2.5 py-1 text-xs font-bold shadow-lg backdrop-blur-sm">
-                        ⭐ ${Number(personalRating).toFixed(1)}
-                    </div>
-                ` : ''}
+        <div class="profile-card cursor-pointer flex flex-col${normalizeStatus(item.estado) === 'standby' ? ' is-standby' : ''}" onclick="openDetail('${type}', ${item.id_tmdb})">
+            <div class="relative aspect-[2/3] bg-zinc-900 rounded overflow-hidden mb-2 w-full">
+                ${item.portada ? `<img src="${item.portada}" alt="${item.titulo}" class="w-full h-full object-cover">` : '<div class="w-full h-full flex items-center justify-center text-2xl">🎬</div>'}
+                ${personalRating !== null ? `<div class="absolute top-1.5 right-1.5 rounded bg-black/80 text-white px-1.5 py-0.5 text-[10px] font-bold">★ ${Number(personalRating).toFixed(1)}</div>` : ''}
             </div>
-            <h3 class="font-semibold text-sm truncate w-full text-center">${item.titulo}</h3>
+            <h3 class="font-semibold text-xs truncate text-white">${item.titulo}</h3>
+            ${statusBadge}
             ${progressData ? `
-                <div class="w-full mt-2">
-                    <div class="flex justify-between items-center text-[10px] uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-1">
-                        <span>Progreso ${progressData.progress}%</span>
-                        <span class="text-xs font-semibold ${progressData.colorClass === 'bg-red-500' ? 'text-red-500' : progressData.colorClass === 'bg-purple-500' ? 'text-purple-500' : progressData.colorClass === 'bg-green-500' ? 'text-green-500' : 'text-gray-400'}">${progressData.label}</span>
+                <div class="w-full">
+                    <div class="tvst-progress-track">
+                        <div class="tvst-progress-fill ${progressData.colorClass}" style="width: ${progressData.progress}%;"></div>
                     </div>
-                    <div class="h-2 rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden">
-                        <div class="h-full rounded-full ${progressData.colorClass}" style="width: ${progressData.progress}%;"></div>
-                    </div>
+                    <p class="text-[10px] text-gray-500 mt-0.5">${progressData.progress}%</p>
                 </div>
             ` : ''}
-            <p class="text-xs text-gray-500 dark:text-gray-400 mt-1">${getStatusBadge(item.estado)}</p>
-        </div>
-    `;
+        </div>`;
     }).join('');
 }
 
 /**
  * Renderiza la pestaña Ajustes
+ */
+/**
+ * Renderiza la pestaña Información del detalle
  */
 function renderDetailInfo(item) {
     const container = document.getElementById('detail-info-panel');
@@ -847,49 +1290,118 @@ function renderDetailInfo(item) {
     const recommendations = item?.recommendations || [];
     const overview = item?.overview || 'Sin descripción disponible.';
     const voteAverage = item?.vote_average !== undefined && item?.vote_average !== null ? Number(item.vote_average).toFixed(1) : 'N/D';
+    const personal = item?.puntuacion && item.puntuacion > 0 ? Number(item.puntuacion) : 0;
+    const providers = item?.watch_providers || [];
+    const inLibrary = isItemAlreadyAdded(item.tipo, item.id_tmdb);
+    const personalLabel = personal > 0 ? personal.toFixed(1) : '—';
+
+    const ratingControl = inLibrary ? `
+        <div class="tvst-nota-modern">
+            <div class="tvst-nota-score" id="detail-personal-score">${personalLabel}</div>
+            <div class="tvst-nota-stars" role="group" aria-label="Tu puntuación">
+                ${[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(n => `
+                    <button type="button"
+                        class="tvst-nota-star${n <= Math.round(personal) ? ' is-on' : ''}"
+                        onclick="setPersonalRating(${n})"
+                        aria-label="${n}">${n <= Math.round(personal) ? '★' : '☆'}</button>
+                `).join('')}
+            </div>
+            <p class="tvst-nota-hint">Tu nota · toca para cambiar</p>
+        </div>
+    ` : `
+        <p class="tvst-info-overview">Añádela a tu lista para puntuarla.</p>
+    `;
 
     container.innerHTML = `
-        <div class="space-y-6">
-            <section class="rounded-2xl border border-gray-200 dark:border-gray-700 bg-white/70 dark:bg-dark-input/70 p-4">
-                <h3 class="text-base font-semibold mb-2">Información</h3>
-                <p class="text-sm text-gray-600 dark:text-gray-300 leading-relaxed">${overview}</p>
-                <div class="mt-3 flex flex-wrap gap-2 text-xs">
-                    <span class="px-2.5 py-1 rounded-full bg-yellow-100 dark:bg-yellow-900/40 text-yellow-700 dark:text-yellow-200">⭐ Puntuación TMDB: ${voteAverage}</span>
-                    ${item?.generos?.length ? `<span class="px-2.5 py-1 rounded-full bg-primary/10 text-primary">${item.generos.slice(0, 3).join(' · ')}</span>` : ''}
+        <div class="tvst-info-section">
+            <h3>Nota</h3>
+            ${ratingControl}
+            <p class="tvst-info-overview tvst-nota-tmdb">TMDB: ${voteAverage}/10</p>
+        </div>
+        <div class="tvst-info-section">
+            <h3>Descripción</h3>
+            <p class="tvst-info-overview">${overview}</p>
+            ${item?.generos?.length ? `<p class="tvst-info-overview" style="margin-top:0.5rem">${item.generos.slice(0, 4).join(' · ')}</p>` : ''}
+        </div>
+        ${providers.length ? `
+            <div class="tvst-info-section">
+                <h3>Dónde ver</h3>
+                <div class="flex flex-wrap gap-2">
+                    ${providers.map(provider => `
+                        <span class="inline-flex items-center gap-2 rounded-full bg-zinc-900 px-3 py-1.5 text-sm">
+                            ${provider.logo_path ? `<img src="${window.getImageUrl(provider.logo_path, 'w92')}" alt="" class="h-5 w-5 rounded-full object-cover">` : ''}
+                            ${provider.provider_name}
+                        </span>
+                    `).join('')}
                 </div>
-            </section>
-
-            <section>
-                <h3 class="text-base font-semibold mb-3">Reparto</h3>
-                <div class="flex gap-3 overflow-x-auto pb-2 snap-x snap-mandatory">
-                    ${cast.length ? cast.map(person => `
-                        <article class="min-w-[180px] snap-start rounded-xl border border-gray-200 dark:border-gray-700 bg-white/70 dark:bg-dark-input/70 p-3 flex items-center gap-3">
-                            ${person.profile_path ? `<img src="${person.profile_path}" alt="${person.name}" class="w-12 h-12 rounded-full object-cover" onerror="this.onerror=null;this.style.display='none';">` : '<div class="w-12 h-12 rounded-full bg-gray-200 dark:bg-gray-700 flex items-center justify-center text-xs">🎭</div>'}
-                            <div class="min-w-0">
-                                <p class="text-sm font-semibold truncate">${person.name}</p>
-                                <p class="text-xs text-gray-500 dark:text-gray-400 truncate">${person.character || 'Actor'}</p>
-                            </div>
-                        </article>
-                    `).join('') : '<p class="text-sm text-gray-500 dark:text-gray-400">No hay reparto disponible.</p>'}
-                </div>
-            </section>
-
-            <section>
-                <h3 class="text-base font-semibold mb-3">Si te gustó esta ${item?.tipo === 'tv' ? 'serie' : 'película'}, también te gustará</h3>
-                <div class="flex gap-3 overflow-x-auto pb-2 snap-x snap-mandatory">
-                    ${recommendations.length ? recommendations.map(rec => `
-                        <article class="min-w-[140px] max-w-[140px] snap-start rounded-xl overflow-hidden border border-gray-200 dark:border-gray-700 bg-white/70 dark:bg-dark-input/70 hover:shadow-lg transition">
-                            <div class="relative" onclick="openDetail('${rec.tipo}', ${rec.id_tmdb})">
-                                ${rec.portada ? `<img src="${rec.portada}" alt="${rec.titulo}" class="w-full aspect-[2/3] object-cover">` : '<div class="w-full aspect-[2/3] bg-gray-200 dark:bg-gray-700 flex items-center justify-center text-2xl">🎬</div>'}
-                                <button type="button" onclick="event.stopPropagation(); addItem('${rec.tipo}', ${rec.id_tmdb});" class="absolute top-2 right-2 rounded-full bg-black/70 text-white w-8 h-8 flex items-center justify-center text-sm shadow-lg hover:bg-primary transition">＋</button>
-                            </div>
-                            <p class="p-3 text-sm font-medium truncate">${rec.titulo}</p>
-                        </article>
-                    `).join('') : '<p class="text-sm text-gray-500 dark:text-gray-400">No hay recomendaciones disponibles.</p>'}
-                </div>
-            </section>
+            </div>
+        ` : ''}
+        <div class="tvst-info-section">
+            <h3>Reparto</h3>
+            <div class="tvst-cast-rail">
+                ${cast.length ? cast.map(person => `
+                    <article class="tvst-cast-card">
+                        ${person.profile_path
+                            ? `<img src="${person.profile_path}" alt="${person.name}" onerror="this.onerror=null;this.outerHTML='<div class=\\'tvst-cast-fallback\\'>🎭</div>'">`
+                            : '<div class="tvst-cast-fallback">🎭</div>'}
+                        <div class="min-w-0">
+                            <p class="text-sm font-semibold truncate">${person.name}</p>
+                            <p class="text-xs text-gray-500 truncate">${person.character || 'Actor'}</p>
+                        </div>
+                    </article>
+                `).join('') : '<p class="text-sm text-gray-500">No hay reparto disponible.</p>'}
+            </div>
+        </div>
+        <div class="tvst-info-section">
+            <div class="flex items-center justify-between gap-3 mb-2">
+                <h3 class="mb-0">También te gustará</h3>
+                ${recommendations.length ? `
+                    <button type="button" class="tvst-show-more-btn" onclick="toggleDetailRecsExpanded()">
+                        ${AppState.detailRecsExpanded ? 'Mostrar menos' : 'Mostrar más'}
+                    </button>
+                ` : ''}
+            </div>
+            <div class="tvst-rec-rail${AppState.detailRecsExpanded ? ' is-expanded' : ''}">
+                ${recommendations.length ? recommendations.map(rec => `
+                    <article class="tvst-rec-card" onclick="openDetail('${rec.tipo}', ${rec.id_tmdb})">
+                        ${rec.portada
+                            ? `<img src="${rec.portada}" alt="${rec.titulo}">`
+                            : '<div class="w-full aspect-[2/3] bg-zinc-900 flex items-center justify-center rounded">🎬</div>'}
+                        <button type="button" onclick="event.stopPropagation(); addItem('${rec.tipo}', ${rec.id_tmdb});" class="tvst-add-btn">+</button>
+                        <p class="text-xs mt-1 truncate">${rec.titulo}</p>
+                    </article>
+                `).join('') : '<p class="text-sm text-gray-500">No hay recomendaciones disponibles.</p>'}
+            </div>
         </div>
     `;
+}
+
+function toggleDetailRecsExpanded() {
+    AppState.detailRecsExpanded = !AppState.detailRecsExpanded;
+    renderDetailInfo(AppState.selectedItem);
+}
+
+function setPersonalRating(rating) {
+    const item = AppState.selectedItem;
+    if (!item) return;
+    if (!isItemAlreadyAdded(item.tipo, item.id_tmdb)) {
+        showToast('Añádela a tu lista para puntuar');
+        return;
+    }
+
+    const value = Math.max(0, Math.min(10, Number(rating) || 0));
+    updateRating(item.tipo, item.id_tmdb, value);
+    AppState.selectedItem = { ...item, puntuacion: value };
+    const scoreEl = document.getElementById('detail-personal-score');
+    if (scoreEl) scoreEl.textContent = value > 0 ? value.toFixed(1) : '—';
+    document.querySelectorAll('.tvst-nota-star').forEach((btn, idx) => {
+        const n = idx + 1;
+        const on = n <= Math.round(value);
+        btn.classList.toggle('is-on', on);
+        btn.textContent = on ? '★' : '☆';
+    });
+    const hidden = document.getElementById('modal-rating-input');
+    if (hidden) hidden.value = value;
 }
 
 function switchDetailTab(tab) {
@@ -900,17 +1412,14 @@ function switchDetailTab(tab) {
 
     if (!infoTab || !episodesTab || !infoPanel || !episodesPanel) return;
 
-    const active = 'bg-primary text-white';
-    const inactive = 'bg-gray-100 dark:bg-dark-input text-gray-700 dark:text-gray-200';
-
     if (tab === 'episodes') {
-        infoTab.className = `px-4 py-2 rounded-lg text-sm font-medium transition ${inactive}`;
-        episodesTab.className = `px-4 py-2 rounded-lg text-sm font-medium transition ${active}`;
+        infoTab.classList.remove('is-active');
+        episodesTab.classList.add('is-active');
         infoPanel.classList.add('hidden');
         episodesPanel.classList.remove('hidden');
     } else {
-        infoTab.className = `px-4 py-2 rounded-lg text-sm font-medium transition ${active}`;
-        episodesTab.className = `px-4 py-2 rounded-lg text-sm font-medium transition ${inactive}`;
+        infoTab.classList.add('is-active');
+        episodesTab.classList.remove('is-active');
         infoPanel.classList.remove('hidden');
         episodesPanel.classList.add('hidden');
     }
@@ -1035,35 +1544,31 @@ async function refreshShowStatus(show) {
 
     const episodes = await getOrderedEpisodes(show, { includeSpecials: false });
     const airedEpisodes = episodes.filter(isEpisodeAired);
-    const futureEpisodes = episodes.filter(ep => !isEpisodeAired(ep));
     const watchedEpisodes = airedEpisodes.filter(ep => show.capitulos_vistos?.includes(ep.id));
 
     show.episodios_emitidos = airedEpisodes.length;
     show.episodios_vistos_count = watchedEpisodes.length;
 
+    // dropped: permanece hasta marcar un episodio (vuelve a watching) o eliminar
     if (previousState === 'dropped') {
         show.estado = 'dropped';
         return show;
     }
 
-    if (previousState === 'pending' || previousState === 'standby') {
+    // Completado solo si hay emitidos y todos están vistos
+    if (airedEpisodes.length > 0 && watchedEpisodes.length === airedEpisodes.length) {
+        show.estado = 'completed';
         return show;
     }
 
-    if (previousState === 'completed') {
-        if (futureEpisodes.some(ep => !show.capitulos_vistos?.includes(ep.id))) {
-            show.estado = 'watching';
-        } else {
-            show.estado = 'completed';
-        }
+    // standby: solo sale por menú → ver episodios (en toggle) o eliminar
+    if (previousState === 'standby') {
+        show.estado = 'standby';
         return show;
     }
 
-    if (airedEpisodes.length === 0) {
-        show.estado = watchedEpisodes.length > 0 ? 'watching' : 'pending';
-    } else if (watchedEpisodes.length === airedEpisodes.length) {
-        show.estado = futureEpisodes.length > 0 ? 'watching' : 'completed';
-    } else if (watchedEpisodes.length > 0) {
+    // pending / watching / completed (si no todos vistos)
+    if (watchedEpisodes.length > 0) {
         show.estado = 'watching';
     } else {
         show.estado = 'pending';
@@ -1076,44 +1581,65 @@ async function refreshShowStatus(show) {
  * Renderiza los resultados de búsqueda
  * @param {Array} results - Resultados de búsqueda
  */
+function formatPopularityLabel(count, tipo) {
+    const n = Number(count) || 0;
+    const noun = tipo === 'movie' ? 'película' : 'serie';
+    let formatted;
+    if (n >= 1000) {
+        const mil = n / 1000;
+        formatted = mil >= 100
+            ? `${Math.round(mil)} mil`
+            : `${mil.toLocaleString('es-ES', { maximumFractionDigits: 1 })} mil`;
+    } else if (n > 0) {
+        formatted = String(Math.round(n));
+    } else {
+        formatted = 'Pocos';
+    }
+    const verb = n === 1 ? 'ha añadido' : 'han añadido';
+    return `${formatted} ${verb} esta ${noun}`;
+}
+
 function renderSearchResults(results) {
     AppState.lastSearchResults = results || [];
-    const grid = document.getElementById('search-results');
+    const list = document.getElementById('search-results');
 
     if (!AppState.lastSearchResults.length) {
-        grid.innerHTML = `
-            <div class="text-center col-span-full py-12 text-gray-500 dark:text-gray-400">
-                <div class="text-4xl mb-4">🔍</div>
+        list.className = 'tvst-search-list';
+        list.innerHTML = `
+            <div class="tvst-empty">
+                <div class="tvst-empty-icon">🔍</div>
                 <p>No se encontraron resultados</p>
-            </div>
-        `;
+            </div>`;
         return;
     }
 
-    const sortedResults = [...AppState.lastSearchResults].sort((a, b) => (a.titulo || '').localeCompare(b.titulo || '', 'es', { sensitivity: 'base' }));
+    const typeIcon = (tipo) => tipo === 'movie'
+        ? '<svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="1.5"/><path d="M7 5l2-2h6l2 2"/></svg>'
+        : '<svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="13" rx="1.5"/><path d="M8 3l4 3 4-3"/></svg>';
 
-    grid.innerHTML = sortedResults.map(item => {
+    list.className = 'tvst-search-list';
+    list.innerHTML = AppState.lastSearchResults.map(item => {
         const added = isItemAlreadyAdded(item.tipo, item.id_tmdb);
-
+        const popularitySource = item.vote_count || item.popularity || 0;
         return `
-        <article class="bg-white dark:bg-dark-card rounded-xl overflow-hidden shadow-lg hover:shadow-xl transition group border border-transparent hover:border-primary/30">
-            <div class="aspect-[2/3] bg-gray-200 dark:bg-gray-700 relative cursor-pointer" onclick="openDetail('${item.tipo}', ${item.id_tmdb})">
+        <article class="tvst-search-row" onclick="openDetail('${item.tipo}', ${item.id_tmdb})">
+            <div class="tvst-search-poster">
                 ${item.portada
-                    ? `<img src="${item.portada}" alt="${item.titulo}" class="w-full h-full object-cover group-hover:scale-105 transition duration-300" onerror="this.onerror=null;this.src='https://via.placeholder.com/500x750?text=Sin+imagen';">`
-                    : `<div class="w-full h-full flex items-center justify-center text-4xl">🎬</div>`
-                }
-                <button type="button" onclick="event.stopPropagation();${added ? '' : `addItem('${item.tipo}', ${item.id_tmdb})`}" class="absolute top-2 right-2 rounded-full ${added ? 'bg-emerald-600' : 'bg-black/75'} text-white w-8 h-8 flex items-center justify-center text-sm shadow-lg hover:scale-105 transition" ${added ? 'disabled' : ''}>
-                    ${added ? '✓' : '+'}
-                </button>
-                <div class="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/85 to-transparent p-2">
-                    <span class="text-white text-[11px] uppercase tracking-wide font-semibold">${item.tipo === 'tv' ? '📺 Serie' : '🎬 Película'}</span>
+                    ? `<img src="${item.portada}" alt="">`
+                    : `<div class="w-full h-full flex items-center justify-center text-lg">🎬</div>`}
+            </div>
+            <div class="tvst-search-body">
+                <h3 class="tvst-search-title">${item.titulo || 'Sin título'}</h3>
+                <div class="tvst-search-sub">
+                    ${typeIcon(item.tipo)}
+                    <span>${formatPopularityLabel(popularitySource, item.tipo)}</span>
                 </div>
             </div>
-            <div class="p-3">
-                <h3 class="font-semibold text-sm truncate">${item.titulo}</h3>
-                <p class="text-xs text-gray-500 dark:text-gray-400 mt-1 mb-2">${item.fecha_estreno ? new Date(item.fecha_estreno).getFullYear() : 'Sin fecha'}</p>
-                <p class="text-[11px] text-gray-500 dark:text-gray-400 line-clamp-2">${item.overview || 'Sin descripción disponible.'}</p>
-            </div>
+            <button type="button"
+                class="tvst-add-btn${added ? ' is-added' : ''}"
+                ${added ? 'disabled' : ''}
+                onclick="event.stopPropagation();${added ? '' : `addItem('${item.tipo}', ${item.id_tmdb})`}"
+                aria-label="${added ? 'Ya añadido' : 'Añadir'}">${added ? '✓' : '+'}</button>
         </article>`;
     }).join('');
 }
@@ -1122,149 +1648,115 @@ function renderSearchResults(results) {
  * Renderiza los episodios de una serie
  * @param {Object} show - Datos de la serie
  */
+/**
+ * Renderiza los episodios de una serie
+ * @param {Object} show - Datos de la serie
+ */
 async function renderEpisodes(show) {
     const container = document.getElementById('episodes-list');
     const episodesSection = document.getElementById('modal-episodes');
-    
+
     if (show.tipo !== 'tv') {
-        episodesSection.classList.add('hidden');
+        episodesSection?.classList.add('hidden');
         return;
     }
-    
-    episodesSection.classList.remove('hidden');
+
+    episodesSection?.classList.remove('hidden');
     container.innerHTML = '<div class="text-center py-4 text-gray-500">Cargando episodios...</div>';
-    
+
     try {
-        let episodesHTML = '';
-        const sortedSeasons = [...(show.temporadas || [])].sort((a, b) => {
-            if (a.especial === b.especial) {
-                return a.numero - b.numero;
-            }
-            return a.especial ? 1 : -1;
-        });
-        
+        const ordered = await getOrderedEpisodes(show, { includeSpecials: false });
+        const airedOrdered = ordered.filter(isEpisodeAired);
+        const nextUnwatched = airedOrdered.filter(ep => !show.capitulos_vistos?.includes(ep.id)).slice(0, 2);
+
+        let continueHTML = '';
+        if (nextUnwatched.length) {
+            continueHTML = `
+                <div class="tvst-ep-section-title">Continuar el seguimiento</div>
+                <div class="tvst-continue-cards">
+                    ${nextUnwatched.map(ep => {
+                        const still = ep.still_path ? getImageUrl(ep.still_path, 'w185') : null;
+                        const watched = show.capitulos_vistos?.includes(ep.id);
+                        return `
+                        <div class="tvst-continue-card">
+                            ${still
+                                ? `<img class="tvst-continue-still" src="${still}" alt="">`
+                                : '<div class="tvst-continue-still"></div>'}
+                            <div class="tvst-continue-text">
+                                <div class="tvst-continue-code">${formatEpisodeLabel(ep.seasonNumber, ep.episodeNumber)}</div>
+                                <div class="tvst-continue-name">${ep.name || 'Episodio'}</div>
+                            </div>
+                            <button type="button"
+                                class="tvst-circle-check${watched ? ' is-watched' : ''}"
+                                onclick="toggleEpisodeAndUpdateSeason(${show.id_tmdb}, '${ep.id}', ${ep.seasonNumber}, 'season-${ep.seasonNumber}')">✓</button>
+                        </div>`;
+                    }).join('')}
+                </div>`;
+        }
+
+        const sortedSeasons = [...(show.temporadas || [])]
+            .filter(s => !s.especial && s.numero !== 0)
+            .sort((a, b) => a.numero - b.numero);
+
+        let seasonsHTML = '<div class="tvst-ep-section-title">Todos los episodios</div>';
+
         for (const season of sortedSeasons) {
             const seasonDetails = await getSeasonDetails(show.id_tmdb, season.numero);
             const seasonId = `season-${season.numero}`;
             const seasonKey = `${show.id_tmdb}-season-${season.numero}`;
             const seasonLabel = getSeasonLabel(season);
-            
-            // Contar episodios vistos en esta temporada (solo episodios emitidos)
-            const seasonEpisodeIds = seasonDetails.episodes
+
+            const seasonEpisodeIds = (seasonDetails.episodes || [])
                 .filter(isEpisodeAired)
                 .map(ep => `S${String(season.numero).padStart(2, '0')}E${String(ep.episode_number).padStart(2, '0')}`);
             const watchedInSeason = seasonEpisodeIds.filter(id => show.capitulos_vistos?.includes(id)).length;
             const totalInSeason = seasonEpisodeIds.length;
             const allWatchedInSeason = watchedInSeason === totalInSeason && totalInSeason > 0;
+            const pct = totalInSeason > 0 ? Math.round((watchedInSeason / totalInSeason) * 100) : 0;
             const isExpanded = AppState.expandedSeasons[seasonKey];
-            
-            episodesHTML += `
-                <div class="mb-3 bg-gray-50 dark:bg-gray-800 rounded-lg overflow-hidden">
-                    <!-- Season Header (Clickable) -->
-                    <div class="flex items-center justify-between p-3 hover:bg-gray-100 dark:hover:bg-gray-700 transition">
-                        <button 
-                            type="button"
-                            onclick="toggleSeasonAccordion('${seasonId}', '${seasonKey}')"
-                            class="flex items-center gap-2 flex-1 text-left"
-                        >
-                            <span class="transition-transform duration-300 text-sm" id="chevron-${seasonId}">▶️</span>
-                            <div>
-                                <h4 class="font-semibold text-sm">${seasonLabel}</h4>
-                                <p class="text-xs text-gray-500 dark:text-gray-400">
-                                    ${watchedInSeason}/${totalInSeason}
-                                </p>
-                            </div>
-                        </button>
-                        
-                        <div class="flex items-center gap-2 flex-shrink-0">
-                            <input 
-                                type="checkbox" 
-                                id="season-check-${seasonId}"
-                                ${allWatchedInSeason ? 'checked' : ''}
-                                class="w-4 h-4 rounded cursor-pointer season-checkbox"
-                            >
-                            <span class="text-xs font-medium px-2 py-1 rounded-full ${allWatchedInSeason ? 'bg-green-200 dark:bg-green-900 text-green-800 dark:text-green-200' : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300'}">
-                                ${allWatchedInSeason ? '✓' : Math.round((watchedInSeason / totalInSeason) * 100) + '%'}
-                            </span>
+
+            seasonsHTML += `
+                <div class="tvst-season-block">
+                    <div class="tvst-season-header" role="button" tabindex="0" onclick="toggleSeasonAccordion('${seasonId}', '${seasonKey}')">
+                        <div class="tvst-season-header-main">
+                            <p class="tvst-season-name">${seasonLabel}</p>
+                            <span class="tvst-season-chevron" id="chevron-${seasonId}">${isExpanded ? '▲' : '▼'}</span>
+                        </div>
+                        <span class="tvst-season-count">${watchedInSeason}/${totalInSeason}</span>
+                        <button type="button"
+                            class="tvst-circle-check${allWatchedInSeason ? ' is-watched' : ''}"
+                            onclick="event.stopPropagation(); toggleSeasonWatched(${show.id_tmdb}, ${season.numero})"
+                            aria-label="Marcar temporada">✓</button>
+                        <div class="tvst-season-bar-track">
+                            <div class="tvst-season-bar-fill${allWatchedInSeason ? ' is-complete' : ''}" style="width:${Math.max(0, Math.min(100, pct))}%"></div>
                         </div>
                     </div>
-                    
-                    <!-- Season Content (Hidden by default unless expanded) -->
                     <div id="${seasonId}" class="${isExpanded ? '' : 'hidden'}">
-                        <!-- Episodes List -->
-                        <div class="space-y-1 p-3 border-t border-gray-200 dark:border-gray-700">
-            `;
-            
-            for (const episode of seasonDetails.episodes) {
-                const episodeId = `S${String(season.numero).padStart(2, '0')}E${String(episode.episode_number).padStart(2, '0')}`;
-                const episodeLabel = formatEpisodeLabel(season.numero, episode.episode_number);
-                const isWatched = show.capitulos_vistos?.includes(episodeId);
-                const episodeImage = episode.still_path ? getImageUrl(episode.still_path, 'w185') : null;
-                const episodeOverview = episode.overview || 'Sin descripción';
-                const aired = isEpisodeAired(episode);
-                
-                episodesHTML += `
-                    <div class="flex items-start gap-2 p-2 bg-white dark:bg-gray-800 rounded hover:bg-gray-50 dark:hover:bg-gray-700 transition">
-                        <input 
-                            type="checkbox" 
-                            id="ep-${episodeId}"
-                            data-show="${show.id_tmdb}"
-                            data-season="${season.numero}"
-                            data-episode="${episodeId}"
-                            data-aired="${aired}"
-                            ${isWatched ? 'checked' : ''}
-                            ${aired ? '' : 'disabled'}
-                            class="w-4 h-4 rounded cursor-pointer mt-0.5 flex-shrink-0 ep-checkbox"
-                        >
-                        
-                        <div class="flex gap-2 flex-1 min-w-0">
-                            ${episodeImage ? `
-                            <img 
-                                src="${episodeImage}" 
-                                alt="${episode.name}" 
-                                class="w-16 h-9 rounded object-cover flex-shrink-0"
-                                onerror="this.style.display='none';"
-                            >
-                            ` : ''}
-                            
-                            <div class="flex-1 min-w-0">
-                                <div class="flex items-baseline gap-1 mb-0.5">
-                                    <span class="text-xs font-semibold text-primary flex-shrink-0">•</span>
-                                    <span class="font-medium text-xs">${episodeLabel}</span>
-                                    <span class="text-gray-600 dark:text-gray-400 text-xs truncate">${episode.name}</span>
+                        ${(seasonDetails.episodes || []).map(episode => {
+                            const episodeId = `S${String(season.numero).padStart(2, '0')}E${String(episode.episode_number).padStart(2, '0')}`;
+                            const isWatched = show.capitulos_vistos?.includes(episodeId);
+                            const episodeImage = episode.still_path ? getImageUrl(episode.still_path, 'w185') : null;
+                            const aired = isEpisodeAired(episode);
+                            return `
+                            <div class="tvst-ep-row">
+                                ${episodeImage
+                                    ? `<img class="tvst-ep-still" src="${episodeImage}" alt="" onerror="this.style.visibility='hidden'">`
+                                    : '<div class="tvst-ep-still"></div>'}
+                                <div class="tvst-ep-text">
+                                    <div class="tvst-ep-code">${formatEpisodeLabel(season.numero, episode.episode_number)}</div>
+                                    <div class="tvst-ep-name">${episode.name || 'Episodio'}</div>
                                 </div>
-                                <p class="text-xs text-gray-500 dark:text-gray-400 line-clamp-1">
-                                    ${episodeOverview}
-                                </p>
-                            </div>
-                        </div>
+                                <button type="button"
+                                    class="tvst-circle-check${isWatched ? ' is-watched' : ''}"
+                                    ${aired ? '' : 'disabled'}
+                                    onclick="toggleEpisodeAndUpdateSeason(${show.id_tmdb}, '${episodeId}', ${season.numero}, '${seasonId}')">✓</button>
+                            </div>`;
+                        }).join('')}
                     </div>
-                `;
-            }
-            
-            episodesHTML += `
-                        </div>
-                    </div>
-                </div>
-            `;
+                </div>`;
         }
-        
-        container.innerHTML = episodesHTML;
 
-        // Adjuntar listeners de episodio y temporada de forma segura
-        // Episode checkboxes
-        const episodeCheckboxes = container.querySelectorAll('input.ep-checkbox');
-        episodeCheckboxes.forEach(cb => {
-            cb.removeEventListener('change', episodeCheckboxHandler);
-            cb.addEventListener('change', episodeCheckboxHandler);
-        });
-
-        // Season checkboxes
-        const seasonCheckboxes = container.parentElement.querySelectorAll('input[id^="season-check-season-"]');
-        seasonCheckboxes.forEach(cb => {
-            cb.removeEventListener('change', seasonCheckboxHandler);
-            cb.addEventListener('change', seasonCheckboxHandler);
-        });
+        container.innerHTML = continueHTML + seasonsHTML;
     } catch (error) {
         console.error('[App] Error cargando episodios:', error);
         container.innerHTML = '<div class="text-center py-4 text-red-500">Error al cargar episodios</div>';
@@ -1279,14 +1771,15 @@ async function renderEpisodes(show) {
 function toggleSeasonAccordion(seasonId, seasonKey) {
     const seasonElement = document.getElementById(seasonId);
     const chevron = document.getElementById(`chevron-${seasonId}`);
-    
+    if (!seasonElement) return;
+
     if (seasonElement.classList.contains('hidden')) {
         seasonElement.classList.remove('hidden');
-        chevron.textContent = '🔽';
+        if (chevron) chevron.textContent = '▲';
         AppState.expandedSeasons[seasonKey] = true;
     } else {
         seasonElement.classList.add('hidden');
-        chevron.textContent = '▶️';
+        if (chevron) chevron.textContent = '▼';
         AppState.expandedSeasons[seasonKey] = false;
     }
 }
@@ -1315,38 +1808,48 @@ async function toggleEpisodeAndUpdateSeason(id_tmdb, episode, seasonNumber, seas
         show.capitulos_vistos = [];
     }
 
+    const wasStandby = normalizeStatus(show.estado) === 'standby';
+    const wasDropped = normalizeStatus(show.estado) === 'dropped';
     const index = show.capitulos_vistos.indexOf(episode);
+    let markedWatched = false;
+    const newlyWatchedIds = [];
     if (index > -1) {
         show.capitulos_vistos.splice(index, 1);
+        clearEpisodeWatchedRecord(show, episode);
     } else {
         const previousEpisodes = episodes.filter(isEpisodeAired).filter(ep => compareEpisodeOrder(ep, targetEpisode) < 0 && !show.capitulos_vistos?.includes(ep.id));
-        if (previousEpisodes.length > 0 && !show.capitulos_vistos?.length && confirm('¿Quieres marcar también los episodios anteriores como vistos?')) {
+        if (shouldAskToMarkPreviousEpisodes(show, episodes, episode) && confirm('¿Quieres marcar también los episodios anteriores como vistos?')) {
             previousEpisodes.forEach(ep => {
-                if (!show.capitulos_vistos.includes(ep.id)) show.capitulos_vistos.push(ep.id);
+                if (!show.capitulos_vistos.includes(ep.id)) {
+                    show.capitulos_vistos.push(ep.id);
+                    newlyWatchedIds.push(ep.id);
+                }
             });
         }
         show.capitulos_vistos.push(episode);
+        newlyWatchedIds.push(episode);
+        markedWatched = true;
+        recordEpisodesWatched(show, newlyWatchedIds);
+        bumpPendingHistoryAfterWatch();
+    }
+
+    if (wasStandby && markedWatched) {
+        show.estado = 'watching';
+    }
+    if (wasDropped && markedWatched) {
+        show.estado = 'watching';
     }
 
     await refreshShowStatus(show);
     saveLocalData();
     syncToDrive();
 
-    const seasonContent = document.getElementById(seasonId);
-    let seasonEpisodeIds = [];
-    if (seasonContent) {
-        const episodeCheckboxes = seasonContent.querySelectorAll('input[id^="ep-"]');
-        seasonEpisodeIds = Array.from(episodeCheckboxes)
-            .filter(cb => cb.dataset.aired !== 'false')
-            .map(cb => cb.id.replace(/^ep-/, ''));
-    }
-
-    updateSeasonUI(id_tmdb, seasonNumber, seasonEpisodeIds, seasonId);
     if (AppState.selectedItem?.tipo === 'tv' && AppState.selectedItem.id_tmdb === id_tmdb) {
         AppState.selectedItem = { ...show, tipo: 'tv' };
         await renderEpisodes(AppState.selectedItem);
+        updateDetailHero(AppState.selectedItem);
     }
-    renderCurrentView();
+    await renderCurrentView();
 }
 
 /**
@@ -1445,7 +1948,7 @@ function seasonCheckboxHandler(e) {
  * @param {Array} episodeIds - IDs de los episodios en formato "S01E01"
  * @param {Event} event - Evento del checkbox
  */
-async function toggleSeasonWatched(id_tmdb, seasonNumber, seasonId, event) {
+async function toggleSeasonWatched(id_tmdb, seasonNumber) {
     const show = AppState.shows.find(s => s.id_tmdb === id_tmdb);
     if (!show) return;
 
@@ -1453,48 +1956,53 @@ async function toggleSeasonWatched(id_tmdb, seasonNumber, seasonId, event) {
         show.capitulos_vistos = [];
     }
 
-    const watched = event.target.checked;
+    const seasonDetails = await getSeasonDetails(id_tmdb, seasonNumber);
+    const episodeIds = (seasonDetails.episodes || [])
+        .filter(isEpisodeAired)
+        .map(ep => `S${String(seasonNumber).padStart(2, '0')}E${String(ep.episode_number).padStart(2, '0')}`);
 
-    const seasonContent = document.getElementById(seasonId);
-    let episodeIds = [];
-    if (seasonContent) {
-        const episodeCheckboxes = seasonContent.querySelectorAll('input[id^="ep-"]');
-        episodeIds = Array.from(episodeCheckboxes)
-            .filter(cb => cb.dataset.aired !== 'false')
-            .map(cb => cb.id.replace(/^ep-/, ''));
-    }
-
-    if (watched && episodeIds.length === 0) {
+    if (episodeIds.length === 0) {
         showToast('No hay episodios disponibles para marcar en esta temporada');
         return;
     }
 
+    const allWatched = episodeIds.every(id => show.capitulos_vistos.includes(id));
+    const watched = !allWatched;
+    const wasStandby = normalizeStatus(show.estado) === 'standby';
+    const touchedIds = [];
+
     episodeIds.forEach(episodeId => {
         const index = show.capitulos_vistos.indexOf(episodeId);
         if (watched) {
-            if (index === -1) show.capitulos_vistos.push(episodeId);
-        } else {
-            if (index > -1) show.capitulos_vistos.splice(index, 1);
+            if (index === -1) {
+                show.capitulos_vistos.push(episodeId);
+                touchedIds.push(episodeId);
+            }
+        } else if (index > -1) {
+            show.capitulos_vistos.splice(index, 1);
+            clearEpisodeWatchedRecord(show, episodeId);
         }
     });
+
+    if (watched && touchedIds.length) {
+        recordEpisodesWatched(show, touchedIds);
+        bumpPendingHistoryAfterWatch();
+    }
+
+    if (wasStandby && watched && touchedIds.length) {
+        show.estado = 'watching';
+    }
 
     await refreshShowStatus(show);
     saveLocalData();
     syncToDrive();
 
-    episodeIds.forEach(episodeId => {
-        const checkbox = document.getElementById(`ep-${episodeId}`);
-        if (checkbox) {
-            checkbox.checked = watched;
-        }
-    });
-
-    updateSeasonUI(id_tmdb, seasonNumber, episodeIds, seasonId);
     if (AppState.selectedItem?.tipo === 'tv' && AppState.selectedItem.id_tmdb === id_tmdb) {
         AppState.selectedItem = { ...show, tipo: 'tv' };
         await renderEpisodes(AppState.selectedItem);
+        updateDetailHero(AppState.selectedItem);
     }
-    renderCurrentView();
+    await renderCurrentView();
 }
 
 /**
@@ -1532,6 +2040,7 @@ function mergeDetailItem(existingItem, freshDetails) {
         estado: existingItem.estado || freshDetails.estado || 'pending',
         puntuacion: existingItem.puntuacion ?? freshDetails.puntuacion ?? 0,
         capitulos_vistos: existingItem.capitulos_vistos || freshDetails.capitulos_vistos || [],
+        capitulos_vistos_fecha: existingItem.capitulos_vistos_fecha || freshDetails.capitulos_vistos_fecha || {},
         credits: {
             ...(existingItem.credits || {}),
             ...(freshDetails.credits || {}),
@@ -1540,95 +2049,243 @@ function mergeDetailItem(existingItem, freshDetails) {
     };
 }
 
+function translateOfficialStatus(status) {
+    const key = String(status || '').trim().toLowerCase();
+    const map = {
+        'returning series': 'En emisión',
+        'ended': 'Finalizado',
+        'canceled': 'Cancelada',
+        'cancelled': 'Cancelada',
+        'in production': 'En producción',
+        'planned': 'Planificada',
+        'pilot': 'Piloto',
+    };
+    return map[key] || (status && status !== 'Unknown' ? status : null);
+}
+
+function closeDetailMenu() {
+    document.getElementById('detail-overflow-menu')?.classList.add('hidden');
+}
+
+function toggleDetailMenu(event) {
+    event?.stopPropagation?.();
+    const item = AppState.selectedItem;
+    const menu = document.getElementById('detail-overflow-menu');
+    if (!menu || !item) return;
+
+    if (!isItemAlreadyAdded(item.tipo, item.id_tmdb)) {
+        closeDetailMenu();
+        showToast('Añade el título primero');
+        return;
+    }
+
+    if (!menu.classList.contains('hidden')) {
+        closeDetailMenu();
+        return;
+    }
+
+    const watchedCount = item.tipo === 'tv'
+        ? (item.capitulos_vistos?.length || item.episodios_vistos_count || 0)
+        : 0;
+
+    const actions = [
+        { id: 'standby', label: 'Ver en otro momento' },
+        { id: 'remove', label: 'Eliminar', danger: true },
+    ];
+
+    if (item.tipo === 'tv' && watchedCount > 0) {
+        const st = normalizeStatus(item.estado);
+        if (st === 'dropped') {
+            actions.splice(1, 0, { id: 'resume', label: 'Seguir viendo' });
+        } else {
+            actions.splice(1, 0, { id: 'dropped', label: 'Dejar de ver' });
+        }
+    }
+
+    menu.innerHTML = actions.map(a => `
+        <button type="button" class="tvst-overflow-item${a.danger ? ' is-danger' : ''}" onclick="runDetailMenuAction('${a.id}')">${a.label}</button>
+    `).join('');
+    menu.classList.remove('hidden');
+}
+
+async function runDetailMenuAction(action) {
+    const item = AppState.selectedItem;
+    closeDetailMenu();
+    if (!item) return;
+
+    if (action === 'remove') {
+        removeContent();
+        return;
+    }
+
+    if (action === 'standby') {
+        await updateStatus(item.tipo, item.id_tmdb, 'standby');
+        const updated = item.tipo === 'tv'
+            ? AppState.shows.find(s => s.id_tmdb === item.id_tmdb)
+            : AppState.movies.find(m => m.id_tmdb === item.id_tmdb);
+        AppState.selectedItem = { ...(updated || item), tipo: item.tipo };
+        showToast('Marcada como ver en otro momento');
+        renderCurrentView();
+        updateDetailHero(AppState.selectedItem);
+        return;
+    }
+
+    if (action === 'dropped' && item.tipo === 'tv') {
+        await updateStatus('tv', item.id_tmdb, 'dropped');
+        const updated = AppState.shows.find(s => s.id_tmdb === item.id_tmdb);
+        AppState.selectedItem = { ...(updated || item), tipo: 'tv', estado: 'dropped' };
+        showToast('Marcada como abandonada');
+        renderCurrentView();
+        updateDetailHero(AppState.selectedItem);
+        return;
+    }
+
+    if (action === 'resume' && item.tipo === 'tv') {
+        await updateStatus('tv', item.id_tmdb, 'watching');
+        const updated = AppState.shows.find(s => s.id_tmdb === item.id_tmdb);
+        AppState.selectedItem = { ...(updated || item), tipo: 'tv', estado: 'watching' };
+        showToast('De vuelta en viendo');
+        renderCurrentView();
+        updateDetailHero(AppState.selectedItem);
+    }
+}
+
+function updateDetailAddBar(item) {
+    const bar = document.getElementById('modal-add-bar');
+    const btn = document.getElementById('modal-add-btn');
+    const scroll = document.querySelector('.tvst-modal-scroll');
+    if (!bar || !btn || !item) return;
+
+    const added = isItemAlreadyAdded(item.tipo, item.id_tmdb);
+    bar.classList.toggle('hidden', added);
+    scroll?.classList.toggle('has-add-bar', !added);
+    btn.textContent = item.tipo === 'movie' ? '+ Añadir película' : '+ Añadir serie';
+}
+
+function getHeroProgressStyle(item) {
+    if (item.tipo === 'movie') {
+        const st = normalizeStatus(item.estado);
+        if (st === 'dropped') return { progress: 0, heroClass: 'is-red' };
+        if (st === 'completed') return { progress: 100, heroClass: 'is-green' };
+        return { progress: 0, heroClass: 'is-yellow' };
+    }
+
+    const st = normalizeStatus(item.estado);
+    const prog = getShowProgressInfo(item);
+    const official = getOfficialStatus(item);
+    const isOfficialEnded = official === 'ended' || official === 'canceled' || official === 'cancelled';
+
+    if (st === 'dropped') {
+        return { progress: prog.progress, heroClass: 'is-red' };
+    }
+    if (st === 'completed' && isOfficialEnded) {
+        return { progress: 100, heroClass: 'is-purple' };
+    }
+    if (st === 'completed') {
+        return { progress: 100, heroClass: 'is-green' };
+    }
+    return { progress: prog.progress, heroClass: 'is-yellow' };
+}
+
+function updateDetailHero(item) {
+    const hero = document.getElementById('modal-hero');
+    const titleEl = document.getElementById('modal-title');
+    const metaEl = document.getElementById('modal-hero-meta');
+    const pctEl = document.getElementById('modal-hero-progress-label');
+    const fillEl = document.getElementById('modal-hero-progress');
+    const trackEl = document.querySelector('.tvst-hero-progress-track');
+
+    if (titleEl) titleEl.textContent = item.titulo || 'Sin título';
+
+    if (hero) {
+        const bg = item.backdrop || item.portada || '';
+        hero.style.backgroundImage = bg ? `url('${bg}')` : 'none';
+    }
+
+    const heroStyle = getHeroProgressStyle(item);
+
+    if (item.tipo === 'tv') {
+        const seasons = item.numero_temporadas || item.temporadas?.filter(s => !s.especial)?.length || 0;
+        const official = translateOfficialStatus(item.status || item.tmdb_status);
+        const provider = item.watch_providers?.[0]?.provider_name;
+        const parts = [];
+        if (seasons) parts.push(`${seasons} temporada${seasons === 1 ? '' : 's'}`);
+        if (official) parts.push(official);
+        if (provider) parts.push(provider);
+        if (metaEl) metaEl.textContent = parts.join(' • ');
+    } else {
+        const year = item.fecha_estreno ? new Date(item.fecha_estreno).getFullYear() : null;
+        const parts = ['Película'];
+        if (year) parts.push(String(year));
+        if (metaEl) metaEl.textContent = parts.join(' • ');
+    }
+
+    if (pctEl) {
+        pctEl.textContent = `${heroStyle.progress}%`;
+        pctEl.className = `tvst-hero-pct ${heroStyle.heroClass}`;
+    }
+    if (fillEl) {
+        fillEl.style.width = `${heroStyle.progress}%`;
+        fillEl.className = `tvst-hero-progress-fill ${heroStyle.heroClass}`;
+    }
+    if (trackEl) {
+        trackEl.className = `tvst-hero-progress-track ${heroStyle.heroClass}`;
+    }
+
+    updateDetailAddBar(item);
+}
+
 async function openDetail(type, id_tmdb) {
     const modal = document.getElementById('detail-modal');
     modal.classList.remove('hidden');
-    
+    document.getElementById('modal-actions')?.classList.add('hidden');
+    AppState.detailRecsExpanded = false;
+
     showLoading(true);
-    
+
     try {
         let item = type === 'movie'
             ? AppState.movies.find(m => m.id_tmdb === id_tmdb)
             : AppState.shows.find(s => s.id_tmdb === id_tmdb);
 
-        const needsFreshDetails = !item?.overview || !item?.credits?.cast?.length || !item?.recommendations?.length;
+        const needsFreshDetails = !item?.overview || !item?.credits?.cast?.length || !item?.recommendations?.length || !item?.backdrop;
 
         if (needsFreshDetails) {
             item = type === 'movie'
                 ? mergeDetailItem(item, await getMovieDetails(id_tmdb))
                 : mergeDetailItem(item, await getTVDetails(id_tmdb));
         }
-        
-        AppState.selectedItem = { ...item, tipo: type };
-        
-        // Actualizar modal
-        document.getElementById('modal-title').textContent = item.titulo;
-        document.getElementById('modal-overview').textContent = item.overview || 'Sin descripción';
-        
-        // Poster
-        const posterContainer = document.getElementById('modal-poster');
-        if (item.portada) {
-            posterContainer.innerHTML = `<img src="${item.portada}" alt="${item.titulo}" class="w-full h-full object-contain rounded-lg bg-black/5">`;
-        } else {
-            posterContainer.innerHTML = '<span class="text-4xl">🎬</span>';
-        }
 
         if (type === 'tv') {
-            if (!item.watch_providers || item.watch_providers.length === 0) {
-                const watchProviders = await window.getWatchProviders?.('tv', item.id_tmdb);
-                if (watchProviders?.length) {
-                    item.watch_providers = watchProviders;
-                }
-            }
-
-            const watchProvidersContainer = document.getElementById('modal-watch-providers');
-            if (item.watch_providers?.length) {
-                watchProvidersContainer.classList.remove('hidden');
-                watchProvidersContainer.innerHTML = `
-                    <div class="rounded-xl border border-gray-200 dark:border-gray-700 bg-white/60 dark:bg-dark-card/70 p-3">
-                        <p class="text-sm font-semibold text-gray-900 dark:text-white mb-3">Dónde ver</p>
-                        <div class="flex flex-wrap gap-2">
-                            ${item.watch_providers.map(provider => `
-                                <div class="inline-flex items-center gap-2 rounded-full bg-gray-100 dark:bg-dark-input px-3 py-1.5 text-sm">
-                                    ${provider.logo_path ? `<img src="${window.getImageUrl(provider.logo_path, 'w92')}" alt="${provider.provider_name}" class="h-5 w-5 rounded-full object-cover">` : ''}
-                                    <span class="text-gray-800 dark:text-gray-100">${provider.provider_name}</span>
-                                </div>
-                            `).join('')}
-                        </div>
-                    </div>
-                `;
-            } else {
-                watchProvidersContainer.classList.add('hidden');
-                watchProvidersContainer.innerHTML = '';
-            }
-        } else {
-            const watchProvidersContainer = document.getElementById('modal-watch-providers');
-            watchProvidersContainer.classList.add('hidden');
-            watchProvidersContainer.innerHTML = '';
+            await refreshShowStatus(item);
         }
-        
-        // Meta tags
-        const metaContainer = document.getElementById('modal-meta');
-        metaContainer.innerHTML = `
-            <span class="px-2 py-1 bg-primary/20 text-primary text-xs rounded">${item.tipo === 'tv' ? 'Serie' : 'Película'}</span>
-            ${item.fecha_estreno ? `<span class="px-2 py-1 bg-gray-200 dark:bg-gray-700 text-xs rounded">${new Date(item.fecha_estreno).getFullYear()}</span>` : ''}
-            ${item.vote_average !== undefined && item.vote_average !== null ? `<span class="px-2 py-1 bg-yellow-500/20 text-yellow-500 text-xs rounded">⭐ TMDB ${Number(item.vote_average).toFixed(1)}</span>` : ''}
-        `;
 
-        renderDetailInfo(item);
-        
-        // Rating
-        document.getElementById('modal-rating-input').value = item.puntuacion || '';
-        renderStars(item.puntuacion || 0);
-        
-        // Status
-        document.getElementById('modal-status').value = item.estado || 'pending';
-        
-        // Tabs / contenido detallado
+        if (!item.watch_providers || item.watch_providers.length === 0) {
+            const watchProviders = await window.getWatchProviders?.(type === 'movie' ? 'movie' : 'tv', item.id_tmdb);
+            if (watchProviders?.length) {
+                item.watch_providers = watchProviders;
+            }
+        }
+
+        AppState.selectedItem = { ...item, tipo: type };
+        closeDetailMenu();
+
+        updateDetailHero(AppState.selectedItem);
+
+        const overviewEl = document.getElementById('modal-overview');
+        if (overviewEl) overviewEl.textContent = item.overview || 'Sin descripción';
+
+        renderDetailInfo(AppState.selectedItem);
+
+        const ratingInput = document.getElementById('modal-rating-input');
+        if (ratingInput) ratingInput.value = item.puntuacion || '';
+        const statusSelect = document.getElementById('modal-status');
+        if (statusSelect) statusSelect.value = item.estado || 'pending';
+
         if (type === 'tv') {
             document.getElementById('detail-tabs').classList.remove('hidden');
             document.getElementById('detail-episodes-tab').classList.remove('hidden');
-            await renderEpisodes(item);
+            await renderEpisodes(AppState.selectedItem);
             switchDetailTab('info');
         } else {
             document.getElementById('detail-tabs').classList.add('hidden');
@@ -1636,7 +2293,6 @@ async function openDetail(type, id_tmdb) {
             document.getElementById('modal-episodes').classList.add('hidden');
             switchDetailTab('info');
         }
-        
     } catch (error) {
         console.error('[App] Error abriendo detalle:', error);
         showToast('Error al cargar detalles');
@@ -1650,6 +2306,9 @@ async function openDetail(type, id_tmdb) {
  */
 function closeModal() {
     document.getElementById('detail-modal').classList.add('hidden');
+    document.getElementById('modal-add-bar')?.classList.add('hidden');
+    document.querySelector('.tvst-modal-scroll')?.classList.remove('has-add-bar');
+    closeDetailMenu();
     AppState.selectedItem = null;
 }
 
@@ -1735,7 +2394,7 @@ async function addItem(type, id_tmdb) {
     if (item) {
         showToast('Ya está en tu lista');
         renderSearchResults(AppState.lastSearchResults);
-        return;
+        return false;
     }
 
     if (type === 'movie') {
@@ -1745,6 +2404,19 @@ async function addItem(type, id_tmdb) {
     }
 
     renderSearchResults(AppState.lastSearchResults);
+    return true;
+}
+
+async function addFromDetail() {
+    const item = AppState.selectedItem;
+    if (!item?.id_tmdb) return;
+
+    const added = await addItem(item.tipo, item.id_tmdb);
+    if (added) {
+        await openDetail(item.tipo, item.id_tmdb);
+    } else {
+        updateDetailAddBar(item);
+    }
 }
 
 // ============================================
@@ -1773,7 +2445,12 @@ async function connectDrive() {
     } catch (error) {
         console.error('[App] Error conectando Drive:', error);
         updateDriveStatus(false);
-        showToast('Error al conectar Google Drive');
+        const msg = String(error?.error || error?.message || error || '');
+        if (msg.includes('origin_mismatch')) {
+            showToast(`Error OAuth: origen no autorizado (${window.location.origin})`);
+        } else {
+            showToast('Error al conectar Google Drive');
+        }
     }
 }
 
@@ -1791,29 +2468,34 @@ function disconnectDrive() {
  * @param {boolean} connected - Estado de conexión
  */
 function updateDriveStatus(connected) {
-    console.log('[App] updateDriveStatus llamado con:', connected);
     AppState.isDriveConnected = !!connected;
 
     const statusDiv = document.getElementById('drive-status');
+    const originHint = document.getElementById('drive-origin-hint');
     const connectBtn = document.getElementById('btn-connect-drive');
     const disconnectBtn = document.getElementById('btn-disconnect-drive');
-
-    console.log('[App] Elementos DOM:', { statusDiv, connectBtn, disconnectBtn });
+    const syncBtn = document.getElementById('btn-sync-drive');
 
     if (!statusDiv || !connectBtn || !disconnectBtn) {
         console.warn('[App] No se encontraron elementos de UI de Drive');
         return;
     }
 
+    const origin = window.location.origin;
+    if (originHint) {
+        originHint.textContent = `Origen actual: ${origin} — debe coincidir con un origen autorizado en Google Cloud Console.`;
+    }
+
     if (connected) {
         statusDiv.innerHTML = `
             <div class="flex items-center gap-2 text-green-600 dark:text-green-400">
                 <span>✓</span>
-                <span>Conectado</span>
+                <span>Conectado — los cambios se sincronizan automáticamente</span>
             </div>
         `;
         connectBtn.classList.add('hidden');
         disconnectBtn.classList.remove('hidden');
+        syncBtn?.classList.remove('hidden');
     } else {
         statusDiv.innerHTML = `
             <div class="flex items-center gap-2 text-yellow-600 dark:text-yellow-400">
@@ -1823,6 +2505,7 @@ function updateDriveStatus(connected) {
         `;
         connectBtn.classList.remove('hidden');
         disconnectBtn.classList.add('hidden');
+        syncBtn?.classList.add('hidden');
     }
 }
 
@@ -1872,10 +2555,10 @@ function handleImport(event) {
             const data = JSON.parse(e.target.result);
             
             if (data.movies || data.shows) {
-                AppState.movies = data.movies || [];
-                AppState.shows = data.shows || [];
+                AppState.movies = (data.movies || []).map(normalizeStoredMovie);
+                AppState.shows = (data.shows || []).map(normalizeStoredShow);
                 saveLocalData();
-                syncToDrive();
+                syncToDriveNow();
                 renderFollowing();
                 showToast('Datos importados correctamente');
             } else {
@@ -1900,7 +2583,7 @@ function clearAllData() {
         AppState.movies = [];
         AppState.shows = [];
         saveLocalData();
-        syncToDrive();
+        syncToDriveNow();
         renderFollowing();
         showToast('Todos los datos han sido borrados');
     }
@@ -1945,11 +2628,11 @@ function showLoading(show) {
 function getStatusBadge(status) {
     const normalized = normalizeStatus(status);
     const badges = {
-        'pending': '<span class="px-2 py-1 bg-gray-200 dark:bg-gray-700 text-xs rounded">Pendiente</span>',
-        'watching': '<span class="px-2 py-1 bg-blue-200 dark:bg-blue-900 text-blue-800 dark:text-blue-200 text-xs rounded">Viendo</span>',
-        'completed': '<span class="px-2 py-1 bg-green-200 dark:bg-green-900 text-green-800 dark:text-green-200 text-xs rounded">Completado</span>',
-        'dropped': '<span class="px-2 py-1 bg-red-200 dark:bg-red-900 text-red-800 dark:text-red-200 text-xs rounded">Abandonado</span>',
-        'standby': '<span class="px-2 py-1 bg-amber-200 dark:bg-amber-900 text-amber-800 dark:text-amber-100 text-xs rounded">Ver en otro momento</span>',
+        'pending': '<span class="tvst-status-badge tvst-status-pending">Pendiente</span>',
+        'watching': '<span class="tvst-status-badge tvst-status-watching">Viendo</span>',
+        'completed': '<span class="tvst-status-badge tvst-status-completed">Completado</span>',
+        'dropped': '<span class="tvst-status-badge tvst-status-dropped">Abandonado</span>',
+        'standby': '<span class="tvst-status-badge tvst-status-standby">En espera</span>',
     };
 
     return badges[normalized] || badges['pending'];
@@ -1962,12 +2645,6 @@ function setupEventListeners() {
     // Event listeners ya están configurados en el HTML con onclick
     console.log('[App] Event listeners configurados');
 }
-
-// ============================================
-// INICIALIZACIÓN AL CARGAR
-// ============================================
-
-document.addEventListener('DOMContentLoaded', initApp);
 
 // ============================================
 // EXPORTACIONES
@@ -1987,7 +2664,11 @@ window.App = {
     toggleEpisodeAndUpdateSeason,
     updateSeasonUI,
     switchTab,
-    filterContent,
+    switchSubTab,
+    switchMoviesSubTab,
+    switchProfileTab,
+    scrollToNowAnchor,
+    switchDetailTab,
     openDetail,
     closeModal,
     saveContent,
@@ -2006,15 +2687,27 @@ window.App = {
 
 // También exportar individualmente
 window.switchTab = switchTab;
-window.filterContent = filterContent;
+window.switchSubTab = switchSubTab;
+window.switchMoviesSubTab = switchMoviesSubTab;
+window.switchProfileTab = switchProfileTab;
+window.toggleProfileExpanded = toggleProfileExpanded;
+window.toggleDetailRecsExpanded = toggleDetailRecsExpanded;
+window.loadFromDrive = loadFromDrive;
+window.scrollToNowAnchor = scrollToNowAnchor;
+window.switchDetailTab = switchDetailTab;
 window.openDetail = openDetail;
 window.closeModal = closeModal;
 window.saveContent = saveContent;
 window.removeContent = removeContent;
 window.setRating = setRating;
 window.setStatus = setStatus;
+window.setPersonalRating = setPersonalRating;
+window.toggleDetailMenu = toggleDetailMenu;
+window.runDetailMenuAction = runDetailMenuAction;
+window.closeDetailMenu = closeDetailMenu;
 window.handleSearch = handleSearch;
 window.addItem = addItem;
+window.addFromDetail = addFromDetail;
 window.connectDrive = connectDrive;
 window.disconnectDrive = disconnectDrive;
 window.exportData = exportData;
