@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="SeenIt">
+  <defs>
+    <linearGradient id="bg" x1="64" y1="32" x2="448" y2="480" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#1a1a1a"/>
+      <stop offset="100%" stop-color="#000000"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="140" y1="120" x2="380" y2="400" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#fde047"/>
+      <stop offset="100%" stop-color="#eab308"/>
+    </linearGradient>
+  </defs>
+
+  <!-- App tile -->
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+
+  <!-- Soft inner frame -->
+  <rect x="36" y="36" width="440" height="440" rx="92" fill="none" stroke="#2a2a2a" stroke-width="8"/>
+
+  <!-- Yellow accent disc (safe for maskable) -->
+  <circle cx="256" cy="256" r="148" fill="url(#accent)"/>
+
+  <!-- Geometric check (SeenIt) -->
+  <path
+    d="M168 262 L228 322 L348 186"
+    fill="none"
+    stroke="#111111"
+    stroke-width="44"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+</svg>

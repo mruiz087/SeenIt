@@ -133,6 +133,7 @@ async function importTvTimeLibrary(options = {}) {
     if (replace) {
         AppState.movies = [];
         AppState.shows = [];
+        AppState.lists = [];
     }
 
     const total = series.length + movies.length;
@@ -262,5 +263,164 @@ async function importTvTimeLibrary(options = {}) {
     return report;
 }
 
+/**
+ * Importa listas de TV Show Time.
+ * Listas mixtas se parten en dos (series / películas).
+ * Títulos no presentes en la biblioteca se añaden como pending.
+ *
+ * @param {Object} options
+ * @param {Array} options.lists
+ * @param {Function} [options.onProgress]
+ */
+async function importTvTimeLists(options = {}) {
+    const lists = Array.isArray(options.lists) ? options.lists : [];
+    const onProgress = typeof options.onProgress === 'function' ? options.onProgress : () => {};
+
+    const report = {
+        listsImported: 0,
+        listsUpdated: 0,
+        listItemsAdded: 0,
+        notFound: [],
+        errors: [],
+    };
+
+    const totalItems = lists.reduce((sum, list) => sum + (list.items?.length || 0), 0) || lists.length;
+    let done = 0;
+
+    for (const rawList of lists) {
+        const listName = String(rawList?.name || 'Lista').trim() || 'Lista';
+        const items = Array.isArray(rawList?.items) ? [...rawList.items] : [];
+        items.sort((a, b) => (Number(a.custom_order) || 0) - (Number(b.custom_order) || 0));
+
+        const buckets = { tv: [], movie: [] };
+
+        for (const item of items) {
+            done += 1;
+            const title = item?.name || 'Sin título';
+            onProgress({
+                current: done,
+                total: Math.max(totalItems, 1),
+                title: `${listName}: ${title}`,
+            });
+
+            const rawType = String(item?.type || '').toLowerCase();
+            const tipo = rawType === 'movie' || rawType === 'movies' ? 'movie' : 'tv';
+            const tvdb = item?.tvdb_id || item?.id?.tvdb || null;
+            const imdb = item?.imdb_id || item?.id?.imdb || null;
+
+            try {
+                let id_tmdb = null;
+
+                if (tipo === 'tv') {
+                    if (tvdb) {
+                        const found = await findByExternalId(tvdb, 'tvdb_id');
+                        id_tmdb = found.tvId || null;
+                    }
+                    if (!id_tmdb && imdb) {
+                        const found = await findByExternalId(imdb, 'imdb_id');
+                        id_tmdb = found.tvId || null;
+                    }
+                    if (!id_tmdb && title) {
+                        id_tmdb = await findTVByTitleYear(title, null);
+                    }
+                } else {
+                    if (imdb) {
+                        const found = await findByExternalId(imdb, 'imdb_id');
+                        id_tmdb = found.movieId || null;
+                    }
+                    if (!id_tmdb && title) {
+                        id_tmdb = await findMovieByTitleYear(title, null);
+                    }
+                }
+
+                if (!id_tmdb) {
+                    report.notFound.push({
+                        tipo,
+                        title,
+                        tvdb,
+                        imdb,
+                        list: listName,
+                        reason: 'Sin match TMDB',
+                    });
+                    await sleep(120);
+                    continue;
+                }
+
+                const existing = tipo === 'movie'
+                    ? AppState.movies.find(m => m.id_tmdb === id_tmdb)
+                    : AppState.shows.find(s => s.id_tmdb === id_tmdb);
+
+                if (!existing) {
+                    if (tipo === 'movie') {
+                        const details = await getMovieDetails(id_tmdb);
+                        details.estado = 'pending';
+                        AppState.movies.push(normalizeStoredMovie(details));
+                    } else {
+                        const details = await getTVDetails(id_tmdb);
+                        details.estado = 'pending';
+                        AppState.shows.push(normalizeStoredShow(details));
+                    }
+                }
+
+                buckets[tipo].push(id_tmdb);
+            } catch (error) {
+                console.error('[TVTimeImport] Lista item:', title, error);
+                report.errors.push({
+                    tipo,
+                    title,
+                    list: listName,
+                    error: String(error.message || error),
+                });
+            }
+
+            await sleep(120);
+        }
+
+        for (const tipo of ['tv', 'movie']) {
+            const ids = [...new Set(buckets[tipo])];
+            if (!ids.length) continue;
+
+            const name = buckets.tv.length && buckets.movie.length
+                ? `${listName} (${tipo === 'movie' ? 'Películas' : 'Series'})`
+                : listName;
+
+            let list = AppState.lists.find(l =>
+                l.tipo === tipo && l.name.toLowerCase() === name.toLowerCase()
+            );
+
+            if (!list) {
+                list = normalizeStoredList({
+                    id: `lst_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+                    name,
+                    tipo,
+                    itemIds: [],
+                    coverId: null,
+                });
+                AppState.lists.push(list);
+                report.listsImported += 1;
+            } else {
+                report.listsUpdated += 1;
+            }
+
+            for (const id of ids) {
+                if (!list.itemIds.includes(id)) {
+                    list.itemIds.push(id);
+                    report.listItemsAdded += 1;
+                }
+            }
+            if (!list.coverId && list.itemIds.length) {
+                list.coverId = list.itemIds[0];
+            }
+        }
+
+        saveLocalData();
+    }
+
+    saveLocalData();
+    syncToDrive();
+    return report;
+}
+
 window.importTvTimeLibrary = importTvTimeLibrary;
+window.importTvTimeLists = importTvTimeLists;
 console.log('[TVTimeImport] tvtime-import.js cargado');

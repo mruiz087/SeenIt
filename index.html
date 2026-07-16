@@ -7,7 +7,9 @@
     <meta name="description" content="App privada para seguimiento de series y películas">
     <meta name="theme-color" content="#000000">
     <link rel="manifest" href="manifest.json">
-    <link rel="icon" type="image/png" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📺</text></svg>">
+    <link rel="icon" type="image/svg+xml" href="./icons/icon.svg">
+    <link rel="icon" type="image/png" sizes="192x192" href="./icons/icon-192.png">
+    <link rel="apple-touch-icon" href="./icons/icon-192.png">
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="styles.css">
 </head>
@@ -40,12 +42,12 @@
                 </div>
                 <div id="subtab-content-pending-list" class="tvst-tab-panel">
                     <div id="pending-list-container" class="tvst-episode-list">
-                        <div class="tvst-empty"><div class="tvst-empty-icon">📺</div><p>Cargando episodios...</p></div>
+                        <!-- filled by JS -->
                     </div>
                 </div>
                 <div id="subtab-content-upcoming" class="tvst-tab-panel hidden">
                     <div id="upcoming-list-container" class="tvst-episode-list">
-                        <div class="tvst-empty"><div class="tvst-empty-icon">🗓️</div><p>Cargando próximos...</p></div>
+                        <!-- filled by JS -->
                     </div>
                 </div>
             </div>
@@ -61,12 +63,12 @@
                 </div>
                 <div id="movies-subtab-content-pending-list" class="tvst-tab-panel">
                     <div id="movies-pending-list-container" class="tvst-poster-grid">
-                        <div class="tvst-empty" style="grid-column:1/-1"><div class="tvst-empty-icon">🎬</div><p>Cargando películas...</p></div>
+                        <!-- filled by JS -->
                     </div>
                 </div>
                 <div id="movies-subtab-content-upcoming" class="tvst-tab-panel hidden">
                     <div id="movies-upcoming-list-container">
-                        <div class="tvst-empty"><div class="tvst-empty-icon">🗓️</div><p>Cargando estrenos...</p></div>
+                        <!-- filled by JS -->
                     </div>
                 </div>
             </div>
@@ -82,7 +84,7 @@
                     </div>
                 </div>
                 <div id="search-results" class="tvst-search-list">
-                    <div class="tvst-empty"><p>Escribe al menos 2 caracteres</p></div>
+                    <!-- filled by JS -->
                 </div>
             </div>
 
@@ -106,6 +108,19 @@
                         <button type="button" id="profile-series-more" class="tvst-show-more-btn" onclick="toggleProfileExpanded('series')">Mostrar más</button>
                     </div>
                     <div id="profile-series-container" class="tvst-profile-rail"></div>
+                    <section class="tvst-favorites-section">
+                        <div class="tvst-lists-header">
+                            <h2 class="tvst-lists-title">Favoritos</h2>
+                        </div>
+                        <div id="profile-series-favorites" class="tvst-favorites-rail"></div>
+                    </section>
+                    <section class="tvst-lists-section">
+                        <div class="tvst-lists-header">
+                            <h2 class="tvst-lists-title">Listas</h2>
+                            <button type="button" class="tvst-lists-create" onclick="createProfileList()">+ Crear lista</button>
+                        </div>
+                        <div id="profile-series-lists" class="tvst-lists-banners"></div>
+                    </section>
                 </div>
 
                 <div id="profile-movies-content" class="hidden">
@@ -118,6 +133,19 @@
                         <button type="button" id="profile-movies-more" class="tvst-show-more-btn" onclick="toggleProfileExpanded('movies')">Mostrar más</button>
                     </div>
                     <div id="profile-movies-container" class="tvst-profile-rail"></div>
+                    <section class="tvst-favorites-section">
+                        <div class="tvst-lists-header">
+                            <h2 class="tvst-lists-title">Favoritos</h2>
+                        </div>
+                        <div id="profile-movies-favorites" class="tvst-favorites-rail"></div>
+                    </section>
+                    <section class="tvst-lists-section">
+                        <div class="tvst-lists-header">
+                            <h2 class="tvst-lists-title">Listas</h2>
+                            <button type="button" class="tvst-lists-create" onclick="createProfileList()">+ Crear lista</button>
+                        </div>
+                        <div id="profile-movies-lists" class="tvst-lists-banners"></div>
+                    </section>
                 </div>
 
                 <div id="profile-settings-section" class="mt-4 space-y-3 pb-8">
@@ -151,27 +179,33 @@
                             <button type="button" onclick="clearAllData()" class="px-4 py-2 bg-red-900 text-red-100 rounded-lg text-sm">Borrar todo</button>
                         </div>
                     </div>
-                    <div class="tvst-section-card">
-                        <h3 class="font-bold mb-2 text-sm">TV Show Time</h3>
-                        <p class="text-xs text-gray-500 mb-3">Importa los JSON de series y películas exportados de TV Show Time. Se resuelven a TMDB por IMDB/TVDB.</p>
-                        <div class="flex flex-wrap gap-2 mb-2">
-                            <label class="px-4 py-2 bg-zinc-800 text-white rounded-lg text-sm cursor-pointer">
-                                Series JSON
-                                <input type="file" id="tvtime-series-file" accept=".json,application/json" class="hidden" onchange="onTvTimeFileSelected()">
+                    <details class="tvst-section-card tvst-collapsible">
+                        <summary>TV Show Time</summary>
+                        <div class="tvst-collapsible-body">
+                            <p class="text-xs text-gray-500 mb-3">Importa los JSON de series, películas y listas exportados de TV Show Time. Se resuelven a TMDB por IMDB/TVDB.</p>
+                            <div class="flex flex-wrap gap-2 mb-2">
+                                <label class="px-4 py-2 bg-zinc-800 text-white rounded-lg text-sm cursor-pointer">
+                                    Series JSON
+                                    <input type="file" id="tvtime-series-file" accept=".json,application/json" class="hidden" onchange="onTvTimeFileSelected()">
+                                </label>
+                                <label class="px-4 py-2 bg-zinc-800 text-white rounded-lg text-sm cursor-pointer">
+                                    Películas JSON
+                                    <input type="file" id="tvtime-movies-file" accept=".json,application/json" class="hidden" onchange="onTvTimeFileSelected()">
+                                </label>
+                                <label class="px-4 py-2 bg-zinc-800 text-white rounded-lg text-sm cursor-pointer">
+                                    Listas JSON
+                                    <input type="file" id="tvtime-lists-file" accept=".json,application/json" class="hidden" onchange="onTvTimeFileSelected()">
+                                </label>
+                            </div>
+                            <p id="tvtime-import-files" class="text-xs text-gray-500 mb-2">Ningún archivo seleccionado</p>
+                            <label class="flex items-center gap-2 text-xs text-gray-400 mb-3">
+                                <input type="checkbox" id="tvtime-replace-library"> Reemplazar biblioteca actual
                             </label>
-                            <label class="px-4 py-2 bg-zinc-800 text-white rounded-lg text-sm cursor-pointer">
-                                Películas JSON
-                                <input type="file" id="tvtime-movies-file" accept=".json,application/json" class="hidden" onchange="onTvTimeFileSelected()">
-                            </label>
+                            <button type="button" id="btn-tvtime-import" onclick="startTvTimeImport()" class="px-4 py-2 bg-yellow-400 text-black rounded-lg text-sm font-semibold" disabled>Importar TV Show Time</button>
+                            <p id="tvtime-import-progress" class="text-xs text-gray-400 mt-2 hidden"></p>
+                            <pre id="tvtime-import-report" class="tvst-import-report hidden"></pre>
                         </div>
-                        <p id="tvtime-import-files" class="text-xs text-gray-500 mb-2">Ningún archivo seleccionado</p>
-                        <label class="flex items-center gap-2 text-xs text-gray-400 mb-3">
-                            <input type="checkbox" id="tvtime-replace-library"> Reemplazar biblioteca actual
-                        </label>
-                        <button type="button" id="btn-tvtime-import" onclick="startTvTimeImport()" class="px-4 py-2 bg-yellow-400 text-black rounded-lg text-sm font-semibold" disabled>Importar TV Show Time</button>
-                        <p id="tvtime-import-progress" class="text-xs text-gray-400 mt-2 hidden"></p>
-                        <pre id="tvtime-import-report" class="tvst-import-report hidden"></pre>
-                    </div>
+                    </details>
                 </div>
             </div>
         </main>
@@ -268,6 +302,44 @@
                     <p id="episode-overview" class="tvst-episode-detail-overview">Sin descripción</p>
                     <button type="button" id="episode-watch-btn" class="tvst-check-btn tvst-episode-watch-btn" onclick="toggleEpisodeFromDetail()" aria-label="Marcar visto">✓</button>
                 </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal lista personalizada -->
+    <div id="list-modal" class="tvst-modal tvst-modal-elevated hidden">
+        <div class="tvst-modal-backdrop" onclick="closeListModal()"></div>
+        <div class="tvst-modal-sheet">
+            <div class="tvst-modal-scroll">
+                <header class="tvst-list-modal-header">
+                    <button type="button" class="tvst-hero-close" onclick="closeListModal()" aria-label="Cerrar">
+                        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+                    </button>
+                    <h2 id="list-modal-title" class="tvst-list-modal-title">Lista</h2>
+                    <div class="tvst-list-modal-actions">
+                        <button type="button" class="tvst-list-action-btn" id="list-cover-btn" onclick="toggleListCoverPickMode()">Cambiar portada</button>
+                        <button type="button" class="tvst-list-action-btn" onclick="renameSelectedList()">Renombrar</button>
+                        <button type="button" class="tvst-list-action-btn is-danger" onclick="deleteSelectedList()">Eliminar</button>
+                    </div>
+                </header>
+                <p id="list-cover-hint" class="tvst-list-cover-hint hidden">Elige un póster para usarlo como banner</p>
+                <div id="list-modal-grid" class="tvst-list-modal-grid"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Picker añadir a lista -->
+    <div id="list-picker-modal" class="tvst-modal tvst-modal-elevated hidden">
+        <div class="tvst-modal-backdrop" onclick="closeListPicker()"></div>
+        <div class="tvst-modal-sheet tvst-list-picker-sheet">
+            <div class="tvst-modal-scroll">
+                <header class="tvst-list-modal-header">
+                    <button type="button" class="tvst-hero-close" onclick="closeListPicker()" aria-label="Cerrar">
+                        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+                    </button>
+                    <h2 class="tvst-list-modal-title">Añadir a lista</h2>
+                </header>
+                <div id="list-picker-body" class="tvst-list-picker-body"></div>
             </div>
         </div>
     </div>
