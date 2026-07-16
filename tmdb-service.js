@@ -14,21 +14,22 @@
 // CONFIGURACIÓN
 // ============================================
 
-const TMDB_API_KEY = typeof CONFIG_TMDB_API_KEY !== 'undefined'
-    ? CONFIG_TMDB_API_KEY
-    : 'd9780bb81bd17f41406769af97f0b5d1'; // Reemplazar con tu API Key real
+function getTmdbApiKey() {
+    return typeof CONFIG_TMDB_API_KEY !== 'undefined'
+        ? CONFIG_TMDB_API_KEY
+        : 'd9780bb81bd17f41406769af97f0b5d1';
+}
+
 const TMDB_BASE_URL = 'https://api.themoviedb.org/3';
 const TMDB_IMAGE_BASE_URL = 'https://image.tmdb.org/t/p';
-
-if (TMDB_API_KEY === 'd9780bb81bd17f41406769af97f0b5d1') {
-    console.warn('[TMDB] ⚠️ Usando API Key por defecto. Reemplaza CONFIG_TMDB_API_KEY en config.js');
-}
 
 // ============================================
 // ESTADO GLOBAL
 // ============================================
 
 let searchTimeout = null;
+const seasonDetailsCache = new Map();
+const findExternalCache = new Map();
 
 // ============================================
 // FUNCIONES AUXILIARES
@@ -54,26 +55,90 @@ function getImageUrl(path, size = 'w500') {
 async function fetchTMDB(endpoint, params = {}) {
     try {
         const url = new URL(`${TMDB_BASE_URL}${endpoint}`);
-        url.searchParams.append('api_key', TMDB_API_KEY);
+        url.searchParams.append('api_key', getTmdbApiKey());
         url.searchParams.append('language', 'es-ES');
-        
+
         Object.entries(params).forEach(([key, value]) => {
             if (value !== undefined && value !== null) {
                 url.searchParams.append(key, value);
             }
         });
-        
+
         const response = await fetch(url);
-        
+
         if (!response.ok) {
             throw new Error(`Error TMDB: ${response.status} ${response.statusText}`);
         }
-        
+
         return await response.json();
     } catch (error) {
         console.error('[TMDB] Error en petición:', error);
         throw error;
     }
+}
+
+/**
+ * Resuelve un ID externo (imdb_id / tvdb_id) a IDs TMDB.
+ * @param {string|number} externalId
+ * @param {'imdb_id'|'tvdb_id'} externalSource
+ * @returns {Promise<{movieId:number|null, tvId:number|null, raw:Object}>}
+ */
+async function findByExternalId(externalId, externalSource) {
+    const key = `${externalSource}:${externalId}`;
+    if (findExternalCache.has(key)) {
+        return findExternalCache.get(key);
+    }
+
+    const raw = await fetchTMDB(`/find/${encodeURIComponent(String(externalId))}`, {
+        external_source: externalSource,
+    });
+
+    const result = {
+        movieId: raw.movie_results?.[0]?.id || null,
+        tvId: raw.tv_results?.[0]?.id || null,
+        raw,
+    };
+    findExternalCache.set(key, result);
+    return result;
+}
+
+/**
+ * Fallback por título + año (menos fiable que find externo).
+ */
+async function findMovieByTitleYear(title, year) {
+    const response = await searchMovies(title, 1);
+    const results = response.results || [];
+    const yearStr = year ? String(year) : '';
+    const exact = results.find(item => {
+        const releaseYear = (item.release_date || '').slice(0, 4);
+        const titleMatch = (item.title || '').toLowerCase() === String(title || '').toLowerCase()
+            || (item.original_title || '').toLowerCase() === String(title || '').toLowerCase();
+        return titleMatch && (!yearStr || releaseYear === yearStr);
+    });
+    if (exact) return exact.id;
+    if (yearStr) {
+        const byYear = results.find(item => (item.release_date || '').slice(0, 4) === yearStr);
+        if (byYear) return byYear.id;
+    }
+    return results[0]?.id || null;
+}
+
+async function findTVByTitleYear(title, year) {
+    const response = await searchTV(title, 1);
+    const results = response.results || [];
+    const yearStr = year ? String(year) : '';
+    const exact = results.find(item => {
+        const airYear = (item.first_air_date || '').slice(0, 4);
+        const titleMatch = (item.name || '').toLowerCase() === String(title || '').toLowerCase()
+            || (item.original_name || '').toLowerCase() === String(title || '').toLowerCase();
+        return titleMatch && (!yearStr || airYear === yearStr);
+    });
+    if (exact) return exact.id;
+    if (yearStr) {
+        const byYear = results.find(item => (item.first_air_date || '').slice(0, 4) === yearStr);
+        if (byYear) return byYear.id;
+    }
+    return results[0]?.id || null;
 }
 
 // ============================================
@@ -195,11 +260,29 @@ async function getTVDetails(id) {
  * @returns {Promise<Object>} Detalles de la temporada con episodios
  */
 async function getSeasonDetails(tvId, seasonNumber) {
+    const cacheKey = `${tvId}:${seasonNumber}`;
+    if (seasonDetailsCache.has(cacheKey)) {
+        return seasonDetailsCache.get(cacheKey);
+    }
+
     try {
-        return await fetchTMDB(`/tv/${tvId}/season/${seasonNumber}`);
+        const details = await fetchTMDB(`/tv/${tvId}/season/${seasonNumber}`);
+        seasonDetailsCache.set(cacheKey, details);
+        return details;
     } catch (error) {
         console.error('[TMDB] Error obteniendo detalles de temporada:', error);
         throw error;
+    }
+}
+
+function clearSeasonDetailsCache(tvId = null) {
+    if (tvId == null) {
+        seasonDetailsCache.clear();
+        return;
+    }
+    const prefix = `${tvId}:`;
+    for (const key of seasonDetailsCache.keys()) {
+        if (key.startsWith(prefix)) seasonDetailsCache.delete(key);
     }
 }
 
@@ -401,6 +484,10 @@ window.TMDBService = {
     getMovieDetails,
     getTVDetails,
     getSeasonDetails,
+    clearSeasonDetailsCache,
+    findByExternalId,
+    findMovieByTitleYear,
+    findTVByTitleYear,
     getImageUrl,
     normalizeMovieData,
     normalizeTVData,
@@ -409,13 +496,16 @@ window.TMDBService = {
     searchWithDebounce,
 };
 
-// También exportar individualmente
 window.searchMulti = searchMulti;
 window.searchMovies = searchMovies;
 window.searchTV = searchTV;
 window.getMovieDetails = getMovieDetails;
 window.getTVDetails = getTVDetails;
 window.getSeasonDetails = getSeasonDetails;
+window.clearSeasonDetailsCache = clearSeasonDetailsCache;
+window.findByExternalId = findByExternalId;
+window.findMovieByTitleYear = findMovieByTitleYear;
+window.findTVByTitleYear = findTVByTitleYear;
 window.getImageUrl = getImageUrl;
 window.normalizeMovieData = normalizeMovieData;
 window.normalizeTVData = normalizeTVData;

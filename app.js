@@ -29,19 +29,36 @@ const AppState = {
     isDriveConnected: false,
     isSyncing: false,
     expandedSeasons: {}, // Guardar qué temporadas están expandidas
-    timelineHistoryVisible: { 'pending-list': 0, upcoming: 4 },
+    timelineHistoryVisible: { 'pending-list': 12, upcoming: 4 },
     timelineHistoryCache: {},
+    driveReady: false,
 };
 
 let appInitialized = false;
 let syncToDriveTimeout = null;
+let tvTimeSeriesJson = null;
+let tvTimeMoviesJson = null;
 
 // ============================================
 // INICIALIZACIÓN
 // ============================================
 
+function setDriveGateVisible(visible, errorMessage = '') {
+    const gate = document.getElementById('drive-gate');
+    const app = document.getElementById('app');
+    const err = document.getElementById('drive-gate-error');
+    if (!gate || !app) return;
+
+    gate.classList.toggle('hidden', !visible);
+    app.classList.toggle('hidden', visible);
+    if (err) {
+        err.textContent = errorMessage || '';
+        err.classList.toggle('hidden', !errorMessage);
+    }
+}
+
 /**
- * Inicializa la aplicación
+ * Inicializa la aplicación (Drive-first)
  */
 async function initApp() {
     if (appInitialized) {
@@ -51,31 +68,69 @@ async function initApp() {
     appInitialized = true;
 
     console.log('[App] Inicializando aplicación...');
-    
-    // Cargar datos locales
     loadLocalData();
-    
-    // Inicializar servicio de Drive
+    setupEventListeners();
+    setDriveGateVisible(true);
+
     try {
         await initDriveService();
-        updateDriveStatus(isAuthenticated());
         console.log('[App] Drive service inicializado');
 
+        try {
+            await ensureValidAccessToken({ interactive: false });
+        } catch (_) {
+            // Sin sesión previa: se queda en el gate
+        }
+
         if (isAuthenticated()) {
-            await loadFromDrive();
+            await enterAppAfterDrive();
+        } else {
+            updateDriveStatus(false);
+            setDriveGateVisible(true);
         }
     } catch (error) {
         console.warn('[App] No se pudo inicializar Drive service:', error);
+        updateDriveStatus(false);
+        setDriveGateVisible(true, 'No se pudo inicializar Google Drive. Revisa la conexión e inténtalo de nuevo.');
     }
-    
-    // Renderizar contenido inicial
-    switchTab('series');
-    renderCurrentView();
-    
-    // Configurar eventos
-    setupEventListeners();
-    
+
     console.log('[App] Aplicación inicializada');
+}
+
+async function enterAppAfterDrive() {
+    updateDriveStatus(true);
+    try {
+        await loadFromDrive({ silent: true });
+    } catch (error) {
+        console.warn('[App] Error cargando Drive al entrar:', error);
+        // Si falla el pull pero hay local, seguimos con caché local
+    }
+    AppState.driveReady = true;
+    setDriveGateVisible(false);
+    switchTab('series');
+    await renderCurrentView();
+}
+
+async function connectDriveFromGate() {
+    const btn = document.getElementById('btn-drive-gate-connect');
+    if (btn) btn.disabled = true;
+    setDriveGateVisible(true, '');
+    try {
+        await authenticate();
+        await enterAppAfterDrive();
+        showToast('Conectado a Google Drive', 'success');
+    } catch (error) {
+        console.error('[App] Error conectando Drive desde gate:', error);
+        updateDriveStatus(false);
+        const msg = String(error?.error || error?.message || error || '');
+        if (msg.includes('origin_mismatch')) {
+            setDriveGateVisible(true, `Origen no autorizado: ${window.location.origin}`);
+        } else {
+            setDriveGateVisible(true, 'No se pudo conectar. Inténtalo de nuevo.');
+        }
+    } finally {
+        if (btn) btn.disabled = false;
+    }
 }
 
 /**
@@ -148,7 +203,7 @@ function saveLocalData() {
 async function addMovie(movie) {
     const exists = AppState.movies.find(m => m.id_tmdb === movie.id_tmdb);
     if (exists) {
-        showToast('Esta película ya está en tu lista');
+        showToast('Esta película ya está en tu lista', 'info');
         return;
     }
 
@@ -158,10 +213,10 @@ async function addMovie(movie) {
         saveLocalData();
         syncToDrive();
         renderCurrentView();
-        showToast('Película añadida');
+        showToast('Película añadida', 'success');
     } catch (error) {
         console.error('[App] Error añadiendo película:', error);
-        showToast('Error al añadir película');
+        showToast('Error al añadir película', 'error');
     }
 }
 
@@ -172,7 +227,7 @@ async function addMovie(movie) {
 async function addShow(show) {
     const exists = AppState.shows.find(s => s.id_tmdb === show.id_tmdb);
     if (exists) {
-        showToast('Esta serie ya está en tu lista');
+        showToast('Esta serie ya está en tu lista', 'info');
         return;
     }
 
@@ -182,10 +237,10 @@ async function addShow(show) {
         saveLocalData();
         syncToDrive();
         renderCurrentView();
-        showToast('Serie añadida');
+        showToast('Serie añadida', 'success');
     } catch (error) {
         console.error('[App] Error añadiendo serie:', error);
-        showToast('Error al añadir serie');
+        showToast('Error al añadir serie', 'error');
     }
 }
 
@@ -198,7 +253,7 @@ function removeMovie(id_tmdb) {
     saveLocalData();
     syncToDrive();
     renderFollowing();
-    showToast('Película eliminada');
+    showToast('Película eliminada', 'success');
 }
 
 /**
@@ -210,7 +265,7 @@ function removeShow(id_tmdb) {
     saveLocalData();
     syncToDrive();
     renderFollowing();
-    showToast('Serie eliminada');
+    showToast('Serie eliminada', 'success');
 }
 
 /**
@@ -293,7 +348,7 @@ async function toggleEpisode(id_tmdb, episode) {
     const targetEpisode = episodes.find(ep => ep.id === episode);
 
     if (targetEpisode && !isEpisodeAired(targetEpisode)) {
-        showToast('No puedes marcar episodios con fecha posterior a la actual');
+        showToast('No puedes marcar episodios con fecha posterior a la actual', 'info');
         return;
     }
 
@@ -368,10 +423,14 @@ async function syncToDriveNow() {
     if (!isAuthenticated() || AppState.isSyncing) {
         return;
     }
-    
+
     AppState.isSyncing = true;
-    
+
     try {
+        try {
+            await ensureValidAccessToken({ interactive: false });
+        } catch (_) { /* syncToDrive will fail below if needed */ }
+
         const data = {
             movies: AppState.movies,
             shows: AppState.shows,
@@ -381,6 +440,10 @@ async function syncToDriveNow() {
         console.log('[App] Datos sincronizados con Drive');
     } catch (error) {
         console.error('[App] Error sincronizando con Drive:', error);
+        if (!isAuthenticated()) {
+            updateDriveStatus(false);
+            setDriveGateVisible(true, 'Sesión de Drive caducada. Vuelve a conectar.');
+        }
     } finally {
         AppState.isSyncing = false;
     }
@@ -389,27 +452,35 @@ async function syncToDriveNow() {
 /**
  * Carga datos desde Google Drive
  */
-async function loadFromDrive() {
+async function loadFromDrive(options = {}) {
+    const silent = Boolean(options.silent);
     if (!isAuthenticated()) {
-        showToast('Primero conecta Google Drive');
+        if (!silent) showToast('Primero conecta Google Drive', 'info');
         return;
     }
-    
-    showLoading(true);
-    
+
+    if (!silent) showLoading(true);
+
     try {
+        try {
+            await ensureValidAccessToken({ interactive: false });
+        } catch (_) { /* continue; loadUserData will renew */ }
+
         const data = await loadUserData();
         AppState.movies = (data.movies || []).map(normalizeStoredMovie);
         AppState.shows = (data.shows || []).map(normalizeStoredShow);
         saveLocalData();
-        renderFollowing();
+        if (AppState.driveReady) {
+            renderCurrentView();
+        }
         updateDriveStatus(true);
-        showToast('Datos sincronizados desde Drive');
+        if (!silent) showToast('Datos sincronizados desde Drive', 'success');
     } catch (error) {
         console.error('[App] Error cargando desde Drive:', error);
-        showToast('Error al cargar datos desde Drive');
+        if (!silent) showToast('Error al cargar datos desde Drive', 'error');
+        throw error;
     } finally {
-        showLoading(false);
+        if (!silent) showLoading(false);
     }
 }
 
@@ -425,8 +496,11 @@ function switchTab(tab) {
     AppState.currentTab = tab;
 
     if (tab === 'series') {
-        // Al entrar en Series siempre partimos de "Ver a continuación" (historial arriba, oculto)
-        AppState.timelineHistoryVisible['pending-list'] = 0;
+        // Historial reciente ya encima; ancla a "Ver a continuación"
+        AppState.timelineHistoryVisible['pending-list'] = Math.max(
+            AppState.timelineHistoryVisible['pending-list'] || 0,
+            12,
+        );
         AppState.timelineHistoryVisible['upcoming'] = 4;
         window.__seenitHistoryLoadReady = false;
     }
@@ -443,7 +517,10 @@ function switchTab(tab) {
 function switchSubTab(subTab) {
     AppState.currentSubTab = subTab;
     if (subTab === 'pending-list') {
-        AppState.timelineHistoryVisible['pending-list'] = 0;
+        AppState.timelineHistoryVisible['pending-list'] = Math.max(
+            AppState.timelineHistoryVisible['pending-list'] || 0,
+            12,
+        );
         window.__seenitHistoryLoadReady = false;
     } else {
         AppState.timelineHistoryVisible[subTab] = 4;
@@ -460,7 +537,11 @@ function switchSubTab(subTab) {
         continueBar.classList.toggle('is-hidden', subTab === 'upcoming');
     }
 
-    renderCurrentView();
+    Promise.resolve(renderCurrentView()).finally(() => {
+        if (subTab === 'upcoming') {
+            window.scrollTo({ top: 0, behavior: 'auto' });
+        }
+    });
 }
 
 function switchMoviesSubTab(subTab) {
@@ -472,7 +553,11 @@ function switchMoviesSubTab(subTab) {
     document.querySelectorAll('#content-movies .tvst-tab-panel').forEach(el => el.classList.add('hidden'));
     document.getElementById(`movies-subtab-content-${subTab}`)?.classList.remove('hidden');
 
-    renderCurrentView();
+    Promise.resolve(renderCurrentView()).finally(() => {
+        if (subTab === 'upcoming') {
+            window.scrollTo({ top: 0, behavior: 'auto' });
+        }
+    });
 }
 
 function switchProfileTab(tab) {
@@ -568,7 +653,7 @@ function formatMovieCountdown(dateString) {
     return formatUpcomingDateLabel(dateString).toUpperCase();
 }
 
-function renderMoviePosterGrid(movies, { showCountdown = false } = {}) {
+function renderMoviePosterGrid(movies, { showCountdown = false, showWatchToggle = false } = {}) {
     if (!movies.length) {
         return `
             <div class="tvst-empty" style="grid-column: 1 / -1;">
@@ -579,14 +664,39 @@ function renderMoviePosterGrid(movies, { showCountdown = false } = {}) {
 
     return movies.map(movie => {
         const countdown = showCountdown ? formatMovieCountdown(movie.fecha_estreno) : '';
+        const isCompleted = normalizeStatus(movie.estado) === 'completed';
         return `
         <article class="tvst-poster-cell" onclick="openDetail('movie', ${movie.id_tmdb})">
             ${movie.portada
                 ? `<img src="${movie.portada}" alt="${movie.titulo}">`
                 : `<div class="w-full h-full flex items-center justify-center text-2xl">🎬</div>`}
             ${showCountdown && countdown ? `<div class="tvst-poster-countdown">${countdown}</div>` : ''}
+            ${showWatchToggle ? `
+                <button type="button"
+                    class="tvst-movie-check${isCompleted ? ' is-watched' : ''}"
+                    onclick="event.stopPropagation(); toggleMovieWatched(${movie.id_tmdb})"
+                    aria-label="${isCompleted ? 'Marcar como no vista' : 'Marcar como vista'}">✓</button>
+            ` : ''}
         </article>`;
     }).join('');
+}
+
+async function toggleMovieWatched(id_tmdb) {
+    const movie = AppState.movies.find(m => m.id_tmdb === id_tmdb);
+    if (!movie) return;
+
+    const isCompleted = normalizeStatus(movie.estado) === 'completed';
+    movie.estado = isCompleted ? 'pending' : 'completed';
+    saveLocalData();
+    syncToDrive();
+
+    if (AppState.selectedItem?.tipo === 'movie' && AppState.selectedItem.id_tmdb === id_tmdb) {
+        AppState.selectedItem = { ...movie, tipo: 'movie' };
+        updateDetailHero(AppState.selectedItem);
+    }
+
+    await renderCurrentView();
+    showToast(isCompleted ? 'Película marcada como pendiente' : 'Película marcada como vista', 'success');
 }
 
 async function renderMoviesView() {
@@ -607,7 +717,7 @@ function renderMoviesPendingList() {
         .sort((a, b) => (a.titulo || '').localeCompare(b.titulo || '', 'es', { sensitivity: 'base' }));
 
     container.className = 'tvst-poster-grid';
-    container.innerHTML = renderMoviePosterGrid(pending);
+    container.innerHTML = renderMoviePosterGrid(pending, { showWatchToggle: true });
 }
 
 function renderMoviesUpcomingList() {
@@ -679,23 +789,41 @@ function getDaysUntilAir(dateString) {
     return Math.round((target - today) / 86400000);
 }
 
+function formatAirDateShort(airDate) {
+    if (!airDate) return '—';
+    const dateOnly = String(airDate).slice(0, 10);
+    const parsed = new Date(`${dateOnly}T00:00:00`);
+    if (Number.isNaN(parsed.getTime())) return dateOnly;
+    return parsed.toLocaleDateString('es-ES', { day: 'numeric', month: 'short' });
+}
+
 function getAirTimeMeta(airDate, bucketLabel) {
     if (bucketLabel === 'MÁS TARDE') {
         const days = getDaysUntilAir(airDate);
-        if (days == null) return '—';
-        return days === 1 ? 'En 1 día' : `En ${Math.max(1, days)} días`;
+        if (days == null) {
+            return { text: formatAirDateShort(airDate), className: 'tvst-air-time is-date' };
+        }
+        const text = days === 1 ? 'En 1 día' : `En ${Math.max(1, days)} días`;
+        return { text, className: 'tvst-air-time is-days', sub: formatAirDateShort(airDate) };
     }
 
-    // TMDB almost always returns YYYY-MM-DD only → show em dash, not a fake hour
-    if (!airDate || String(airDate).length <= 10) return '—';
+    if (!airDate) return { text: '—', className: 'tvst-air-time' };
 
-    try {
-        const parsed = new Date(airDate);
-        if (Number.isNaN(parsed.getTime())) return '—';
-        return parsed.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
-    } catch {
-        return '—';
+    // Hora real si TMDB la trae; si no, fecha de emisión
+    if (String(airDate).length > 10) {
+        try {
+            const parsed = new Date(airDate);
+            if (!Number.isNaN(parsed.getTime())) {
+                return {
+                    text: parsed.toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }),
+                    className: 'tvst-air-time is-clock',
+                    sub: formatAirDateShort(airDate),
+                };
+            }
+        } catch { /* fall through */ }
     }
+
+    return { text: formatAirDateShort(airDate), className: 'tvst-air-time is-date' };
 }
 
 function getDaysSinceAir(airDate) {
@@ -804,7 +932,13 @@ function createEpisodeCardMarkup({
     } else if (variant === 'history') {
         rightSide = `<span class="tvst-check-btn is-watched" aria-hidden="true">✓</span>`;
     } else if (airMeta) {
-        rightSide = `<div class="tvst-row-meta"><span class="tvst-air-time">${airMeta}</span></div>`;
+        const meta = typeof airMeta === 'object'
+            ? airMeta
+            : { text: airMeta, className: 'tvst-air-time' };
+        rightSide = `<div class="tvst-row-meta">
+            <span class="${meta.className || 'tvst-air-time'}">${meta.text}</span>
+            ${meta.sub ? `<span class="tvst-air-sub">${meta.sub}</span>` : ''}
+        </div>`;
     }
 
     return `
@@ -1005,21 +1139,21 @@ async function renderPendingList(options = {}) {
 
     AppState.timelineHistoryCache['pending-list'] = historyEpisodes;
 
-    // Vista fresca: historial oculto encima (0 ítems). Al subir se va revelando.
-    // Al cargar más (preserveAnchor) se respeta el contador actual.
+    // Historial reciente ya en el DOM encima del ancla (sin pull-zone)
+    const defaultVisible = Math.min(12, historyEpisodes.length || 12);
     if (!options.preserveAnchor && !options.keepHistoryCount) {
-        AppState.timelineHistoryVisible['pending-list'] = 0;
+        AppState.timelineHistoryVisible['pending-list'] = Math.max(
+            AppState.timelineHistoryVisible['pending-list'] || 0,
+            defaultVisible,
+        );
     }
-    const historyVisibleCount = Math.min(
-        AppState.timelineHistoryVisible['pending-list'] || 0,
-        historyEpisodes.length,
+    AppState.timelineHistoryVisible['pending-list'] = Math.min(
+        AppState.timelineHistoryVisible['pending-list'] || defaultVisible,
+        historyEpisodes.length || AppState.timelineHistoryVisible['pending-list'] || defaultVisible,
     );
-    AppState.timelineHistoryVisible['pending-list'] = historyVisibleCount;
-    const visibleHistory = historyVisibleCount > 0
-        ? historyEpisodes.slice(-historyVisibleCount)
-        : [];
+    const historyVisibleCount = AppState.timelineHistoryVisible['pending-list'];
+    const visibleHistory = historyEpisodes.slice(-historyVisibleCount);
     const hasMoreHistory = historyEpisodes.length > historyVisibleCount;
-    const showHistoryPull = hasMoreHistory || (historyEpisodes.length > 0 && historyVisibleCount === 0);
 
     if (pendingEpisodes.length === 0 && historyEpisodes.length === 0) {
         container.innerHTML = `
@@ -1036,9 +1170,9 @@ async function renderPendingList(options = {}) {
 
     container.className = 'tvst-episode-list';
     container.innerHTML = `
-        ${showHistoryPull ? `
-            <div id="pending-history-sentinel" class="tvst-history-pull${historyVisibleCount === 0 ? ' is-empty' : ''}" aria-hidden="true">
-                <span class="tvst-history-pull-label">${historyVisibleCount === 0 ? 'Desliza para ver el historial' : 'Cargar más historial'}</span>
+        ${hasMoreHistory ? `
+            <div id="pending-history-sentinel" class="tvst-history-sentinel" aria-hidden="true">
+                <span class="tvst-history-pull-label">Cargar más historial</span>
             </div>
         ` : ''}
         ${visibleHistory.map(({ show, episode, airedEpisodes }) => createEpisodeCardMarkup({
@@ -1049,7 +1183,7 @@ async function renderPendingList(options = {}) {
             ? renderPendingCards(continueWatching)
             : '<div class="tvst-empty"><p>No hay episodios recientes por ver</p></div>'}
         ${staleWatching.length ? `
-            <div class="tvst-section-marker">Sin ver por un tiempo</div>
+            <div class="tvst-timeline-marker">Sin ver por un tiempo</div>
             ${renderPendingCards(staleWatching)}
         ` : ''}
         <div class="tvst-timeline-spacer" aria-hidden="true"></div>
@@ -1062,7 +1196,6 @@ async function renderPendingList(options = {}) {
         preserveAnchorAfterHistoryLoad('pending-list', options.anchorOffset);
     } else {
         window.__seenitHistoryLoadReady = false;
-        // Arrancar siempre en "Ver a continuación" (como 224450)
         anchorTimelineToNow('pending-list', 'auto');
     }
 }
@@ -1075,7 +1208,20 @@ async function renderUpcomingList() {
     if (!container) return;
 
     const allTvShows = AppState.shows;
-    await Promise.all(allTvShows.map(show => refreshShowStatus(show)));
+    // Refrescar temporadas/air dates desde TMDB si faltan
+    await Promise.all(allTvShows.map(async (show) => {
+        try {
+            if (!show.temporadas?.length || !show.status || show.status === 'Unknown') {
+                const fresh = await getTVDetails(show.id_tmdb);
+                if (fresh?.temporadas?.length) show.temporadas = fresh.temporadas;
+                if (fresh?.status) show.status = fresh.status;
+            }
+            await refreshShowStatus(show);
+        } catch (error) {
+            console.warn('[App] No se pudo refrescar show para próximos:', show.titulo, error);
+        }
+    }));
+
     const watchingShows = allTvShows.filter(show => normalizeStatus(show.estado) === 'watching');
 
     if (watchingShows.length === 0) {
@@ -1090,6 +1236,13 @@ async function renderUpcomingList() {
     const upcomingEpisodes = [];
 
     for (const show of watchingShows) {
+        if (!show.temporadas?.length) {
+            try {
+                const fresh = await getTVDetails(show.id_tmdb);
+                if (fresh?.temporadas?.length) show.temporadas = fresh.temporadas;
+            } catch (_) { /* continue */ }
+        }
+
         const episodes = await getOrderedEpisodes(show, { includeSpecials: false });
         const airedEpisodes = episodes.filter(isEpisodeAired);
         episodes.forEach(episode => {
@@ -1142,6 +1295,8 @@ async function renderUpcomingList() {
             airMeta: getAirTimeMeta(episode.air_date, label),
         })).join('')}
     `).join('');
+
+    requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: 'auto' }));
 }
 
 /**
@@ -1164,8 +1319,7 @@ async function renderProfileView() {
         document.getElementById('profile-movies-content')?.classList.remove('hidden');
     }
 
-    await Promise.all(AppState.shows.map(show => refreshShowStatus(show)));
-
+    // Solo datos locales: no refrescar TMDB en cada cambio de filtro
     const filteredSeries = AppState.shows
         .filter(show => filterProfileSeries(show))
         .sort((a, b) => (a.titulo || '').localeCompare(b.titulo || '', 'es', { sensitivity: 'base' }));
@@ -1252,7 +1406,10 @@ function renderProfileCards(items, type) {
     }
 
     return items.map(item => {
-        const personalRating = item.puntuacion && item.puntuacion > 0 ? item.puntuacion : null;
+        const personalRating = item.puntuacion && item.puntuacion > 0 ? Number(item.puntuacion) : null;
+        const tmdbRating = item.vote_average !== undefined && item.vote_average !== null
+            ? Number(item.vote_average)
+            : null;
         const progressData = type === 'tv' ? getShowProgressInfo(item) : null;
         const statusBadge = getStatusBadge(item.estado);
 
@@ -1260,7 +1417,8 @@ function renderProfileCards(items, type) {
         <div class="profile-card cursor-pointer flex flex-col${normalizeStatus(item.estado) === 'standby' ? ' is-standby' : ''}" onclick="openDetail('${type}', ${item.id_tmdb})">
             <div class="relative aspect-[2/3] bg-zinc-900 rounded overflow-hidden mb-2 w-full">
                 ${item.portada ? `<img src="${item.portada}" alt="${item.titulo}" class="w-full h-full object-cover">` : '<div class="w-full h-full flex items-center justify-center text-2xl">🎬</div>'}
-                ${personalRating !== null ? `<div class="absolute top-1.5 right-1.5 rounded bg-black/80 text-white px-1.5 py-0.5 text-[10px] font-bold">★ ${Number(personalRating).toFixed(1)}</div>` : ''}
+                ${tmdbRating !== null ? `<div class="tvst-poster-score is-tmdb">${tmdbRating.toFixed(1)}</div>` : ''}
+                ${personalRating !== null ? `<div class="tvst-poster-score is-user">★ ${personalRating.toFixed(1)}</div>` : ''}
             </div>
             <h3 class="font-semibold text-xs truncate text-white">${item.titulo}</h3>
             ${statusBadge}
@@ -1385,7 +1543,7 @@ function setPersonalRating(rating) {
     const item = AppState.selectedItem;
     if (!item) return;
     if (!isItemAlreadyAdded(item.tipo, item.id_tmdb)) {
-        showToast('Añádela a tu lista para puntuar');
+        showToast('Añádela a tu lista para puntuar', 'info');
         return;
     }
 
@@ -1522,13 +1680,16 @@ async function refreshShowStatus(show) {
         return show;
     }
 
-    if (!show.status || show.status === 'Unknown' || show.status === 'unknown') {
+    const needsFreshMeta = !show.status || show.status === 'Unknown' || show.status === 'unknown'
+        || !show.temporadas?.length;
+
+    if (needsFreshMeta) {
         try {
             const freshDetails = await getTVDetails(show.id_tmdb);
             if (freshDetails?.status) {
                 show.status = freshDetails.status;
             }
-            if (!show.temporadas?.length && freshDetails?.temporadas?.length) {
+            if (freshDetails?.temporadas?.length) {
                 show.temporadas = freshDetails.temporadas;
             }
         } catch (error) {
@@ -1800,7 +1961,7 @@ async function toggleEpisodeAndUpdateSeason(id_tmdb, episode, seasonNumber, seas
     const targetEpisode = episodes.find(ep => ep.id === episode);
 
     if (targetEpisode && !isEpisodeAired(targetEpisode)) {
-        showToast('No puedes marcar episodios con fecha posterior a la actual');
+        showToast('No puedes marcar episodios con fecha posterior a la actual', 'info');
         return;
     }
 
@@ -1962,7 +2123,7 @@ async function toggleSeasonWatched(id_tmdb, seasonNumber) {
         .map(ep => `S${String(seasonNumber).padStart(2, '0')}E${String(ep.episode_number).padStart(2, '0')}`);
 
     if (episodeIds.length === 0) {
-        showToast('No hay episodios disponibles para marcar en esta temporada');
+        showToast('No hay episodios disponibles para marcar en esta temporada', 'info');
         return;
     }
 
@@ -2075,7 +2236,7 @@ function toggleDetailMenu(event) {
 
     if (!isItemAlreadyAdded(item.tipo, item.id_tmdb)) {
         closeDetailMenu();
-        showToast('Añade el título primero');
+        showToast('Añade el título primero', 'info');
         return;
     }
 
@@ -2092,6 +2253,13 @@ function toggleDetailMenu(event) {
         { id: 'standby', label: 'Ver en otro momento' },
         { id: 'remove', label: 'Eliminar', danger: true },
     ];
+
+    if (item.tipo === 'movie') {
+        const st = normalizeStatus(item.estado);
+        actions.splice(1, 0, st === 'completed'
+            ? { id: 'movie-unwatch', label: 'Marcar como no vista' }
+            : { id: 'movie-watch', label: 'Marcar como vista' });
+    }
 
     if (item.tipo === 'tv' && watchedCount > 0) {
         const st = normalizeStatus(item.estado);
@@ -2124,7 +2292,7 @@ async function runDetailMenuAction(action) {
             ? AppState.shows.find(s => s.id_tmdb === item.id_tmdb)
             : AppState.movies.find(m => m.id_tmdb === item.id_tmdb);
         AppState.selectedItem = { ...(updated || item), tipo: item.tipo };
-        showToast('Marcada como ver en otro momento');
+        showToast('Marcada como ver en otro momento', 'success');
         renderCurrentView();
         updateDetailHero(AppState.selectedItem);
         return;
@@ -2134,7 +2302,7 @@ async function runDetailMenuAction(action) {
         await updateStatus('tv', item.id_tmdb, 'dropped');
         const updated = AppState.shows.find(s => s.id_tmdb === item.id_tmdb);
         AppState.selectedItem = { ...(updated || item), tipo: 'tv', estado: 'dropped' };
-        showToast('Marcada como abandonada');
+        showToast('Marcada como abandonada', 'info');
         renderCurrentView();
         updateDetailHero(AppState.selectedItem);
         return;
@@ -2144,9 +2312,14 @@ async function runDetailMenuAction(action) {
         await updateStatus('tv', item.id_tmdb, 'watching');
         const updated = AppState.shows.find(s => s.id_tmdb === item.id_tmdb);
         AppState.selectedItem = { ...(updated || item), tipo: 'tv', estado: 'watching' };
-        showToast('De vuelta en viendo');
+        showToast('De vuelta en viendo', 'success');
         renderCurrentView();
         updateDetailHero(AppState.selectedItem);
+        return;
+    }
+
+    if ((action === 'movie-watch' || action === 'movie-unwatch') && item.tipo === 'movie') {
+        await toggleMovieWatched(item.id_tmdb);
     }
 }
 
@@ -2295,7 +2468,7 @@ async function openDetail(type, id_tmdb) {
         }
     } catch (error) {
         console.error('[App] Error abriendo detalle:', error);
-        showToast('Error al cargar detalles');
+        showToast('Error al cargar detalles', 'error');
     } finally {
         showLoading(false);
     }
@@ -2327,7 +2500,7 @@ async function saveContent() {
     
     closeModal();
     renderFollowing();
-    showToast('Cambios guardados');
+    showToast('Cambios guardados', 'success');
 }
 
 /**
@@ -2392,7 +2565,7 @@ async function addItem(type, id_tmdb) {
         : AppState.shows.find(s => s.id_tmdb === id_tmdb);
 
     if (item) {
-        showToast('Ya está en tu lista');
+        showToast('Ya está en tu lista', 'info');
         renderSearchResults(AppState.lastSearchResults);
         return false;
     }
@@ -2429,27 +2602,18 @@ async function addFromDetail() {
 async function connectDrive() {
     console.log('[App] === connectDrive iniciado ===');
     try {
-        console.log('[App] Llamando a authenticate...');
         await authenticate();
-        console.log('[App] authenticate completado, llamando a updateDriveStatus(true)');
         updateDriveStatus(true);
-        showToast('Conectado a Google Drive');
-        
-        // Cargar datos desde Drive (no afecta el estado de conexión)
-        try {
-            await loadFromDrive();
-        } catch (error) {
-            console.error('[App] Error cargando datos desde Drive:', error);
-            showToast('Conectado, pero error al cargar datos');
-        }
+        showToast('Conectado a Google Drive', 'success');
+        await enterAppAfterDrive();
     } catch (error) {
         console.error('[App] Error conectando Drive:', error);
         updateDriveStatus(false);
         const msg = String(error?.error || error?.message || error || '');
         if (msg.includes('origin_mismatch')) {
-            showToast(`Error OAuth: origen no autorizado (${window.location.origin})`);
+            showToast(`Error OAuth: origen no autorizado (${window.location.origin})`, 'error');
         } else {
-            showToast('Error al conectar Google Drive');
+            showToast('Error al conectar Google Drive', 'error');
         }
     }
 }
@@ -2459,8 +2623,10 @@ async function connectDrive() {
  */
 function disconnectDrive() {
     signOut();
+    AppState.driveReady = false;
     updateDriveStatus(false);
-    showToast('Desconectado de Google Drive');
+    setDriveGateVisible(true);
+    showToast('Desconectado de Google Drive', 'info');
 }
 
 /**
@@ -2531,7 +2697,7 @@ function exportData() {
     a.click();
     URL.revokeObjectURL(url);
     
-    showToast('Datos exportados');
+    showToast('Datos exportados', 'success');
 }
 
 /**
@@ -2560,13 +2726,13 @@ function handleImport(event) {
                 saveLocalData();
                 syncToDriveNow();
                 renderFollowing();
-                showToast('Datos importados correctamente');
+                showToast('Datos importados correctamente', 'success');
             } else {
-                showToast('Formato de archivo inválido');
+                showToast('Formato de archivo inválido', 'error');
             }
         } catch (error) {
             console.error('[App] Error importando datos:', error);
-            showToast('Error al importar datos');
+            showToast('Error al importar datos', 'error');
         }
     };
     reader.readAsText(file);
@@ -2584,8 +2750,120 @@ function clearAllData() {
         AppState.shows = [];
         saveLocalData();
         syncToDriveNow();
-        renderFollowing();
-        showToast('Todos los datos han sido borrados');
+        renderCurrentView();
+        showToast('Todos los datos han sido borrados', 'success');
+    }
+}
+
+function onTvTimeFileSelected() {
+    const seriesInput = document.getElementById('tvtime-series-file');
+    const moviesInput = document.getElementById('tvtime-movies-file');
+    const label = document.getElementById('tvtime-import-files');
+    const btn = document.getElementById('btn-tvtime-import');
+
+    const seriesFile = seriesInput?.files?.[0] || null;
+    const moviesFile = moviesInput?.files?.[0] || null;
+    const parts = [];
+    if (seriesFile) parts.push(`Series: ${seriesFile.name}`);
+    if (moviesFile) parts.push(`Películas: ${moviesFile.name}`);
+    if (label) label.textContent = parts.length ? parts.join(' · ') : 'Ningún archivo seleccionado';
+    if (btn) btn.disabled = !(seriesFile || moviesFile);
+}
+
+async function readJsonFile(file) {
+    const text = await file.text();
+    const data = JSON.parse(text);
+    if (!Array.isArray(data)) {
+        throw new Error('El JSON debe ser un array');
+    }
+    return data;
+}
+
+async function startTvTimeImport() {
+    const seriesInput = document.getElementById('tvtime-series-file');
+    const moviesInput = document.getElementById('tvtime-movies-file');
+    const progressEl = document.getElementById('tvtime-import-progress');
+    const reportEl = document.getElementById('tvtime-import-report');
+    const btn = document.getElementById('btn-tvtime-import');
+    const replace = Boolean(document.getElementById('tvtime-replace-library')?.checked);
+
+    const seriesFile = seriesInput?.files?.[0];
+    const moviesFile = moviesInput?.files?.[0];
+    if (!seriesFile && !moviesFile) {
+        showToast('Selecciona al menos un JSON', 'info');
+        return;
+    }
+
+    if (btn) btn.disabled = true;
+    if (progressEl) {
+        progressEl.classList.remove('hidden');
+        progressEl.textContent = 'Leyendo archivos...';
+    }
+    if (reportEl) {
+        reportEl.classList.add('hidden');
+        reportEl.textContent = '';
+    }
+
+    try {
+        const series = seriesFile ? await readJsonFile(seriesFile) : [];
+        const movies = moviesFile ? await readJsonFile(moviesFile) : [];
+
+        const report = await importTvTimeLibrary({
+            series,
+            movies,
+            replace,
+            onProgress: ({ current, total, title, phase }) => {
+                if (progressEl) {
+                    progressEl.textContent = `${phase === 'series' ? 'Series' : 'Películas'}: ${current}/${total} — ${title}`;
+                }
+            },
+        });
+
+        await renderCurrentView();
+
+        const lines = [
+            `Importadas: ${report.seriesImported} series, ${report.moviesImported} películas`,
+            `Actualizadas: ${report.seriesUpdated} series, ${report.moviesUpdated} películas`,
+            `No encontrados: ${report.notFound.length}`,
+            `Errores: ${report.errors.length}`,
+            '',
+        ];
+
+        if (report.notFound.length) {
+            lines.push('--- No encontrados ---');
+            report.notFound.forEach(item => {
+                lines.push(
+                    `[${item.tipo}] ${item.title}`
+                    + (item.imdb ? ` | imdb ${item.imdb}` : '')
+                    + (item.tvdb ? ` | tvdb ${item.tvdb}` : '')
+                    + (item.year ? ` | ${item.year}` : ''),
+                );
+            });
+        }
+
+        if (report.errors.length) {
+            lines.push('', '--- Errores ---');
+            report.errors.forEach(item => {
+                lines.push(`[${item.tipo}] ${item.title}: ${item.error}`);
+            });
+        }
+
+        if (reportEl) {
+            reportEl.textContent = lines.join('\n');
+            reportEl.classList.remove('hidden');
+        }
+        if (progressEl) {
+            progressEl.textContent = `Listo. ${report.notFound.length} sin match TMDB.`;
+        }
+        showToast(report.notFound.length
+            ? `Importación hecha (${report.notFound.length} no encontrados)`
+            : 'Importación completada', report.notFound.length ? 'info' : 'success');
+    } catch (error) {
+        console.error('[App] Error importando TV Show Time:', error);
+        showToast('Error al importar TV Show Time', 'error');
+        if (progressEl) progressEl.textContent = String(error.message || error);
+    } finally {
+        onTvTimeFileSelected();
     }
 }
 
@@ -2594,17 +2872,31 @@ function clearAllData() {
 // ============================================
 
 /**
- * Muestra un toast notification
- * @param {string} message - Mensaje a mostrar
+ * Muestra un toast notification vistoso
+ * @param {string} message
+ * @param {'success'|'error'|'info'} [type='info']
  */
-function showToast(message) {
+function showToast(message, type = 'info') {
     const toast = document.getElementById('toast');
-    document.getElementById('toast-message').textContent = message;
-    toast.classList.remove('hidden');
-    
-    setTimeout(() => {
-        toast.classList.add('hidden');
-    }, 3000);
+    const msgEl = document.getElementById('toast-message');
+    if (!toast || !msgEl) return;
+
+    const resolved = type === 'success' || type === 'error' || type === 'info'
+        ? type
+        : 'info';
+
+    msgEl.textContent = message;
+    toast.classList.remove('hidden', 'is-success', 'is-error', 'is-info', 'is-leaving');
+    toast.classList.add(`is-${resolved}`, 'is-visible');
+
+    clearTimeout(window.__seenitToastTimer);
+    window.__seenitToastTimer = setTimeout(() => {
+        toast.classList.add('is-leaving');
+        setTimeout(() => {
+            toast.classList.add('hidden');
+            toast.classList.remove('is-visible', 'is-leaving', 'is-success', 'is-error', 'is-info');
+        }, 220);
+    }, 3200);
 }
 
 /**
@@ -2709,12 +3001,16 @@ window.handleSearch = handleSearch;
 window.addItem = addItem;
 window.addFromDetail = addFromDetail;
 window.connectDrive = connectDrive;
+window.connectDriveFromGate = connectDriveFromGate;
 window.disconnectDrive = disconnectDrive;
 window.exportData = exportData;
 window.importData = importData;
 window.handleImport = handleImport;
 window.clearAllData = clearAllData;
+window.onTvTimeFileSelected = onTvTimeFileSelected;
+window.startTvTimeImport = startTvTimeImport;
 window.toggleEpisode = toggleEpisode;
+window.toggleMovieWatched = toggleMovieWatched;
 window.toggleSeasonWatched = toggleSeasonWatched;
 window.toggleSeasonAccordion = toggleSeasonAccordion;
 window.toggleEpisodeAndUpdateSeason = toggleEpisodeAndUpdateSeason;

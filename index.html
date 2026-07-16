@@ -13,6 +13,15 @@
 </head>
 <body class="bg-black text-white min-h-screen antialiased">
 
+    <div id="drive-gate" class="tvst-drive-gate hidden">
+        <div class="tvst-drive-gate-card">
+            <h1 class="tvst-drive-gate-title">SeenIt</h1>
+            <p class="tvst-drive-gate-text">Conecta Google Drive para cargar tu biblioteca y empezar a usar la app.</p>
+            <p id="drive-gate-error" class="tvst-drive-gate-error hidden"></p>
+            <button type="button" id="btn-drive-gate-connect" class="tvst-drive-gate-btn" onclick="connectDriveFromGate()">Conectar Google Drive</button>
+        </div>
+    </div>
+
     <div id="app" class="flex flex-col min-h-screen bg-black">
 
         <main class="tvst-main">
@@ -49,9 +58,6 @@
                 </nav>
                 <div class="tvst-continue-bar">
                     <button type="button" class="tvst-continue-btn" onclick="switchMoviesSubTab('pending-list')">Ver a continuación</button>
-                    <button type="button" class="tvst-grid-toggle" aria-label="Vista" tabindex="-1">
-                        <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
-                    </button>
                 </div>
                 <div id="movies-subtab-content-pending-list" class="tvst-tab-panel">
                     <div id="movies-pending-list-container" class="tvst-poster-grid">
@@ -133,6 +139,27 @@
                             <button type="button" onclick="importData()" class="px-4 py-2 bg-zinc-800 text-white rounded-lg text-sm">Importar</button>
                             <button type="button" onclick="clearAllData()" class="px-4 py-2 bg-red-900 text-red-100 rounded-lg text-sm">Borrar todo</button>
                         </div>
+                    </div>
+                    <div class="tvst-section-card">
+                        <h3 class="font-bold mb-2 text-sm">TV Show Time</h3>
+                        <p class="text-xs text-gray-500 mb-3">Importa los JSON de series y películas exportados de TV Show Time. Se resuelven a TMDB por IMDB/TVDB.</p>
+                        <div class="flex flex-wrap gap-2 mb-2">
+                            <label class="px-4 py-2 bg-zinc-800 text-white rounded-lg text-sm cursor-pointer">
+                                Series JSON
+                                <input type="file" id="tvtime-series-file" accept=".json,application/json" class="hidden" onchange="onTvTimeFileSelected()">
+                            </label>
+                            <label class="px-4 py-2 bg-zinc-800 text-white rounded-lg text-sm cursor-pointer">
+                                Películas JSON
+                                <input type="file" id="tvtime-movies-file" accept=".json,application/json" class="hidden" onchange="onTvTimeFileSelected()">
+                            </label>
+                        </div>
+                        <p id="tvtime-import-files" class="text-xs text-gray-500 mb-2">Ningún archivo seleccionado</p>
+                        <label class="flex items-center gap-2 text-xs text-gray-400 mb-3">
+                            <input type="checkbox" id="tvtime-replace-library"> Reemplazar biblioteca actual
+                        </label>
+                        <button type="button" id="btn-tvtime-import" onclick="startTvTimeImport()" class="px-4 py-2 bg-yellow-400 text-black rounded-lg text-sm font-semibold" disabled>Importar TV Show Time</button>
+                        <p id="tvtime-import-progress" class="text-xs text-gray-400 mt-2 hidden"></p>
+                        <pre id="tvtime-import-report" class="tvst-import-report hidden"></pre>
                     </div>
                 </div>
             </div>
@@ -218,15 +245,16 @@
         </div>
     </div>
 
-    <div id="toast" class="fixed bottom-20 left-1/2 -translate-x-1/2 bg-zinc-800 text-white px-5 py-2.5 rounded-lg text-sm z-[60] hidden shadow-xl max-w-[90vw] text-center">
+    <div id="toast" class="tvst-toast hidden" role="status" aria-live="polite">
         <span id="toast-message">Mensaje</span>
     </div>
 
     <input type="file" id="import-file" accept=".json" class="hidden" onchange="handleImport(event)">
 
+    <script src="config.js" onerror="console.warn('[Config] config.js no encontrado')"></script>
     <script src="tmdb-service.js"></script>
     <script src="drive-service.js"></script>
-    <script src="config.js" onerror="console.warn('[Config] config.js no encontrado')"></script>
+    <script src="tvtime-import.js"></script>
     <script src="app.js"></script>
     <script>
         if (document.readyState === 'loading') {

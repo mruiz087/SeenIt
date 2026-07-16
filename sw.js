@@ -13,8 +13,8 @@
  * - Sincronización con Google Drive
  */
 
-const STATIC_CACHE = 'seenit-static-v13';
-const DYNAMIC_CACHE = 'seenit-dynamic-v13';
+const STATIC_CACHE = 'seenit-static-v16';
+const DYNAMIC_CACHE = 'seenit-dynamic-v16';
 
 // Archivos estáticos que se cachearán al instalar
 const STATIC_FILES = [
@@ -25,6 +25,7 @@ const STATIC_FILES = [
     './app.js',
     './drive-service.js',
     './tmdb-service.js',
+    './tvtime-import.js',
 ];
 
 // ============================================
