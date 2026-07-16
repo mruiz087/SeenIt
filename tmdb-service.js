@@ -348,6 +348,9 @@ function normalizeTVData(data) {
         overview: data.overview,
         vote_average: data.vote_average,
         numero_temporadas: data.number_of_seasons,
+        episode_run_time: Array.isArray(data.episode_run_time) && data.episode_run_time.length
+            ? Math.round(data.episode_run_time.reduce((a, b) => a + b, 0) / data.episode_run_time.length)
+            : (data.episode_run_time?.[0] || 45),
         credits: {
             cast: (data.credits?.cast || []).slice(0, 8).map(person => ({
                 name: person.name,

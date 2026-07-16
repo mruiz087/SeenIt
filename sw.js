@@ -13,8 +13,8 @@
  * - Sincronización con Google Drive
  */
 
-const STATIC_CACHE = 'seenit-static-v16';
-const DYNAMIC_CACHE = 'seenit-dynamic-v16';
+const STATIC_CACHE = 'seenit-static-v17';
+const DYNAMIC_CACHE = 'seenit-dynamic-v17';
 
 // Archivos estáticos que se cachearán al instalar
 const STATIC_FILES = [

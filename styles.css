@@ -67,13 +67,13 @@ html, body {
 }
 
 .tvst-subnav-tab:hover {
-    color: var(--tvst-text);
+    color: var(--tvst-accent);
     transform: none;
 }
 
 .tvst-subnav-tab.is-active {
-    color: var(--tvst-text);
-    border-bottom-color: #fff;
+    color: var(--tvst-accent);
+    border-bottom-color: var(--tvst-accent);
 }
 
 .tvst-continue-bar {
@@ -219,7 +219,8 @@ html, body {
 }
 
 .tvst-show-pill:hover {
-    border-color: #fff;
+    border-color: var(--tvst-accent);
+    color: var(--tvst-accent);
 }
 
 .tvst-episode-code-row {
@@ -275,7 +276,8 @@ html, body {
 }
 
 .tvst-badge--last {
-    border-color: #fff;
+    border-color: var(--tvst-accent);
+    color: var(--tvst-accent);
 }
 
 .tvst-row-meta {
@@ -622,7 +624,7 @@ html, body {
 }
 
 .tvst-bottom-nav-btn.is-active {
-    color: #fff;
+    color: var(--tvst-accent);
 }
 
 .tvst-bottom-nav-btn svg {
@@ -661,12 +663,12 @@ html, body {
 
 .tvst-profile-tab:hover {
     transform: none;
-    color: #fff;
+    color: var(--tvst-accent);
 }
 
 .tvst-profile-tab.is-active {
-    color: #fff;
-    border-bottom-color: #fff;
+    color: var(--tvst-accent);
+    border-bottom-color: var(--tvst-accent);
 }
 
 .tvst-profile-toolbar {
@@ -1156,8 +1158,8 @@ html, body {
 }
 
 .tvst-detail-tab.is-active {
-    color: #fff;
-    border-bottom-color: #fff;
+    color: var(--tvst-accent);
+    border-bottom-color: var(--tvst-accent);
 }
 
 .tvst-modal-body {
@@ -1636,4 +1638,108 @@ html, body {
 
 .tvst-toast.hidden {
     display: none !important;
+}
+
+.tvst-stats-card {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+
+.tvst-stats-block {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+}
+
+.tvst-stats-label {
+    font-size: 0.75rem;
+    font-weight: 700;
+    color: var(--tvst-accent);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    margin: 0;
+}
+
+.tvst-stats-value {
+    font-size: 1.05rem;
+    font-weight: 800;
+    color: #fff;
+    margin: 0;
+}
+
+.tvst-episode-sheet .tvst-episode-hero {
+    position: relative;
+    min-height: 12rem;
+    background: #111;
+}
+
+.tvst-episode-still {
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    background: #111;
+    overflow: hidden;
+}
+
+.tvst-episode-still img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.tvst-episode-still-fallback {
+    width: 100%;
+    height: 100%;
+    min-height: 12rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 2.5rem;
+    background: #1a1a1a;
+}
+
+.tvst-episode-detail-body {
+    padding: 1rem 1rem 5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+}
+
+.tvst-episode-detail-code {
+    font-size: 1.15rem;
+    font-weight: 800;
+    margin: 0.35rem 0 0;
+}
+
+.tvst-episode-detail-title {
+    font-size: 1.25rem;
+    font-weight: 800;
+    margin: 0;
+}
+
+.tvst-episode-detail-meta {
+    font-size: 0.8rem;
+    color: #aaa;
+    margin: 0;
+}
+
+.tvst-episode-detail-overview {
+    font-size: 0.9rem;
+    color: #ccc;
+    line-height: 1.55;
+    margin: 0.35rem 0 0;
+}
+
+.tvst-episode-watch-btn {
+    margin-top: 1rem;
+    align-self: flex-start;
+}
+
+.tvst-episode-row {
+    cursor: pointer;
+}
+
+.tvst-ep-row,
+.tvst-continue-card {
+    cursor: pointer;
 }

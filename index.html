@@ -121,6 +121,17 @@
                 </div>
 
                 <div id="profile-settings-section" class="mt-4 space-y-3 pb-8">
+                    <h2 class="text-xs font-bold uppercase tracking-wide text-gray-400 px-1">Estadísticas</h2>
+                    <div class="tvst-section-card tvst-stats-card">
+                        <div class="tvst-stats-block">
+                            <h3 class="tvst-stats-label">Series</h3>
+                            <p id="stats-series-time" class="tvst-stats-value">0 meses · 0 días · 0 h</p>
+                        </div>
+                        <div class="tvst-stats-block">
+                            <h3 class="tvst-stats-label">Películas</h3>
+                            <p id="stats-movies-time" class="tvst-stats-value">0 meses · 0 días · 0 h</p>
+                        </div>
+                    </div>
                     <h2 class="text-xs font-bold uppercase tracking-wide text-gray-400 px-1">Ajustes</h2>
                     <div class="tvst-section-card">
                         <h3 class="font-bold mb-2 text-sm">Google Drive</h3>
@@ -235,6 +246,29 @@
         </div>
         <div id="modal-add-bar" class="tvst-modal-add-bar hidden">
             <button type="button" id="modal-add-btn" class="tvst-modal-add-btn" onclick="addFromDetail()">+ Añadir</button>
+        </div>
+    </div>
+
+    <!-- Modal ficha de episodio -->
+    <div id="episode-modal" class="tvst-modal hidden">
+        <div class="tvst-modal-backdrop" onclick="closeEpisodeModal()"></div>
+        <div class="tvst-modal-sheet tvst-episode-sheet">
+            <div class="tvst-modal-scroll">
+                <header class="tvst-episode-hero">
+                    <button type="button" class="tvst-hero-close" onclick="closeEpisodeModal()" aria-label="Cerrar">
+                        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+                    </button>
+                    <div id="episode-still" class="tvst-episode-still"></div>
+                </header>
+                <div class="tvst-episode-detail-body">
+                    <a href="#" id="episode-show-pill" class="tvst-show-pill" onclick="return false;">Serie ›</a>
+                    <p id="episode-code" class="tvst-episode-detail-code">T01 | E01</p>
+                    <h2 id="episode-title" class="tvst-episode-detail-title">Título</h2>
+                    <p id="episode-air-date" class="tvst-episode-detail-meta"></p>
+                    <p id="episode-overview" class="tvst-episode-detail-overview">Sin descripción</p>
+                    <button type="button" id="episode-watch-btn" class="tvst-check-btn tvst-episode-watch-btn" onclick="toggleEpisodeFromDetail()" aria-label="Marcar visto">✓</button>
+                </div>
+            </div>
         </div>
     </div>
 

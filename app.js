@@ -26,6 +26,7 @@ const AppState = {
     detailRecsExpanded: false,
     lastSearchResults: [],
     selectedItem: null,
+    selectedEpisode: null,
     isDriveConnected: false,
     isSyncing: false,
     expandedSeasons: {}, // Guardar qué temporadas están expandidas
@@ -173,6 +174,7 @@ function normalizeStoredShow(show) {
     normalized.status = normalized.status || 'Unknown';
     normalized.episodios_emitidos = Number(normalized.episodios_emitidos) || 0;
     normalized.episodios_vistos_count = Number(normalized.episodios_vistos_count) || normalized.capitulos_vistos.length;
+    normalized.episode_run_time = Number(normalized.episode_run_time) || 45;
     return normalized;
 }
 
@@ -928,7 +930,7 @@ function createEpisodeCardMarkup({
 
     let rightSide = '';
     if (showAction) {
-        rightSide = `<button type="button" class="tvst-check-btn" onclick="toggleEpisode(${show.id_tmdb}, '${episode.id}')" aria-label="Marcar visto">✓</button>`;
+        rightSide = `<button type="button" class="tvst-check-btn" onclick="event.stopPropagation(); toggleEpisode(${show.id_tmdb}, '${episode.id}')" aria-label="Marcar visto">✓</button>`;
     } else if (variant === 'history') {
         rightSide = `<span class="tvst-check-btn is-watched" aria-hidden="true">✓</span>`;
     } else if (airMeta) {
@@ -942,10 +944,12 @@ function createEpisodeCardMarkup({
     }
 
     return `
-        <article class="tvst-episode-row${variant === 'history' ? ' is-history' : ''}${normalizeStatus(show.estado) === 'standby' ? ' is-standby' : ''}">
+        <article class="tvst-episode-row${variant === 'history' ? ' is-history' : ''}${normalizeStatus(show.estado) === 'standby' ? ' is-standby' : ''}"
+            onclick="openEpisodeDetail(${show.id_tmdb}, '${episode.id}')"
+            role="button" tabindex="0">
             <div class="tvst-episode-poster">${poster}</div>
             <div class="tvst-episode-body">
-                <a href="#" onclick="openDetail('tv', ${show.id_tmdb});return false;" class="tvst-show-pill">${show.titulo} ›</a>
+                <a href="#" onclick="event.stopPropagation(); openDetail('tv', ${show.id_tmdb});return false;" class="tvst-show-pill">${show.titulo} ›</a>
                 <div class="tvst-episode-code-row">
                     <span class="tvst-episode-code">${episodeCode}</span>
                     ${remainingCount > 0 ? `<span class="tvst-remaining">+${remainingCount}</span>` : ''}
@@ -1340,6 +1344,44 @@ async function renderProfileView() {
 
     seriesContainer.innerHTML = renderProfileCards(filteredSeries, 'tv');
     moviesContainer.innerHTML = renderProfileCards(filteredMovies, 'movie');
+    renderWatchStats();
+}
+
+function formatWatchDuration(totalMinutes) {
+    const mins = Math.max(0, Math.round(Number(totalMinutes) || 0));
+    const totalHours = Math.floor(mins / 60);
+    const months = Math.floor(totalHours / (24 * 30));
+    const days = Math.floor((totalHours % (24 * 30)) / 24);
+    const hours = totalHours % 24;
+    return `${months} meses · ${days} días · ${hours} h`;
+}
+
+function getShowEpisodeRuntimeMinutes(show) {
+    const stored = Number(show?.episode_run_time);
+    if (stored > 0) return stored;
+    return 45;
+}
+
+function renderWatchStats() {
+    const seriesEl = document.getElementById('stats-series-time');
+    const moviesEl = document.getElementById('stats-movies-time');
+    if (!seriesEl || !moviesEl) return;
+
+    let seriesMinutes = 0;
+    for (const show of AppState.shows) {
+        const watched = Array.isArray(show.capitulos_vistos) ? show.capitulos_vistos.length : 0;
+        seriesMinutes += watched * getShowEpisodeRuntimeMinutes(show);
+    }
+
+    let moviesMinutes = 0;
+    for (const movie of AppState.movies) {
+        if (normalizeStatus(movie.estado) !== 'completed') continue;
+        const runtime = Number(movie.runtime);
+        moviesMinutes += runtime > 0 ? runtime : 100;
+    }
+
+    seriesEl.textContent = formatWatchDuration(seriesMinutes);
+    moviesEl.textContent = formatWatchDuration(moviesMinutes);
 }
 
 function toggleProfileExpanded(kind) {
@@ -1839,7 +1881,7 @@ async function renderEpisodes(show) {
                         const still = ep.still_path ? getImageUrl(ep.still_path, 'w185') : null;
                         const watched = show.capitulos_vistos?.includes(ep.id);
                         return `
-                        <div class="tvst-continue-card">
+                        <div class="tvst-continue-card" onclick="openEpisodeDetail(${show.id_tmdb}, '${ep.id}')" role="button" tabindex="0">
                             ${still
                                 ? `<img class="tvst-continue-still" src="${still}" alt="">`
                                 : '<div class="tvst-continue-still"></div>'}
@@ -1849,7 +1891,7 @@ async function renderEpisodes(show) {
                             </div>
                             <button type="button"
                                 class="tvst-circle-check${watched ? ' is-watched' : ''}"
-                                onclick="toggleEpisodeAndUpdateSeason(${show.id_tmdb}, '${ep.id}', ${ep.seasonNumber}, 'season-${ep.seasonNumber}')">✓</button>
+                                onclick="event.stopPropagation(); toggleEpisodeAndUpdateSeason(${show.id_tmdb}, '${ep.id}', ${ep.seasonNumber}, 'season-${ep.seasonNumber}')">✓</button>
                         </div>`;
                     }).join('')}
                 </div>`;
@@ -1899,7 +1941,7 @@ async function renderEpisodes(show) {
                             const episodeImage = episode.still_path ? getImageUrl(episode.still_path, 'w185') : null;
                             const aired = isEpisodeAired(episode);
                             return `
-                            <div class="tvst-ep-row">
+                            <div class="tvst-ep-row" onclick="openEpisodeDetail(${show.id_tmdb}, '${episodeId}')" role="button" tabindex="0">
                                 ${episodeImage
                                     ? `<img class="tvst-ep-still" src="${episodeImage}" alt="" onerror="this.style.visibility='hidden'">`
                                     : '<div class="tvst-ep-still"></div>'}
@@ -1910,7 +1952,7 @@ async function renderEpisodes(show) {
                                 <button type="button"
                                     class="tvst-circle-check${isWatched ? ' is-watched' : ''}"
                                     ${aired ? '' : 'disabled'}
-                                    onclick="toggleEpisodeAndUpdateSeason(${show.id_tmdb}, '${episodeId}', ${season.numero}, '${seasonId}')">✓</button>
+                                    onclick="event.stopPropagation(); toggleEpisodeAndUpdateSeason(${show.id_tmdb}, '${episodeId}', ${season.numero}, '${seasonId}')">✓</button>
                             </div>`;
                         }).join('')}
                     </div>
@@ -2406,6 +2448,99 @@ function updateDetailHero(item) {
     }
 
     updateDetailAddBar(item);
+}
+
+async function openEpisodeDetail(id_tmdb, episodeId) {
+    const show = AppState.shows.find(s => s.id_tmdb === id_tmdb);
+    if (!show) {
+        showToast('Serie no encontrada', 'error');
+        return;
+    }
+
+    showLoading(true);
+    try {
+        const episodes = await getOrderedEpisodes(show, { includeSpecials: true });
+        const episode = episodes.find(ep => ep.id === episodeId);
+        if (!episode) {
+            showToast('Episodio no encontrado', 'error');
+            return;
+        }
+
+        AppState.selectedEpisode = { showId: id_tmdb, episodeId, episode, show };
+
+        const modal = document.getElementById('episode-modal');
+        const stillEl = document.getElementById('episode-still');
+        const pill = document.getElementById('episode-show-pill');
+        const codeEl = document.getElementById('episode-code');
+        const titleEl = document.getElementById('episode-title');
+        const airEl = document.getElementById('episode-air-date');
+        const overviewEl = document.getElementById('episode-overview');
+        const watchBtn = document.getElementById('episode-watch-btn');
+
+        const stillUrl = episode.still_path
+            ? (String(episode.still_path).startsWith('http') ? episode.still_path : getImageUrl(episode.still_path, 'w780'))
+            : (show.backdrop || show.portada);
+
+        if (stillEl) {
+            stillEl.innerHTML = stillUrl
+                ? `<img src="${stillUrl}" alt="">`
+                : '<div class="tvst-episode-still-fallback">📺</div>';
+        }
+
+        if (pill) {
+            pill.textContent = `${show.titulo} ›`;
+            pill.onclick = (e) => {
+                e.preventDefault();
+                closeEpisodeModal();
+                openDetail('tv', id_tmdb);
+            };
+        }
+
+        if (codeEl) codeEl.textContent = formatEpisodeLabel(episode.seasonNumber, episode.episodeNumber);
+        if (titleEl) titleEl.textContent = episode.name || 'Episodio';
+        if (airEl) {
+            airEl.textContent = episode.air_date
+                ? `Emisión: ${formatAirDateShort(episode.air_date)}`
+                : 'Fecha de emisión desconocida';
+        }
+        if (overviewEl) overviewEl.textContent = episode.overview || 'Sin descripción';
+
+        const watched = show.capitulos_vistos?.includes(episodeId);
+        if (watchBtn) {
+            watchBtn.classList.toggle('is-watched', Boolean(watched));
+            watchBtn.setAttribute('aria-label', watched ? 'Desmarcar visto' : 'Marcar visto');
+        }
+
+        modal?.classList.remove('hidden');
+    } catch (error) {
+        console.error('[App] Error abriendo episodio:', error);
+        showToast('Error al cargar el episodio', 'error');
+    } finally {
+        showLoading(false);
+    }
+}
+
+function closeEpisodeModal() {
+    document.getElementById('episode-modal')?.classList.add('hidden');
+    AppState.selectedEpisode = null;
+}
+
+function refreshEpisodeModalWatchState() {
+    const ctx = AppState.selectedEpisode;
+    if (!ctx) return;
+    const show = AppState.shows.find(s => s.id_tmdb === ctx.showId);
+    const watchBtn = document.getElementById('episode-watch-btn');
+    if (!show || !watchBtn) return;
+    const watched = show.capitulos_vistos?.includes(ctx.episodeId);
+    watchBtn.classList.toggle('is-watched', Boolean(watched));
+    watchBtn.setAttribute('aria-label', watched ? 'Desmarcar visto' : 'Marcar visto');
+}
+
+async function toggleEpisodeFromDetail() {
+    const ctx = AppState.selectedEpisode;
+    if (!ctx) return;
+    await toggleEpisode(ctx.showId, ctx.episodeId);
+    refreshEpisodeModalWatchState();
 }
 
 async function openDetail(type, id_tmdb) {
@@ -2988,6 +3123,9 @@ window.loadFromDrive = loadFromDrive;
 window.scrollToNowAnchor = scrollToNowAnchor;
 window.switchDetailTab = switchDetailTab;
 window.openDetail = openDetail;
+window.openEpisodeDetail = openEpisodeDetail;
+window.closeEpisodeModal = closeEpisodeModal;
+window.toggleEpisodeFromDetail = toggleEpisodeFromDetail;
 window.closeModal = closeModal;
 window.saveContent = saveContent;
 window.removeContent = removeContent;
