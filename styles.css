@@ -1660,6 +1660,31 @@ html, body {
     margin-bottom: 0.85rem;
 }
 
+.tvst-drive-gate-status {
+    color: var(--tvst-accent, #facc15);
+    font-size: 0.8rem;
+    margin-bottom: 0.85rem;
+}
+
+.tvst-drive-gate-status.hidden,
+.tvst-drive-gate-error.hidden {
+    display: none;
+}
+
+.tvst-drive-gate-origin {
+    font-size: 0.7rem;
+    color: #666;
+    margin-bottom: 1rem;
+    word-break: break-all;
+}
+
+.tvst-drive-gate-hint {
+    margin-top: 0.85rem;
+    font-size: 0.7rem;
+    color: #777;
+    line-height: 1.4;
+}
+
 .tvst-drive-gate-btn {
     width: 100%;
     padding: 0.9rem 1rem;
@@ -1672,6 +1697,11 @@ html, body {
     text-transform: uppercase;
     font-size: 0.75rem;
     cursor: pointer;
+}
+
+.tvst-drive-gate-btn:disabled {
+    opacity: 0.55;
+    cursor: wait;
 }
 
 .tvst-import-report {

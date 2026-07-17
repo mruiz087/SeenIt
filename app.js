@@ -51,6 +51,7 @@ function setDriveGateVisible(visible, errorMessage = '') {
     const gate = document.getElementById('drive-gate');
     const app = document.getElementById('app');
     const err = document.getElementById('drive-gate-error');
+    const originEl = document.getElementById('drive-gate-origin');
     if (!gate || !app) return;
 
     gate.classList.toggle('hidden', !visible);
@@ -59,6 +60,26 @@ function setDriveGateVisible(visible, errorMessage = '') {
         err.textContent = errorMessage || '';
         err.classList.toggle('hidden', !errorMessage);
     }
+    if (originEl) {
+        originEl.textContent = `Origen: ${window.location.origin}`;
+    }
+}
+
+function setDriveGateStatus(message = '') {
+    const el = document.getElementById('drive-gate-status');
+    if (!el) return;
+    el.textContent = message || '';
+    el.classList.toggle('hidden', !message);
+}
+
+function getConfigSetupError() {
+    const missingGoogle = typeof hasGoogleConfig === 'function' ? !hasGoogleConfig() : true;
+    const missingTmdb = typeof hasTmdbConfig === 'function' ? !hasTmdbConfig() : true;
+    if (!missingGoogle && !missingTmdb) return '';
+    const parts = [];
+    if (missingTmdb) parts.push('TMDB');
+    if (missingGoogle) parts.push('Google');
+    return `Falta configuración (${parts.join(' + ')}). En local crea config.js; en GitHub Pages configura los Secrets y vuelve a desplegar.`;
 }
 
 /**
@@ -75,10 +96,22 @@ async function initApp() {
     loadLocalData();
     setupEventListeners();
     setDriveGateVisible(true);
+    setDriveGateStatus('Preparando…');
+
+    const configError = getConfigSetupError();
+    if (configError) {
+        setDriveGateStatus('');
+        setDriveGateVisible(true, configError);
+        const btn = document.getElementById('btn-drive-gate-connect');
+        if (btn) btn.disabled = true;
+        console.warn('[App]', configError);
+        return;
+    }
 
     try {
         await initDriveService();
         console.log('[App] Drive service inicializado');
+        setDriveGateStatus('');
 
         try {
             await ensureValidAccessToken({ interactive: false });
@@ -87,15 +120,23 @@ async function initApp() {
         }
 
         if (isAuthenticated()) {
+            setDriveGateStatus('Cargando tu biblioteca…');
             await enterAppAfterDrive();
         } else {
             updateDriveStatus(false);
+            setDriveGateStatus('');
             setDriveGateVisible(true);
         }
     } catch (error) {
         console.warn('[App] No se pudo inicializar Drive service:', error);
         updateDriveStatus(false);
-        setDriveGateVisible(true, 'No se pudo inicializar Google Drive. Revisa la conexión e inténtalo de nuevo.');
+        setDriveGateStatus('');
+        const msg = String(error?.message || error || '');
+        if (msg.includes('CONFIG_MISSING')) {
+            setDriveGateVisible(true, getConfigSetupError() || 'Falta config.js con las claves de Google.');
+        } else {
+            setDriveGateVisible(true, 'No se pudo inicializar Google Drive. Revisa la conexión e inténtalo de nuevo.');
+        }
     }
 
     console.log('[App] Aplicación inicializada');
@@ -103,13 +144,14 @@ async function initApp() {
 
 async function enterAppAfterDrive() {
     updateDriveStatus(true);
+    setDriveGateStatus('Cargando tu biblioteca…');
     try {
         await loadFromDrive({ silent: true });
     } catch (error) {
         console.warn('[App] Error cargando Drive al entrar:', error);
-        // Si falla el pull pero hay local, seguimos con caché local
     }
     AppState.driveReady = true;
+    setDriveGateStatus('');
     setDriveGateVisible(false);
     switchTab('series');
     await renderCurrentView();
@@ -119,18 +161,42 @@ async function connectDriveFromGate() {
     const btn = document.getElementById('btn-drive-gate-connect');
     if (btn) btn.disabled = true;
     setDriveGateVisible(true, '');
+    setDriveGateStatus('Abriendo Google… Si no ves una ventana, permite popups para este sitio.');
+
+    const configError = getConfigSetupError();
+    if (configError) {
+        setDriveGateStatus('');
+        setDriveGateVisible(true, configError);
+        if (btn) btn.disabled = false;
+        return;
+    }
+
     try {
+        if (typeof hasGoogleConfig === 'function' && !hasGoogleConfig()) {
+            throw new Error('CONFIG_MISSING');
+        }
+        if (!window.gisInited && typeof initDriveService === 'function') {
+            // ensure services ready if previous init failed partially
+        }
         await authenticate();
+        setDriveGateStatus('Conectado. Cargando tu biblioteca…');
         await enterAppAfterDrive();
         showToast('Conectado a Google Drive', 'success');
     } catch (error) {
         console.error('[App] Error conectando Drive desde gate:', error);
         updateDriveStatus(false);
+        setDriveGateStatus('');
         const msg = String(error?.error || error?.message || error || '');
-        if (msg.includes('origin_mismatch')) {
-            setDriveGateVisible(true, `Origen no autorizado: ${window.location.origin}`);
+        if (msg.includes('CONFIG_MISSING') || msg.includes('CONFIG_TMDB')) {
+            setDriveGateVisible(true, getConfigSetupError() || 'Falta configuración de claves.');
+        } else if (msg.includes('origin_mismatch')) {
+            setDriveGateVisible(true, `Origen no autorizado en Google Cloud: ${window.location.origin}. Añádelo en Credenciales → Orígenes JavaScript autorizados.`);
+        } else if (msg.includes('popup_closed') || msg.includes('access_denied')) {
+            setDriveGateVisible(true, 'Cerraste la ventana de Google o denegaste el acceso. Pulsa de nuevo para intentarlo.');
+        } else if (msg.includes('popup_failed') || msg.includes('Popup')) {
+            setDriveGateVisible(true, 'El navegador bloqueó el popup. Permite ventanas emergentes para este sitio e inténtalo otra vez.');
         } else {
-            setDriveGateVisible(true, 'No se pudo conectar. Inténtalo de nuevo.');
+            setDriveGateVisible(true, 'No se pudo conectar. Revisa la ventana de Google o inténtalo de nuevo.');
         }
     } finally {
         if (btn) btn.disabled = false;

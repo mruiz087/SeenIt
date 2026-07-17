@@ -18,9 +18,12 @@
     <div id="drive-gate" class="tvst-drive-gate hidden">
         <div class="tvst-drive-gate-card">
             <h1 class="tvst-drive-gate-title">SeenIt</h1>
-            <p class="tvst-drive-gate-text">Conecta Google Drive para cargar tu biblioteca y empezar a usar la app.</p>
+            <p id="drive-gate-text" class="tvst-drive-gate-text">Conecta Google Drive para cargar tu biblioteca y empezar a usar la app.</p>
+            <p id="drive-gate-status" class="tvst-drive-gate-status hidden"></p>
             <p id="drive-gate-error" class="tvst-drive-gate-error hidden"></p>
-            <button type="button" id="btn-drive-gate-connect" class="tvst-drive-gate-btn" onclick="connectDriveFromGate()">Conectar Google Drive</button>
+            <p id="drive-gate-origin" class="tvst-drive-gate-origin"></p>
+            <button type="button" id="btn-drive-gate-connect" class="tvst-drive-gate-btn" onclick="connectDriveFromGate()">Conectar con Google</button>
+            <p class="tvst-drive-gate-hint">Se abrirá una ventana de Google. Si el navegador la bloquea, permite popups para este sitio.</p>
         </div>
     </div>
 

@@ -15,9 +15,13 @@
 // ============================================
 
 function getTmdbApiKey() {
-    return typeof CONFIG_TMDB_API_KEY !== 'undefined'
-        ? CONFIG_TMDB_API_KEY
-        : 'd9780bb81bd17f41406769af97f0b5d1';
+    const key = typeof CONFIG_TMDB_API_KEY !== 'undefined' ? String(CONFIG_TMDB_API_KEY).trim() : '';
+    if (!key || key.includes('tu_api_key')) return '';
+    return key;
+}
+
+function hasTmdbConfig() {
+    return Boolean(getTmdbApiKey());
 }
 
 const TMDB_BASE_URL = 'https://api.themoviedb.org/3';
@@ -53,6 +57,9 @@ function getImageUrl(path, size = 'w500') {
  * @returns {Promise<Object>} Respuesta de la API
  */
 async function fetchTMDB(endpoint, params = {}) {
+    if (!hasTmdbConfig()) {
+        throw new Error('CONFIG_TMDB_MISSING');
+    }
     try {
         const url = new URL(`${TMDB_BASE_URL}${endpoint}`);
         url.searchParams.append('api_key', getTmdbApiKey());
@@ -502,6 +509,7 @@ window.TMDBService = {
 window.searchMulti = searchMulti;
 window.searchMovies = searchMovies;
 window.searchTV = searchTV;
+window.hasTmdbConfig = hasTmdbConfig;
 window.getMovieDetails = getMovieDetails;
 window.getTVDetails = getTVDetails;
 window.getSeasonDetails = getSeasonDetails;

@@ -2,18 +2,23 @@
  * Drive Service - Google Drive Integration
  *
  * Autenticación GIS + gapi. Token en localStorage con renovación silenciosa.
+ * Credenciales: config.js (local) o inyectado en deploy (GitHub Actions).
  */
 
 function getGoogleClientId() {
-    return typeof CONFIG_GOOGLE_CLIENT_ID !== 'undefined'
-        ? CONFIG_GOOGLE_CLIENT_ID
-        : '797642945177-qi6vaqh10ldb89p339snodostrbvfue8.apps.googleusercontent.com';
+    const id = typeof CONFIG_GOOGLE_CLIENT_ID !== 'undefined' ? String(CONFIG_GOOGLE_CLIENT_ID).trim() : '';
+    if (!id || id.includes('tu_client_id')) return '';
+    return id;
 }
 
 function getGoogleApiKey() {
-    return typeof CONFIG_GOOGLE_API_KEY !== 'undefined'
-        ? CONFIG_GOOGLE_API_KEY
-        : 'AIzaSyD2XPrBEzt54z3hvNFT6YbHR9SS5IzmCbQ';
+    const key = typeof CONFIG_GOOGLE_API_KEY !== 'undefined' ? String(CONFIG_GOOGLE_API_KEY).trim() : '';
+    if (!key || key.includes('tu_google_api_key')) return '';
+    return key;
+}
+
+function hasGoogleConfig() {
+    return Boolean(getGoogleClientId() && getGoogleApiKey());
 }
 
 const SCOPES = 'https://www.googleapis.com/auth/drive.file';
@@ -32,6 +37,9 @@ let renewPromise = null;
 
 async function initDriveService() {
     console.log('[Drive] Inicializando servicio...');
+    if (!hasGoogleConfig()) {
+        throw new Error('CONFIG_MISSING');
+    }
     await loadGIS();
     await loadGAPI();
     await restoreAccessToken();
@@ -389,6 +397,7 @@ window.authenticate = authenticate;
 window.ensureValidAccessToken = ensureValidAccessToken;
 window.signOut = signOut;
 window.isAuthenticated = isAuthenticated;
+window.hasGoogleConfig = hasGoogleConfig;
 window.loadUserData = loadUserData;
 window.saveUserData = saveUserData;
 window.getUserInfo = getUserInfo;
