@@ -131,11 +131,18 @@ async function initApp() {
         console.warn('[App] No se pudo inicializar Drive service:', error);
         updateDriveStatus(false);
         setDriveGateStatus('');
-        const msg = String(error?.message || error || '');
+        const msg = typeof formatDriveError === 'function'
+            ? formatDriveError(error)
+            : String(error?.message || error || '');
         if (msg.includes('CONFIG_MISSING')) {
             setDriveGateVisible(true, getConfigSetupError() || 'Falta config.js con las claves de Google.');
+            const btn = document.getElementById('btn-drive-gate-connect');
+            if (btn) btn.disabled = true;
         } else {
-            setDriveGateVisible(true, 'No se pudo inicializar Google Drive. Revisa la conexión e inténtalo de nuevo.');
+            // Dejar el botón activo para reintentar al hacer clic
+            setDriveGateVisible(true, msg
+                ? `No se pudo preparar Google (${msg}). Pulsa Conectar para reintentar.`
+                : 'No se pudo preparar Google. Pulsa Conectar para reintentar.');
         }
     }
 
@@ -145,10 +152,23 @@ async function initApp() {
 async function enterAppAfterDrive() {
     updateDriveStatus(true);
     setDriveGateStatus('Cargando tu biblioteca…');
+    const localSnapshot = snapshotLibrary();
     try {
-        await loadFromDrive({ silent: true });
+        const data = await loadUserData();
+        const result = reconcileWithDriveData(data, localSnapshot);
+        saveLocalData();
+        if (result === 'local-upload' || result === 'merged') {
+            await syncToDriveNow();
+        }
+        if (result === 'local-upload') {
+            showToast('Biblioteca local subida a Drive', 'success');
+        } else if (result === 'merged') {
+            showToast('Biblioteca fusionada con Drive', 'info');
+        }
     } catch (error) {
         console.warn('[App] Error cargando Drive al entrar:', error);
+        applyLibrary(localSnapshot);
+        saveLocalData();
     }
     AppState.driveReady = true;
     setDriveGateStatus('');
@@ -175,8 +195,19 @@ async function connectDriveFromGate() {
         if (typeof hasGoogleConfig === 'function' && !hasGoogleConfig()) {
             throw new Error('CONFIG_MISSING');
         }
-        if (!window.gisInited && typeof initDriveService === 'function') {
-            // ensure services ready if previous init failed partially
+        try {
+            await initDriveService();
+        } catch (initError) {
+            console.warn('[App] Error initDriveService:', initError);
+            const initMsg = typeof formatDriveError === 'function'
+                ? formatDriveError(initError)
+                : String(initError?.message || initError || '');
+            if (initMsg.includes('CONFIG_MISSING')) {
+                throw initError;
+            }
+            throw new Error(initMsg
+                ? `No se pudo inicializar Google: ${initMsg}`
+                : 'No se pudo inicializar Google. Revisa la conexión e inténtalo de nuevo.');
         }
         await authenticate();
         setDriveGateStatus('Conectado. Cargando tu biblioteca…');
@@ -186,17 +217,21 @@ async function connectDriveFromGate() {
         console.error('[App] Error conectando Drive desde gate:', error);
         updateDriveStatus(false);
         setDriveGateStatus('');
-        const msg = String(error?.error || error?.message || error || '');
+        const msg = typeof formatDriveError === 'function'
+            ? formatDriveError(error)
+            : String(error?.error || error?.message || error || '');
         if (msg.includes('CONFIG_MISSING') || msg.includes('CONFIG_TMDB')) {
             setDriveGateVisible(true, getConfigSetupError() || 'Falta configuración de claves.');
         } else if (msg.includes('origin_mismatch')) {
             setDriveGateVisible(true, `Origen no autorizado en Google Cloud: ${window.location.origin}. Añádelo en Credenciales → Orígenes JavaScript autorizados.`);
         } else if (msg.includes('popup_closed') || msg.includes('access_denied')) {
             setDriveGateVisible(true, 'Cerraste la ventana de Google o denegaste el acceso. Pulsa de nuevo para intentarlo.');
-        } else if (msg.includes('popup_failed') || msg.includes('Popup')) {
+        } else if (msg.includes('popup_failed') || msg.toLowerCase().includes('popup')) {
             setDriveGateVisible(true, 'El navegador bloqueó el popup. Permite ventanas emergentes para este sitio e inténtalo otra vez.');
         } else {
-            setDriveGateVisible(true, 'No se pudo conectar. Revisa la ventana de Google o inténtalo de nuevo.');
+            setDriveGateVisible(true, msg.startsWith('No se pudo inicializar')
+                ? msg
+                : (msg ? `No se pudo conectar: ${msg}` : 'No se pudo conectar. Revisa la ventana de Google o inténtalo de nuevo.'));
         }
     } finally {
         if (btn) btn.disabled = false;
@@ -281,6 +316,132 @@ function saveLocalData() {
     }
 }
 
+function snapshotLibrary() {
+    return {
+        movies: AppState.movies.map(m => ({ ...m })),
+        shows: AppState.shows.map(s => ({ ...s })),
+        lists: AppState.lists.map(l => ({
+            ...l,
+            itemIds: [...(l.itemIds || [])],
+        })),
+    };
+}
+
+function libraryItemCount(lib) {
+    return (lib?.movies?.length || 0) + (lib?.shows?.length || 0) + (lib?.lists?.length || 0);
+}
+
+function mergeMovieOrShow(localItem, remoteItem, kind) {
+    const a = kind === 'movie' ? normalizeStoredMovie(localItem) : normalizeStoredShow(localItem);
+    const b = kind === 'movie' ? normalizeStoredMovie(remoteItem) : normalizeStoredShow(remoteItem);
+    const watchedA = Array.isArray(a.capitulos_vistos) ? a.capitulos_vistos.length : 0;
+    const watchedB = Array.isArray(b.capitulos_vistos) ? b.capitulos_vistos.length : 0;
+    const preferRemote = watchedB > watchedA
+        || (watchedB === watchedA && normalizeStatus(b.estado) === 'completed' && normalizeStatus(a.estado) !== 'completed');
+    const base = preferRemote ? { ...a, ...b } : { ...b, ...a };
+    base.favorito = Boolean(a.favorito || b.favorito);
+    if (kind === 'tv') {
+        const ids = [...new Set([...(a.capitulos_vistos || []), ...(b.capitulos_vistos || [])])];
+        base.capitulos_vistos = ids;
+        base.capitulos_vistos_fecha = {
+            ...(a.capitulos_vistos_fecha || {}),
+            ...(b.capitulos_vistos_fecha || {}),
+        };
+        base.episodios_vistos_count = ids.length;
+        // Prefer explicit non-pending user states when tie
+        if (normalizeStatus(a.estado) === 'watching' || normalizeStatus(b.estado) === 'watching') {
+            if (normalizeStatus(base.estado) === 'pending' && ids.length === 0) {
+                base.estado = 'watching';
+            }
+        }
+        if (normalizeStatus(a.estado) === 'dropped' || normalizeStatus(b.estado) === 'dropped') {
+            if (normalizeStatus(a.estado) === 'dropped' && normalizeStatus(b.estado) !== 'watching') {
+                base.estado = 'dropped';
+            }
+        }
+    }
+    return kind === 'movie' ? normalizeStoredMovie(base) : normalizeStoredShow(base);
+}
+
+function mergeLibraries(localLib, remoteLib) {
+    const movieMap = new Map();
+    for (const m of remoteLib.movies || []) movieMap.set(Number(m.id_tmdb), normalizeStoredMovie(m));
+    for (const m of localLib.movies || []) {
+        const id = Number(m.id_tmdb);
+        movieMap.set(id, movieMap.has(id) ? mergeMovieOrShow(m, movieMap.get(id), 'movie') : normalizeStoredMovie(m));
+    }
+
+    const showMap = new Map();
+    for (const s of remoteLib.shows || []) showMap.set(Number(s.id_tmdb), normalizeStoredShow(s));
+    for (const s of localLib.shows || []) {
+        const id = Number(s.id_tmdb);
+        showMap.set(id, showMap.has(id) ? mergeMovieOrShow(s, showMap.get(id), 'tv') : normalizeStoredShow(s));
+    }
+
+    const listMap = new Map();
+    const listKey = (l) => `${l.tipo}::${String(l.name || '').toLowerCase()}`;
+    for (const l of [...(remoteLib.lists || []), ...(localLib.lists || [])]) {
+        const normalized = normalizeStoredList(l);
+        const key = listKey(normalized);
+        if (!listMap.has(key)) {
+            listMap.set(key, normalized);
+        } else {
+            const prev = listMap.get(key);
+            const itemIds = [...new Set([...(prev.itemIds || []), ...(normalized.itemIds || [])])];
+            listMap.set(key, normalizeStoredList({
+                ...prev,
+                ...normalized,
+                id: prev.id,
+                itemIds,
+                coverId: prev.coverId || normalized.coverId || itemIds[0] || null,
+            }));
+        }
+    }
+
+    return {
+        movies: [...movieMap.values()],
+        shows: [...showMap.values()],
+        lists: [...listMap.values()],
+    };
+}
+
+function applyLibrary(lib) {
+    AppState.movies = (lib.movies || []).map(normalizeStoredMovie);
+    AppState.shows = (lib.shows || []).map(normalizeStoredShow);
+    AppState.lists = (lib.lists || []).map(normalizeStoredList);
+}
+
+/**
+ * Integra datos de Drive con lo local: Drive vacío → subir local; ambos → merge.
+ * @returns {'remote'|'local-upload'|'merged'|'unchanged'}
+ */
+function reconcileWithDriveData(remoteData, localSnapshot) {
+    const remoteLib = {
+        movies: (remoteData?.movies || []).map(normalizeStoredMovie),
+        shows: (remoteData?.shows || []).map(normalizeStoredShow),
+        lists: (remoteData?.lists || []).map(normalizeStoredList),
+    };
+    const remoteCount = libraryItemCount(remoteLib);
+    const localCount = libraryItemCount(localSnapshot);
+
+    if (remoteCount === 0 && localCount > 0) {
+        applyLibrary(localSnapshot);
+        return 'local-upload';
+    }
+
+    if (remoteCount > 0 && localCount > 0) {
+        applyLibrary(mergeLibraries(localSnapshot, remoteLib));
+        return 'merged';
+    }
+
+    if (remoteCount > 0) {
+        applyLibrary(remoteLib);
+        return 'remote';
+    }
+
+    return 'unchanged';
+}
+
 // ============================================
 // GESTIÓN DE ESTADO
 // ============================================
@@ -298,7 +459,8 @@ async function addMovie(movie) {
 
     try {
         const details = await getMovieDetails(movie.id_tmdb);
-        AppState.movies.push(details);
+        details.estado = 'pending';
+        AppState.movies.push(normalizeStoredMovie(details));
         saveLocalData();
         syncToDrive();
         renderCurrentView();
@@ -322,11 +484,12 @@ async function addShow(show) {
 
     try {
         const details = await getTVDetails(show.id_tmdb);
-        AppState.shows.push(details);
+        details.estado = 'watching';
+        AppState.shows.push(normalizeStoredShow(details));
         saveLocalData();
         syncToDrive();
         renderCurrentView();
-        showToast('Serie añadida', 'success');
+        showToast('Serie añadida (Viendo)', 'success');
     } catch (error) {
         console.error('[App] Error añadiendo serie:', error);
         showToast('Error al añadir serie', 'error');
@@ -542,7 +705,7 @@ async function syncToDriveNow() {
 }
 
 /**
- * Carga datos desde Google Drive
+ * Carga / fusiona datos desde Google Drive
  */
 async function loadFromDrive(options = {}) {
     const silent = Boolean(options.silent);
@@ -553,21 +716,28 @@ async function loadFromDrive(options = {}) {
 
     if (!silent) showLoading(true);
 
+    const localSnapshot = snapshotLibrary();
+
     try {
         try {
             await ensureValidAccessToken({ interactive: false });
         } catch (_) { /* continue; loadUserData will renew */ }
 
         const data = await loadUserData();
-        AppState.movies = (data.movies || []).map(normalizeStoredMovie);
-        AppState.shows = (data.shows || []).map(normalizeStoredShow);
-        AppState.lists = (data.lists || []).map(normalizeStoredList);
+        const result = reconcileWithDriveData(data, localSnapshot);
         saveLocalData();
+        if (result === 'local-upload' || result === 'merged') {
+            await syncToDriveNow();
+        }
         if (AppState.driveReady) {
             renderCurrentView();
         }
         updateDriveStatus(true);
-        if (!silent) showToast('Datos sincronizados desde Drive', 'success');
+        if (!silent) {
+            if (result === 'local-upload') showToast('Local subido a Drive', 'success');
+            else if (result === 'merged') showToast('Fusionado con Drive', 'success');
+            else showToast('Datos sincronizados desde Drive', 'success');
+        }
     } catch (error) {
         console.error('[App] Error cargando desde Drive:', error);
         if (!silent) showToast('Error al cargar datos desde Drive', 'error');
@@ -754,7 +924,12 @@ function formatMovieCountdown(dateString) {
 
 function renderMoviePosterGrid(movies, { showCountdown = false, showWatchToggle = false } = {}) {
     if (!movies.length) {
-        return emptyState('film', 'No hay películas en esta categoría', { grid: true });
+        return emptyState('film', 'No hay películas en esta categoría', {
+            grid: true,
+            subtitle: 'Busca títulos en Explorar y añádelos a tu lista.',
+            actionLabel: 'Explorar',
+            actionOnClick: "switchTab('explore')",
+        });
     }
 
     return movies.map(movie => {
@@ -763,7 +938,7 @@ function renderMoviePosterGrid(movies, { showCountdown = false, showWatchToggle 
         return `
         <article class="tvst-poster-cell" onclick="openDetail('movie', ${movie.id_tmdb})">
             ${movie.portada
-                ? `<img src="${movie.portada}" alt="${movie.titulo}">`
+                ? `<img src="${movie.portada}" alt="${escapeHtml(movie.titulo || '')}">`
                 : `<div class="w-full h-full flex items-center justify-center text-2xl">🎬</div>`}
             ${showCountdown && countdown ? `<div class="tvst-poster-countdown">${countdown}</div>` : ''}
             ${showWatchToggle ? `
@@ -831,7 +1006,11 @@ function renderMoviesUpcomingList() {
         container.innerHTML = emptyState(
             'calendar',
             'Sin estrenos próximos',
-            { subtitle: 'Cuando añadas películas pendientes con fecha, aparecerán aquí.' },
+            {
+                subtitle: 'Cuando añadas películas pendientes con fecha, aparecerán aquí.',
+                actionLabel: 'Explorar',
+                actionOnClick: "switchTab('explore')",
+            },
         );
         return;
     }
@@ -1181,7 +1360,11 @@ async function renderPendingList(options = {}) {
         container.innerHTML = emptyState(
             'spark',
             'Tu lista está vacía',
-            { subtitle: 'Pon series en estado «Viendo» para ver episodios aquí.' },
+            {
+                subtitle: 'Añade series desde Explorar. Se marcan como «Viendo» y aparecen aquí.',
+                actionLabel: 'Explorar',
+                actionOnClick: "switchTab('explore')",
+            },
         );
         return;
     }
@@ -1323,20 +1506,24 @@ async function renderUpcomingList() {
         }
     }));
 
-    const watchingShows = allTvShows.filter(show => normalizeStatus(show.estado) === 'watching');
+    const upcomingShows = allTvShows.filter(show => normalizeStatus(show.estado) !== 'dropped');
 
-    if (watchingShows.length === 0) {
+    if (upcomingShows.length === 0) {
         container.innerHTML = emptyState(
             'spark',
             'Nada en próximamente',
-            { subtitle: 'Pon series en «Viendo» para ver próximos episodios.' },
+            {
+                subtitle: 'Añade series (excepto abandonadas) para ver estrenos de episodios.',
+                actionLabel: 'Explorar',
+                actionOnClick: "switchTab('explore')",
+            },
         );
         return;
     }
 
     const upcomingEpisodes = [];
 
-    for (const show of watchingShows) {
+    for (const show of upcomingShows) {
         if (!show.temporadas?.length) {
             try {
                 const fresh = await getTVDetails(show.id_tmdb);
@@ -1578,7 +1765,7 @@ function renderProfileLists() {
     const renderBanners = (tipo) => {
         const lists = getListsByTipo(tipo);
         if (!lists.length) {
-            return `<p class="tvst-lists-empty">Aún no tienes listas de ${tipo === 'movie' ? 'películas' : 'series'}.</p>`;
+            return `<p class="tvst-lists-empty">Aún no tienes listas de ${tipo === 'movie' ? 'películas' : 'series'}. Abre un título → menú ⋯ → Añadir a lista.</p>`;
         }
         return lists.map(list => {
             const cover = getListCoverUrl(list);
@@ -1612,7 +1799,7 @@ function renderProfileFavorites() {
             .filter(item => Boolean(item.favorito))
             .sort((a, b) => (a.titulo || '').localeCompare(b.titulo || '', 'es', { sensitivity: 'base' }));
         if (!favs.length) {
-            return `<p class="tvst-lists-empty">Sin favoritos todavía.</p>`;
+            return `<p class="tvst-lists-empty">Sin favoritos todavía. Abre un título → menú ⋯ → Añadir a favoritos.</p>`;
         }
         return favs.map(item => {
             const img = item.portada || item.poster;
@@ -1948,7 +2135,12 @@ function filterProfileMovies(movie) {
 
 function renderProfileCards(items, type) {
     if (items.length === 0) {
-        return emptyState(type === 'tv' ? 'episodes' : 'film', 'No hay contenido en esta categoría', { grid: true });
+        return emptyState(type === 'tv' ? 'episodes' : 'film', 'No hay contenido en esta categoría', {
+            grid: true,
+            subtitle: 'Busca títulos en Explorar y añádelos a tu biblioteca.',
+            actionLabel: 'Explorar',
+            actionOnClick: "switchTab('explore')",
+        });
     }
 
     return items.map(item => {
@@ -2285,8 +2477,11 @@ async function refreshShowStatus(show) {
     }
 
     // pending / watching / completed (si no todos vistos)
+    // No degradar «watching» a «pending» cuando aún no hay episodios vistos
     if (watchedEpisodes.length > 0) {
         show.estado = 'watching';
+    } else if (previousState === 'watching' || previousState === 'pending') {
+        show.estado = previousState;
     } else {
         show.estado = 'pending';
     }
@@ -3601,11 +3796,15 @@ function emptyState(icon, title, opts = {}) {
     const subtitle = opts.subtitle
         ? `<p class="tvst-empty-text">${opts.subtitle}</p>`
         : '';
+    const action = (opts.actionLabel && opts.actionOnClick)
+        ? `<button type="button" class="tvst-empty-action" onclick="${opts.actionOnClick}">${opts.actionLabel}</button>`
+        : '';
     return `
         <div class="tvst-empty"${gridStyle}>
             <div class="tvst-empty-icon${loadingClass}">${svg}</div>
             <p class="tvst-empty-title">${title}</p>
             ${subtitle}
+            ${action}
         </div>`;
 }
 

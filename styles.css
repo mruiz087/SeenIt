@@ -874,6 +874,20 @@ html, body {
     max-width: 16rem;
 }
 
+.tvst-empty-action {
+    margin-top: 0.35rem;
+    padding: 0.55rem 1rem;
+    border: none;
+    border-radius: 0.4rem;
+    background: var(--tvst-accent, #facc15);
+    color: #111;
+    font-size: 0.75rem;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    cursor: pointer;
+}
+
 @keyframes tvst-empty-pulse {
     0%, 100% { opacity: 0.55; transform: scale(1); }
     50% { opacity: 1; transform: scale(1.04); }

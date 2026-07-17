@@ -18,7 +18,7 @@
     <div id="drive-gate" class="tvst-drive-gate hidden">
         <div class="tvst-drive-gate-card">
             <h1 class="tvst-drive-gate-title">SeenIt</h1>
-            <p id="drive-gate-text" class="tvst-drive-gate-text">Conecta Google Drive para cargar tu biblioteca y empezar a usar la app.</p>
+            <p id="drive-gate-text" class="tvst-drive-gate-text">Conecta tu cuenta de Google. Cada persona usa su propio Drive y su propia biblioteca — el enlace no comparte tus series con nadie.</p>
             <p id="drive-gate-status" class="tvst-drive-gate-status hidden"></p>
             <p id="drive-gate-error" class="tvst-drive-gate-error hidden"></p>
             <p id="drive-gate-origin" class="tvst-drive-gate-origin"></p>
@@ -39,9 +39,6 @@
                 </nav>
                 <div class="tvst-continue-bar" id="series-continue-bar">
                     <button type="button" class="tvst-continue-btn" onclick="scrollToNowAnchor()">Ver a continuación</button>
-                    <button type="button" class="tvst-grid-toggle" aria-label="Vista" tabindex="-1">
-                        <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
-                    </button>
                 </div>
                 <div id="subtab-content-pending-list" class="tvst-tab-panel">
                     <div id="pending-list-container" class="tvst-episode-list">
@@ -61,9 +58,6 @@
                     <button type="button" onclick="switchMoviesSubTab('pending-list')" id="movies-subtab-pending-list" class="tvst-subnav-tab is-active">Lista Pendiente</button>
                     <button type="button" onclick="switchMoviesSubTab('upcoming')" id="movies-subtab-upcoming" class="tvst-subnav-tab">Próximamente</button>
                 </nav>
-                <div class="tvst-continue-bar">
-                    <button type="button" class="tvst-continue-btn" onclick="switchMoviesSubTab('pending-list')">Ver a continuación</button>
-                </div>
                 <div id="movies-subtab-content-pending-list" class="tvst-tab-panel">
                     <div id="movies-pending-list-container" class="tvst-poster-grid">
                         <!-- filled by JS -->
@@ -373,7 +367,19 @@
         }
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', () => {
-                navigator.serviceWorker.register('./sw.js').catch(console.error);
+                navigator.serviceWorker.register('./sw.js').then((reg) => {
+                    reg.addEventListener('updatefound', () => {
+                        const worker = reg.installing;
+                        if (!worker) return;
+                        worker.addEventListener('statechange', () => {
+                            if (worker.state === 'installed' && navigator.serviceWorker.controller) {
+                                if (typeof showToast === 'function') {
+                                    showToast('Nueva versión disponible. Recarga la página.', 'info');
+                                }
+                            }
+                        });
+                    });
+                }).catch(console.error);
             });
         }
     </script>

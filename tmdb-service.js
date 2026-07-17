@@ -310,7 +310,7 @@ function normalizeMovieData(data) {
         portada: getImageUrl(data.poster_path),
         backdrop: getImageUrl(data.backdrop_path, 'w780'),
         puntuacion: 0,
-        estado: 'pendiente',
+        estado: 'pending',
         tipo: 'movie',
         fecha_estreno: data.release_date,
         generos: data.genres?.map(g => g.name) || [],

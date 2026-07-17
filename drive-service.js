@@ -1,8 +1,8 @@
 /**
  * Drive Service - Google Drive Integration
  *
- * Autenticación GIS + gapi. Token en localStorage con renovación silenciosa.
- * Credenciales: config.js (local) o inyectado en deploy (GitHub Actions).
+ * OAuth vía Google Identity Services (GIS) + llamadas Drive con fetch.
+ * No usa gapi.client.init (falla a menudo con API keys restringidas).
  */
 
 function getGoogleClientId() {
@@ -11,37 +11,54 @@ function getGoogleClientId() {
     return id;
 }
 
-function getGoogleApiKey() {
-    const key = typeof CONFIG_GOOGLE_API_KEY !== 'undefined' ? String(CONFIG_GOOGLE_API_KEY).trim() : '';
-    if (!key || key.includes('tu_google_api_key')) return '';
-    return key;
+function hasGoogleConfig() {
+    return Boolean(getGoogleClientId());
 }
 
-function hasGoogleConfig() {
-    return Boolean(getGoogleClientId() && getGoogleApiKey());
+function formatDriveError(error) {
+    if (error == null) return 'Error desconocido';
+    if (typeof error === 'string') return error;
+    if (error instanceof Error && error.message) return error.message;
+
+    const nested = error?.result?.error || error?.error || error;
+    if (typeof nested === 'string') return nested;
+    if (nested?.message) {
+        const code = nested.code ? ` (${nested.code})` : '';
+        return `${nested.message}${code}`;
+    }
+    if (nested?.status) return String(nested.status);
+    try {
+        return JSON.stringify(nested);
+    } catch (_) {
+        return 'Error de Google';
+    }
 }
 
 const SCOPES = 'https://www.googleapis.com/auth/drive.file';
-const DISCOVERY_DOC = 'https://www.googleapis.com/discovery/v1/apis/drive/v3/rest';
 const DATA_FILE_NAME = 'tv_showtime_data.json';
 const DRIVE_TOKEN_STORAGE_KEY = 'seenit_drive_token';
 const TOKEN_REFRESH_MARGIN_MS = 5 * 60 * 1000;
+const DRIVE_API = 'https://www.googleapis.com/drive/v3';
 
 let tokenClient = null;
-let gapiInited = false;
 let gisInited = false;
 let accessToken = null;
 let tokenExpiresAt = 0;
 let dataFileId = null;
 let renewPromise = null;
+let gisLoadPromise = null;
 
 async function initDriveService() {
     console.log('[Drive] Inicializando servicio...');
     if (!hasGoogleConfig()) {
         throw new Error('CONFIG_MISSING');
     }
+    if (gisInited && tokenClient) {
+        await restoreAccessToken();
+        console.log('[Drive] Servicio ya inicializado');
+        return;
+    }
     await loadGIS();
-    await loadGAPI();
     await restoreAccessToken();
     console.log('[Drive] Servicio inicializado');
 }
@@ -74,15 +91,6 @@ function getPersistedDriveTokenRaw() {
     }
 }
 
-function syncTokenToGapi() {
-    if (!gapiInited || !accessToken) return;
-    try {
-        gapi.client.setToken({ access_token: accessToken });
-    } catch (error) {
-        console.warn('[Drive] No se pudo sincronizar el token con gapi:', error);
-    }
-}
-
 function isTokenFresh(marginMs = TOKEN_REFRESH_MARGIN_MS) {
     return Boolean(accessToken && tokenExpiresAt && Date.now() < (tokenExpiresAt - marginMs));
 }
@@ -97,13 +105,15 @@ async function restoreAccessToken() {
 
     accessToken = persisted.accessToken;
     tokenExpiresAt = persisted.expiresAt;
-    syncTokenToGapi();
 
     if (!isTokenFresh()) {
         try {
             await ensureValidAccessToken({ interactive: false });
         } catch (error) {
             console.warn('[Drive] Renovación silenciosa al restaurar falló:', error);
+            accessToken = null;
+            tokenExpiresAt = 0;
+            clearPersistedDriveToken();
         }
     } else {
         console.log('[Drive] Token restaurado desde localStorage');
@@ -111,14 +121,42 @@ async function restoreAccessToken() {
 }
 
 function loadGIS() {
-    return new Promise((resolve, reject) => {
-        if (window.google?.accounts?.oauth2) {
+    if (gisInited && tokenClient) {
+        return Promise.resolve();
+    }
+    if (gisLoadPromise) {
+        return gisLoadPromise;
+    }
+
+    gisLoadPromise = new Promise((resolve, reject) => {
+        const initClient = () => {
             tokenClient = google.accounts.oauth2.initTokenClient({
                 client_id: getGoogleClientId(),
                 scope: SCOPES,
             });
             gisInited = true;
             resolve();
+        };
+
+        if (window.google?.accounts?.oauth2) {
+            try {
+                initClient();
+            } catch (error) {
+                reject(error);
+            }
+            return;
+        }
+
+        const existing = document.querySelector('script[data-seenit-gis]');
+        if (existing) {
+            existing.addEventListener('load', () => {
+                try {
+                    initClient();
+                } catch (error) {
+                    reject(error);
+                }
+            });
+            existing.addEventListener('error', () => reject(new Error('No se pudo cargar Google Identity Services')));
             return;
         }
 
@@ -126,48 +164,21 @@ function loadGIS() {
         script.src = 'https://accounts.google.com/gsi/client';
         script.async = true;
         script.defer = true;
+        script.dataset.seenitGis = '1';
         script.onload = () => {
-            tokenClient = google.accounts.oauth2.initTokenClient({
-                client_id: getGoogleClientId(),
-                scope: SCOPES,
-            });
-            gisInited = true;
-            resolve();
-        };
-        script.onerror = reject;
-        document.head.appendChild(script);
-    });
-}
-
-function loadGAPI() {
-    return new Promise((resolve, reject) => {
-        const finish = async () => {
             try {
-                await gapi.client.init({
-                    apiKey: getGoogleApiKey(),
-                    discoveryDocs: [DISCOVERY_DOC],
-                });
-                gapiInited = true;
-                resolve();
+                initClient();
             } catch (error) {
-                console.error('[Drive] Error inicializando gapi.client:', error);
                 reject(error);
             }
         };
-
-        if (window.gapi?.load) {
-            gapi.load('client', finish);
-            return;
-        }
-
-        const script = document.createElement('script');
-        script.src = 'https://apis.google.com/js/api.js';
-        script.async = true;
-        script.defer = true;
-        script.onload = () => gapi.load('client', finish);
-        script.onerror = reject;
+        script.onerror = () => reject(new Error('No se pudo cargar Google Identity Services'));
         document.head.appendChild(script);
+    }).finally(() => {
+        if (!gisInited) gisLoadPromise = null;
     });
+
+    return gisLoadPromise;
 }
 
 function requestAccessToken(prompt) {
@@ -186,7 +197,6 @@ function requestAccessToken(prompt) {
 
             accessToken = response.access_token;
             persistDriveToken(accessToken, response.expires_in);
-            syncTokenToGapi();
             console.log('[Drive] Token obtenido exitosamente');
             resolve(response);
         };
@@ -200,14 +210,10 @@ function requestAccessToken(prompt) {
     });
 }
 
-/**
- * Garantiza un access token válido. Silencioso si ya hubo consentimiento.
- */
 async function ensureValidAccessToken(options = {}) {
     const interactive = Boolean(options.interactive);
 
     if (isTokenFresh()) {
-        syncTokenToGapi();
         return { access_token: accessToken };
     }
 
@@ -217,7 +223,6 @@ async function ensureValidAccessToken(options = {}) {
 
     renewPromise = (async () => {
         try {
-            // Primero intentar renovación silenciosa
             try {
                 return await requestAccessToken('');
             } catch (silentError) {
@@ -233,7 +238,7 @@ async function ensureValidAccessToken(options = {}) {
 }
 
 async function authenticate() {
-    if (!gisInited || !gapiInited) {
+    if (!gisInited || !tokenClient) {
         throw new Error('Servicio no inicializado. Llama a initDriveService() primero.');
     }
     return ensureValidAccessToken({ interactive: true });
@@ -256,6 +261,35 @@ function isAuthenticated() {
     return Boolean(accessToken) && Date.now() < tokenExpiresAt;
 }
 
+async function driveFetch(url, options = {}) {
+    const response = await fetch(url, {
+        ...options,
+        headers: {
+            ...(options.headers || {}),
+            Authorization: `Bearer ${accessToken}`,
+        },
+    });
+
+    if (!response.ok) {
+        let detail = '';
+        try {
+            const body = await response.json();
+            detail = formatDriveError(body);
+        } catch (_) {
+            detail = response.statusText || '';
+        }
+        const err = new Error(detail || `Drive HTTP ${response.status}`);
+        err.status = response.status;
+        throw err;
+    }
+
+    const contentType = response.headers.get('content-type') || '';
+    if (contentType.includes('application/json')) {
+        return response.json();
+    }
+    return response.text();
+}
+
 async function withDriveAuth(operation) {
     await ensureValidAccessToken({ interactive: false });
     try {
@@ -272,15 +306,13 @@ async function withDriveAuth(operation) {
 
 async function findOrCreateDataFile() {
     return withDriveAuth(async () => {
-        const response = await gapi.client.drive.files.list({
-            q: `name='${DATA_FILE_NAME}' and trashed=false`,
-            spaces: 'drive',
-            fields: 'files(id, name)',
-        });
+        const q = encodeURIComponent(`name='${DATA_FILE_NAME}' and trashed=false`);
+        const data = await driveFetch(
+            `${DRIVE_API}/files?q=${q}&spaces=drive&fields=files(id,name)`,
+        );
 
-        const files = response.result.files;
-
-        if (files && files.length > 0) {
+        const files = data.files || [];
+        if (files.length > 0) {
             dataFileId = files[0].id;
             console.log('[Drive] Archivo encontrado:', dataFileId);
             return dataFileId;
@@ -291,7 +323,7 @@ async function findOrCreateDataFile() {
 }
 
 async function createDataFile() {
-    const initialData = { movies: [], shows: [] };
+    const initialData = { movies: [], shows: [], lists: [] };
     const metadata = {
         name: DATA_FILE_NAME,
         mimeType: 'application/json',
@@ -323,14 +355,11 @@ async function loadUserData() {
             await findOrCreateDataFile();
         }
 
-        const response = await gapi.client.drive.files.get({
-            fileId: dataFileId,
-            alt: 'media',
-        });
-
-        const data = response.result || {};
+        const raw = await driveFetch(`${DRIVE_API}/files/${dataFileId}?alt=media`);
+        const data = typeof raw === 'string' ? JSON.parse(raw || '{}') : (raw || {});
         data.movies = data.movies || [];
         data.shows = data.shows || [];
+        data.lists = data.lists || [];
         console.log('[Drive] Datos cargados');
         return data;
     });
@@ -340,6 +369,9 @@ async function saveUserData(data) {
     return withDriveAuth(async () => {
         if (!data.movies || !data.shows) {
             throw new Error('Estructura de datos inválida. Debe contener movies y shows.');
+        }
+        if (!Array.isArray(data.lists)) {
+            data.lists = [];
         }
 
         if (!dataFileId) {
@@ -375,8 +407,8 @@ async function saveUserData(data) {
 
 async function getUserInfo() {
     return withDriveAuth(async () => {
-        const response = await gapi.client.drive.about.get({ fields: 'user' });
-        return response.result.user;
+        const data = await driveFetch(`${DRIVE_API}/about?fields=user`);
+        return data.user;
     });
 }
 
@@ -398,6 +430,7 @@ window.ensureValidAccessToken = ensureValidAccessToken;
 window.signOut = signOut;
 window.isAuthenticated = isAuthenticated;
 window.hasGoogleConfig = hasGoogleConfig;
+window.formatDriveError = formatDriveError;
 window.loadUserData = loadUserData;
 window.saveUserData = saveUserData;
 window.getUserInfo = getUserInfo;
