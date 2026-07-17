@@ -94,6 +94,7 @@
 
                 <div id="profile-series-content">
                     <div class="tvst-profile-toolbar">
+                        <input type="search" id="profile-series-search" class="tvst-profile-search" placeholder="Buscar en biblioteca…" oninput="renderProfileView()" autocomplete="off">
                         <select id="profile-series-filter" onchange="renderProfileView()" class="tvst-profile-filter">
                             <option value="all">Todas</option>
                             <option value="pending">Pendiente</option>
@@ -101,6 +102,9 @@
                             <option value="standby">Ver en otro momento</option>
                             <option value="completed">Completada</option>
                             <option value="dropped">Abandonada</option>
+                        </select>
+                        <select id="profile-series-platform" onchange="onProfilePlatformChange('series')" class="tvst-profile-filter">
+                            <option value="all">Todas las plataformas</option>
                         </select>
                         <button type="button" id="profile-series-more" class="tvst-show-more-btn" onclick="toggleProfileExpanded('series')">Mostrar más</button>
                     </div>
@@ -122,10 +126,14 @@
 
                 <div id="profile-movies-content" class="hidden">
                     <div class="tvst-profile-toolbar">
+                        <input type="search" id="profile-movies-search" class="tvst-profile-search" placeholder="Buscar en biblioteca…" oninput="renderProfileView()" autocomplete="off">
                         <select id="profile-movies-filter" onchange="renderProfileView()" class="tvst-profile-filter">
                             <option value="all">Todas</option>
                             <option value="pending">Pendiente</option>
                             <option value="completed">Vista</option>
+                        </select>
+                        <select id="profile-movies-platform" onchange="onProfilePlatformChange('movies')" class="tvst-profile-filter">
+                            <option value="all">Todas las plataformas</option>
                         </select>
                         <button type="button" id="profile-movies-more" class="tvst-show-more-btn" onclick="toggleProfileExpanded('movies')">Mostrar más</button>
                     </div>
@@ -236,6 +244,7 @@
                     <button type="button" class="tvst-hero-close" onclick="closeModal()" aria-label="Cerrar">
                         <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
                     </button>
+                    <button type="button" id="modal-hero-fav" class="tvst-hero-fav" onclick="toggleFavoriteFromHero(event)" aria-label="Favorito" title="Favorito">★</button>
                     <button type="button" class="tvst-hero-menu" onclick="toggleDetailMenu(event)" aria-label="Opciones">⋯</button>
                     <div id="detail-overflow-menu" class="tvst-overflow-menu hidden" role="menu"></div>
                     <div class="tvst-hero-fade"></div>
@@ -314,6 +323,12 @@
                     </button>
                     <h2 id="list-modal-title" class="tvst-list-modal-title">Lista</h2>
                     <div class="tvst-list-modal-actions">
+                        <select id="list-sort-select" class="tvst-list-sort" onchange="onListSortChange()" aria-label="Ordenar lista">
+                            <option value="added">Orden: añadido</option>
+                            <option value="name-asc">Nombre A–Z</option>
+                            <option value="name-desc">Nombre Z–A</option>
+                            <option value="progress">Progreso</option>
+                        </select>
                         <button type="button" class="tvst-list-action-btn" id="list-cover-btn" onclick="toggleListCoverPickMode()">Cambiar portada</button>
                         <button type="button" class="tvst-list-action-btn" onclick="renameSelectedList()">Renombrar</button>
                         <button type="button" class="tvst-list-action-btn is-danger" onclick="deleteSelectedList()">Eliminar</button>
@@ -378,6 +393,14 @@
                                 }
                             }
                         });
+                    });
+                    let refreshing = false;
+                    navigator.serviceWorker.addEventListener('controllerchange', () => {
+                        if (refreshing) return;
+                        refreshing = true;
+                        if (typeof showToast === 'function') {
+                            showToast('Nueva versión; recarga la página.', 'info');
+                        }
                     });
                 }).catch(console.error);
             });

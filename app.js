@@ -23,7 +23,12 @@ const AppState = {
     currentFilter: 'all',
     profileSeriesFilter: 'all',
     profileMoviesFilter: 'all',
+    profileSeriesSearch: '',
+    profileMoviesSearch: '',
+    profileSeriesPlatform: 'all',
+    profileMoviesPlatform: 'all',
     profileExpanded: { series: false, movies: false },
+    listSortMode: 'added',
     detailRecsExpanded: false,
     lastSearchResults: [],
     selectedItem: null,
@@ -316,6 +321,17 @@ function saveLocalData() {
     }
 }
 
+function getStoredLastModified() {
+    try {
+        const raw = localStorage.getItem('seenit_data');
+        if (!raw) return null;
+        const data = JSON.parse(raw);
+        return data?.lastModified || null;
+    } catch (_) {
+        return null;
+    }
+}
+
 function snapshotLibrary() {
     return {
         movies: AppState.movies.map(m => ({ ...m })),
@@ -324,11 +340,32 @@ function snapshotLibrary() {
             ...l,
             itemIds: [...(l.itemIds || [])],
         })),
+        lastModified: getStoredLastModified() || new Date().toISOString(),
     };
+}
+
+function backupLibraryBeforeMerge(localSnapshot) {
+    try {
+        localStorage.setItem('seenit_data_backup', JSON.stringify({
+            movies: localSnapshot?.movies || [],
+            shows: localSnapshot?.shows || [],
+            lists: localSnapshot?.lists || [],
+            lastModified: localSnapshot?.lastModified || getStoredLastModified() || null,
+            backedUpAt: new Date().toISOString(),
+        }));
+    } catch (error) {
+        console.warn('[App] No se pudo guardar backup local antes del merge:', error);
+    }
 }
 
 function libraryItemCount(lib) {
     return (lib?.movies?.length || 0) + (lib?.shows?.length || 0) + (lib?.lists?.length || 0);
+}
+
+function parseModifiedMs(value) {
+    if (!value) return 0;
+    const ms = Date.parse(value);
+    return Number.isFinite(ms) ? ms : 0;
 }
 
 function mergeMovieOrShow(localItem, remoteItem, kind) {
@@ -412,29 +449,44 @@ function applyLibrary(lib) {
 }
 
 /**
- * Integra datos de Drive con lo local: Drive vacío → subir local; ambos → merge.
+ * Integra datos de Drive con lo local (backup + lastModified + merge).
  * @returns {'remote'|'local-upload'|'merged'|'unchanged'}
  */
 function reconcileWithDriveData(remoteData, localSnapshot) {
+    backupLibraryBeforeMerge(localSnapshot);
+
     const remoteLib = {
         movies: (remoteData?.movies || []).map(normalizeStoredMovie),
         shows: (remoteData?.shows || []).map(normalizeStoredShow),
         lists: (remoteData?.lists || []).map(normalizeStoredList),
+        lastModified: remoteData?.lastModified || null,
     };
     const remoteCount = libraryItemCount(remoteLib);
     const localCount = libraryItemCount(localSnapshot);
+    const remoteMs = parseModifiedMs(remoteLib.lastModified);
+    const localMs = parseModifiedMs(localSnapshot?.lastModified);
 
+    // Drive vacío y hay datos locales → restaurar/subir local
     if (remoteCount === 0 && localCount > 0) {
         applyLibrary(localSnapshot);
         return 'local-upload';
     }
 
+    // Ambos con datos → merge por unión; si remoto es claramente más nuevo
+    // y local no tiene ítems, aplicar remoto (cubierto abajo)
     if (remoteCount > 0 && localCount > 0) {
         applyLibrary(mergeLibraries(localSnapshot, remoteLib));
         return 'merged';
     }
 
+    // Solo remoto (local vacío): aplicar remoto
     if (remoteCount > 0) {
+        applyLibrary(remoteLib);
+        return 'remote';
+    }
+
+    // Ambos vacíos, o remoto vacío sin local
+    if (remoteCount === 0 && localCount === 0 && remoteMs > localMs && remoteMs > 0) {
         applyLibrary(remoteLib);
         return 'remote';
     }
@@ -1593,6 +1645,10 @@ async function renderUpcomingList() {
 async function renderProfileView() {
     AppState.profileSeriesFilter = document.getElementById('profile-series-filter')?.value || AppState.profileSeriesFilter;
     AppState.profileMoviesFilter = document.getElementById('profile-movies-filter')?.value || AppState.profileMoviesFilter;
+    AppState.profileSeriesSearch = document.getElementById('profile-series-search')?.value || '';
+    AppState.profileMoviesSearch = document.getElementById('profile-movies-search')?.value || '';
+    AppState.profileSeriesPlatform = document.getElementById('profile-series-platform')?.value || AppState.profileSeriesPlatform;
+    AppState.profileMoviesPlatform = document.getElementById('profile-movies-platform')?.value || AppState.profileMoviesPlatform;
 
     const seriesContainer = document.getElementById('profile-series-container');
     const moviesContainer = document.getElementById('profile-movies-container');
@@ -1607,12 +1663,17 @@ async function renderProfileView() {
         document.getElementById('profile-movies-content')?.classList.remove('hidden');
     }
 
-    // Solo datos locales: no refrescar TMDB en cada cambio de filtro
+    populatePlatformFilters();
+
     const filteredSeries = AppState.shows
         .filter(show => filterProfileSeries(show))
+        .filter(show => matchesProfileSearch(show, AppState.profileSeriesSearch))
+        .filter(show => matchesProfilePlatform(show, AppState.profileSeriesPlatform))
         .sort((a, b) => (a.titulo || '').localeCompare(b.titulo || '', 'es', { sensitivity: 'base' }));
     const filteredMovies = AppState.movies
         .filter(movie => filterProfileMovies(movie))
+        .filter(movie => matchesProfileSearch(movie, AppState.profileMoviesSearch))
+        .filter(movie => matchesProfilePlatform(movie, AppState.profileMoviesPlatform))
         .sort((a, b) => (a.titulo || '').localeCompare(b.titulo || '', 'es', { sensitivity: 'base' }));
 
     const seriesExpanded = Boolean(AppState.profileExpanded.series);
@@ -1829,11 +1890,37 @@ function toggleFavorite(tipo, id_tmdb) {
     item.favorito = !Boolean(item.favorito);
     if (AppState.selectedItem?.id_tmdb === id_tmdb && AppState.selectedItem?.tipo === tipo) {
         AppState.selectedItem = { ...AppState.selectedItem, favorito: item.favorito };
+        updateDetailHeroFavorite(AppState.selectedItem);
     }
     saveLocalData();
     syncToDrive();
     renderProfileFavorites();
+    if (AppState.currentTab === 'profile') {
+        renderProfileView();
+    }
     showToast(item.favorito ? 'Añadido a favoritos' : 'Quitado de favoritos', item.favorito ? 'success' : 'info');
+}
+
+function toggleFavoriteFromHero(event) {
+    event?.stopPropagation?.();
+    if (!AppState.selectedItem) return;
+    toggleFavorite(AppState.selectedItem.tipo, AppState.selectedItem.id_tmdb);
+}
+
+function toggleFavoriteFromCard(event, tipo, id_tmdb) {
+    event?.stopPropagation?.();
+    event?.preventDefault?.();
+    toggleFavorite(tipo, id_tmdb);
+}
+
+function updateDetailHeroFavorite(item) {
+    const favBtn = document.getElementById('modal-hero-fav');
+    if (!favBtn) return;
+    const inLibrary = Boolean(getLibraryItem(item.tipo, item.id_tmdb));
+    favBtn.classList.toggle('hidden', !inLibrary);
+    favBtn.classList.toggle('is-active', Boolean(item.favorito));
+    favBtn.setAttribute('aria-pressed', item.favorito ? 'true' : 'false');
+    favBtn.title = item.favorito ? 'Quitar de favoritos' : 'Añadir a favoritos';
 }
 
 function openListModal(listId) {
@@ -1874,9 +1961,14 @@ function renderListModal() {
     const modal = document.getElementById('list-modal');
     const hint = document.getElementById('list-cover-hint');
     const coverBtn = document.getElementById('list-cover-btn');
+    const sortSelect = document.getElementById('list-sort-select');
 
     if (titleEl) titleEl.textContent = list.name;
     if (!gridEl) return;
+
+    if (sortSelect && sortSelect.value !== AppState.listSortMode) {
+        sortSelect.value = AppState.listSortMode;
+    }
 
     modal?.classList.toggle('is-cover-pick', Boolean(AppState.listCoverPickMode));
     hint?.classList.toggle('hidden', !AppState.listCoverPickMode);
@@ -1884,9 +1976,13 @@ function renderListModal() {
         coverBtn.textContent = AppState.listCoverPickMode ? 'Cancelar portada' : 'Cambiar portada';
     }
 
-    const items = list.itemIds
-        .map(id => getLibraryItem(list.tipo, id))
-        .filter(Boolean);
+    const items = sortListItems(
+        list.itemIds
+            .map((id, index) => ({ item: getLibraryItem(list.tipo, id), addedIndex: index }))
+            .filter(entry => entry.item),
+        list.tipo,
+        AppState.listSortMode,
+    );
 
     if (!items.length) {
         gridEl.innerHTML = `<p class="tvst-lists-empty">Esta lista está vacía. Añade títulos desde el menú ⋯ del detalle.</p>`;
@@ -1895,7 +1991,7 @@ function renderListModal() {
 
     const coverId = Number(list.coverId) || null;
 
-    gridEl.innerHTML = items.map(item => {
+    gridEl.innerHTML = items.map(({ item }) => {
         const img = item.portada || item.poster;
         const prog = getListItemProgress(item, list.tipo);
         const isCover = coverId === Number(item.id_tmdb);
@@ -1923,6 +2019,29 @@ function renderListModal() {
         </article>
     `;
     }).join('');
+}
+
+function sortListItems(entries, tipo, mode) {
+    const sorted = [...entries];
+    if (mode === 'name-asc') {
+        sorted.sort((a, b) => (a.item.titulo || '').localeCompare(b.item.titulo || '', 'es', { sensitivity: 'base' }));
+    } else if (mode === 'name-desc') {
+        sorted.sort((a, b) => (b.item.titulo || '').localeCompare(a.item.titulo || '', 'es', { sensitivity: 'base' }));
+    } else if (mode === 'progress') {
+        sorted.sort((a, b) => {
+            const pa = getListItemProgress(a.item, tipo).progress;
+            const pb = getListItemProgress(b.item, tipo).progress;
+            return pb - pa || (a.item.titulo || '').localeCompare(b.item.titulo || '', 'es', { sensitivity: 'base' });
+        });
+    } else {
+        sorted.sort((a, b) => a.addedIndex - b.addedIndex);
+    }
+    return sorted;
+}
+
+function onListSortChange() {
+    AppState.listSortMode = document.getElementById('list-sort-select')?.value || 'added';
+    renderListModal();
 }
 
 function onListItemClick(id_tmdb, tipo) {
@@ -2133,6 +2252,96 @@ function filterProfileMovies(movie) {
     return status !== 'completed';
 }
 
+function matchesProfileSearch(item, query) {
+    const q = String(query || '').trim().toLowerCase();
+    if (!q) return true;
+    return String(item.titulo || '').toLowerCase().includes(q);
+}
+
+function matchesProfilePlatform(item, platform) {
+    if (!platform || platform === 'all') return true;
+    const providers = item?.watch_providers || [];
+    return providers.some(p => p?.provider_name === platform);
+}
+
+function collectUniqueProviders(items) {
+    const names = new Set();
+    for (const item of items || []) {
+        for (const p of item.watch_providers || []) {
+            if (p?.provider_name) names.add(p.provider_name);
+        }
+    }
+    return [...names].sort((a, b) => a.localeCompare(b, 'es', { sensitivity: 'base' }));
+}
+
+function populatePlatformSelect(selectId, items, selected) {
+    const el = document.getElementById(selectId);
+    if (!el) return;
+    const providers = collectUniqueProviders(items);
+    const current = selected || 'all';
+    el.innerHTML = [
+        '<option value="all">Todas las plataformas</option>',
+        ...providers.map(name => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`),
+    ].join('');
+    el.value = providers.includes(current) || current === 'all' ? current : 'all';
+}
+
+function populatePlatformFilters() {
+    populatePlatformSelect('profile-series-platform', AppState.shows, AppState.profileSeriesPlatform);
+    populatePlatformSelect('profile-movies-platform', AppState.movies, AppState.profileMoviesPlatform);
+    AppState.profileSeriesPlatform = document.getElementById('profile-series-platform')?.value || 'all';
+    AppState.profileMoviesPlatform = document.getElementById('profile-movies-platform')?.value || 'all';
+}
+
+async function ensureProvidersForLibrary(tipo) {
+    const items = tipo === 'movie' ? AppState.movies : AppState.shows;
+    const missing = items.filter(item => !item.watch_providers || item.watch_providers.length === 0);
+    if (!missing.length || typeof getWatchProviders !== 'function') return;
+
+    const batch = missing.slice(0, 20);
+    await Promise.all(batch.map(async (item) => {
+        try {
+            const providers = await getWatchProviders(tipo === 'movie' ? 'movie' : 'tv', item.id_tmdb);
+            if (providers?.length) {
+                item.watch_providers = providers;
+            } else {
+                item.watch_providers = item.watch_providers || [];
+            }
+        } catch (error) {
+            console.warn('[App] No se pudieron cargar providers:', item.titulo, error);
+        }
+    }));
+    saveLocalData();
+}
+
+async function onProfilePlatformChange(kind) {
+    const selectId = kind === 'movies' ? 'profile-movies-platform' : 'profile-series-platform';
+    const value = document.getElementById(selectId)?.value || 'all';
+    if (kind === 'movies') {
+        AppState.profileMoviesPlatform = value;
+    } else {
+        AppState.profileSeriesPlatform = value;
+    }
+
+    if (value !== 'all') {
+        showLoading(true);
+        try {
+            await ensureProvidersForLibrary(kind === 'movies' ? 'movie' : 'tv');
+            populatePlatformFilters();
+            if (kind === 'movies') {
+                const el = document.getElementById('profile-movies-platform');
+                if (el) el.value = AppState.profileMoviesPlatform;
+            } else {
+                const el = document.getElementById('profile-series-platform');
+                if (el) el.value = AppState.profileSeriesPlatform;
+            }
+        } finally {
+            showLoading(false);
+        }
+    }
+    await renderProfileView();
+}
+
 function renderProfileCards(items, type) {
     if (items.length === 0) {
         return emptyState(type === 'tv' ? 'episodes' : 'film', 'No hay contenido en esta categoría', {
@@ -2150,15 +2359,17 @@ function renderProfileCards(items, type) {
             : null;
         const progressData = type === 'tv' ? getShowProgressInfo(item) : null;
         const statusBadge = getStatusBadge(item.estado);
+        const isFav = Boolean(item.favorito);
 
         return `
         <div class="profile-card cursor-pointer flex flex-col${normalizeStatus(item.estado) === 'standby' ? ' is-standby' : ''}" onclick="openDetail('${type}', ${item.id_tmdb})">
             <div class="relative aspect-[2/3] bg-zinc-900 rounded overflow-hidden mb-2 w-full">
-                ${item.portada ? `<img src="${item.portada}" alt="${item.titulo}" class="w-full h-full object-cover">` : '<div class="w-full h-full flex items-center justify-center text-2xl">🎬</div>'}
+                ${item.portada ? `<img src="${item.portada}" alt="${escapeHtml(item.titulo || '')}" class="w-full h-full object-cover">` : '<div class="w-full h-full flex items-center justify-center text-2xl">🎬</div>'}
                 ${tmdbRating !== null ? `<div class="tvst-poster-score is-tmdb">${tmdbRating.toFixed(1)}</div>` : ''}
                 ${personalRating !== null ? `<div class="tvst-poster-score is-user">★ ${personalRating.toFixed(1)}</div>` : ''}
+                <button type="button" class="tvst-card-fav${isFav ? ' is-active' : ''}" onclick="toggleFavoriteFromCard(event, '${type}', ${item.id_tmdb})" aria-label="Favorito" title="${isFav ? 'Quitar de favoritos' : 'Añadir a favoritos'}">★</button>
             </div>
-            <h3 class="font-semibold text-xs truncate text-white">${item.titulo}</h3>
+            <h3 class="font-semibold text-xs truncate text-white">${escapeHtml(item.titulo || '')}</h3>
             ${statusBadge}
             ${progressData ? `
                 <div class="w-full">
@@ -2226,7 +2437,7 @@ function renderDetailInfo(item) {
                     ${providers.map(provider => `
                         <span class="inline-flex items-center gap-2 rounded-full bg-zinc-900 px-3 py-1.5 text-sm">
                             ${provider.logo_path ? `<img src="${window.getImageUrl(provider.logo_path, 'w92')}" alt="" class="h-5 w-5 rounded-full object-cover">` : ''}
-                            ${provider.provider_name}
+                            ${escapeHtml(provider.provider_name || '')}
                         </span>
                     `).join('')}
                 </div>
@@ -2238,11 +2449,11 @@ function renderDetailInfo(item) {
                 ${cast.length ? cast.map(person => `
                     <article class="tvst-cast-card">
                         ${person.profile_path
-                            ? `<img src="${person.profile_path}" alt="${person.name}" onerror="this.onerror=null;this.outerHTML='<div class=\\'tvst-cast-fallback\\'>🎭</div>'">`
+                            ? `<img src="${person.profile_path}" alt="${escapeHtml(person.name || '')}" onerror="this.onerror=null;this.outerHTML='<div class=\\'tvst-cast-fallback\\'>🎭</div>'">`
                             : '<div class="tvst-cast-fallback">🎭</div>'}
                         <div class="min-w-0">
-                            <p class="text-sm font-semibold truncate">${person.name}</p>
-                            <p class="text-xs text-gray-500 truncate">${person.character || 'Actor'}</p>
+                            <p class="text-sm font-semibold truncate">${escapeHtml(person.name || '')}</p>
+                            <p class="text-xs text-gray-500 truncate">${escapeHtml(person.character || 'Actor')}</p>
                         </div>
                     </article>
                 `).join('') : '<p class="text-sm text-gray-500">No hay reparto disponible.</p>'}
@@ -2261,10 +2472,10 @@ function renderDetailInfo(item) {
                 ${recommendations.length ? recommendations.map(rec => `
                     <article class="tvst-rec-card" onclick="openDetail('${rec.tipo}', ${rec.id_tmdb})">
                         ${rec.portada
-                            ? `<img src="${rec.portada}" alt="${rec.titulo}">`
+                            ? `<img src="${rec.portada}" alt="${escapeHtml(rec.titulo || '')}">`
                             : '<div class="w-full aspect-[2/3] bg-zinc-900 flex items-center justify-center rounded">🎬</div>'}
                         <button type="button" onclick="event.stopPropagation(); addItem('${rec.tipo}', ${rec.id_tmdb});" class="tvst-add-btn">+</button>
-                        <p class="text-xs mt-1 truncate">${rec.titulo}</p>
+                        <p class="text-xs mt-1 truncate">${escapeHtml(rec.titulo || '')}</p>
                     </article>
                 `).join('') : '<p class="text-sm text-gray-500">No hay recomendaciones disponibles.</p>'}
             </div>
@@ -3167,6 +3378,7 @@ function updateDetailHero(item) {
         trackEl.className = `tvst-hero-progress-track ${heroStyle.heroClass}`;
     }
 
+    updateDetailHeroFavorite(item);
     updateDetailAddBar(item);
 }
 
@@ -3961,6 +4173,10 @@ window.onListItemClick = onListItemClick;
 window.toggleListCoverPickMode = toggleListCoverPickMode;
 window.setListCover = setListCover;
 window.toggleFavorite = toggleFavorite;
+window.toggleFavoriteFromHero = toggleFavoriteFromHero;
+window.toggleFavoriteFromCard = toggleFavoriteFromCard;
+window.onListSortChange = onListSortChange;
+window.onProfilePlatformChange = onProfilePlatformChange;
 window.openListPicker = openListPicker;
 window.closeListPicker = closeListPicker;
 window.toggleSelectedInList = toggleSelectedInList;

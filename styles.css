@@ -108,36 +108,6 @@ html, body {
     background: #3a3a3a;
 }
 
-.tvst-grid-toggle {
-    position: absolute;
-    right: 0.5rem;
-    top: 50%;
-    transform: translateY(-50%);
-    width: 1.6rem;
-    height: 1.6rem;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    border: 1px solid var(--tvst-pill-border);
-    border-radius: 0.2rem;
-    background: transparent;
-    color: #fff;
-    cursor: pointer;
-    padding: 0;
-}
-
-.tvst-grid-toggle:hover {
-    transform: translateY(-50%);
-}
-
-.tvst-grid-toggle svg {
-    width: 0.85rem;
-    height: 0.85rem;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 1.8;
-}
-
 /* ── Episode list / rows ── */
 .tvst-episode-list {
     display: flex;
@@ -494,6 +464,30 @@ html, body {
     right: 0.35rem;
 }
 
+.tvst-card-fav {
+    position: absolute;
+    bottom: 0.35rem;
+    right: 0.35rem;
+    z-index: 3;
+    width: 1.75rem;
+    height: 1.75rem;
+    border: none;
+    border-radius: 50%;
+    background: rgba(0, 0, 0, 0.65);
+    color: rgba(255, 255, 255, 0.7);
+    font-size: 0.95rem;
+    line-height: 1;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+}
+
+.tvst-card-fav.is-active {
+    color: #f5c518;
+}
+
 /* ── Search list (Explore) ── */
 .tvst-search-list {
     display: flex;
@@ -674,14 +668,30 @@ html, body {
 .tvst-profile-toolbar {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 0.75rem;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    gap: 0.5rem 0.75rem;
     padding: 0.75rem 0 0.55rem;
     position: sticky;
     top: 2.85rem;
     z-index: 19;
     background: #000;
     border-bottom: 1px solid var(--tvst-border);
+}
+
+.tvst-profile-search {
+    flex: 1 1 100%;
+    min-width: 0;
+    background: #111;
+    border: 1px solid var(--tvst-border);
+    border-radius: 0.35rem;
+    padding: 0.45rem 0.65rem;
+    font-size: 0.8rem;
+    color: #fff;
+}
+
+.tvst-profile-search::placeholder {
+    color: #777;
 }
 
 .tvst-profile-filter {
@@ -691,9 +701,11 @@ html, body {
     padding: 0.4rem 0.55rem;
     font-size: 0.75rem;
     color: #fff;
+    max-width: 100%;
 }
 
 .tvst-show-more-btn {
+    margin-left: auto;
     background: transparent;
     border: 1px solid var(--tvst-border);
     border-radius: 9999px;
@@ -1056,7 +1068,8 @@ html, body {
 }
 
 .tvst-hero-close,
-.tvst-hero-menu {
+.tvst-hero-menu,
+.tvst-hero-fav {
     position: absolute;
     top: 0.75rem;
     z-index: 2;
@@ -1076,6 +1089,17 @@ html, body {
 
 .tvst-hero-close { left: 0.75rem; }
 .tvst-hero-menu { right: 0.75rem; }
+.tvst-hero-fav {
+    right: 3.35rem;
+    font-size: 1.1rem;
+    color: rgba(255, 255, 255, 0.75);
+}
+.tvst-hero-fav.is-active {
+    color: #f5c518;
+}
+.tvst-hero-fav.hidden {
+    display: none;
+}
 
 .tvst-overflow-menu {
     position: absolute;
@@ -2008,6 +2032,17 @@ html, body {
 .tvst-list-action-btn.is-danger {
     background: #450a0a;
     color: #fecaca;
+}
+
+.tvst-list-sort {
+    font-size: 0.8rem;
+    font-weight: 600;
+    padding: 0.35rem 0.5rem;
+    border-radius: 0.4rem;
+    border: 1px solid #3f3f46;
+    background: #18181b;
+    color: #fff;
+    max-width: 100%;
 }
 
 .tvst-list-modal-grid {

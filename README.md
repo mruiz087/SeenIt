@@ -1,253 +1,152 @@
-# SeenIt - Seguimiento de Series y Películas
+# SeenIt
 
-Una aplicación PWA 100% privada para seguimiento de series y películas usando TMDB como base de datos y Google Drive para almacenamiento sincronizado.
+PWA para seguimiento de **series y películas**. Datos de catálogo vía [TMDB](https://www.themoviedb.org/); biblioteca personal en **Google Drive** del usuario. Sin backend propio: se puede publicar en **GitHub Pages**.
 
-## 🎯 Características
-
-- ✅ **Privada**: Todos los datos se almacenan localmente o en tu Drive personal
-- ✅ **PWA**: Funciona offline con Service Worker
-- ✅ **Responsive**: Compatible con móvil, tablet y desktop
-- ✅ **Sincronización**: Google Drive opcional
-- ✅ **Sin servidores**: 100% cliente-side
-- ✅ **TMDB Integration**: Base de datos completa de series y películas
+Cada persona inicia sesión con **su** cuenta de Google y guarda datos en **su** Drive. El enlace de la app no comparte bibliotecas entre cuentas.
 
 ---
 
-## 🚀 Setup Rápido
+## Características
 
-### 1️⃣ Configurar Credenciales
+### Series
+- **Lista pendiente** — episodios por ver de series en estado *Viendo*
+- **Próximamente** — estrenos futuros de todas las series salvo *Abandonada*
+- Marcado de episodios, progreso por temporada, estados: pendiente, viendo, completada, standby, abandonada
+- Series nuevas se añaden como *Viendo*
 
-Antes de usar la app, necesitas configurar tus credenciales de API:
+### Películas
+- Lista pendiente y próximos estrenos
+- Estado pendiente / vista
 
-#### TMDB API Key (Gratuita)
-1. Ve a https://www.themoviedb.org/settings/api
-2. Crea una cuenta (si no tienes una)
-3. Solicita una API Key
-4. Copia la API Key
+### Perfil
+- Biblioteca de series y películas con filtros por estado
+- Búsqueda por título y filtro por plataforma (dónde ver / TMDB watch providers)
+- **Favoritos** (estrella en el detalle y en las cards)
+- **Listas personalizadas** con banner, portada, orden (nombre / progreso / añadido)
+- Estadísticas de tiempo visto
+- Importación desde exportes de TV Time
+- Backup local (exportar / importar JSON) y sincronización con Drive
 
-#### Google Drive OAuth (Gratuito)
-1. Ve a https://console.cloud.google.com/
-2. Crea un nuevo proyecto o selecciona uno existente
-3. Habilita "Google Drive API"
-4. Ve a "Credenciales" → "Crear Credencial" → "OAuth 2.0 ID de Cliente"
-5. Configura:
-   - Tipo: Aplicación web
-   - Orígenes autorizados: `http://localhost:5500`
-   - URIs de redirección: `http://localhost:5500/index.html`
-6. Copia el Client ID y API Key
+### Técnica
+- PWA instalable (Service Worker, iconos, manifest)
+- Auth Google Identity Services (OAuth) + Drive API (`drive.file`)
+- Merge seguro local ↔ Drive (backup previo, unión por `id_tmdb`, sync bidireccional)
 
-#### Crear config.js
-1. Copia `config.example.js` y renómbralo a `config.js`
-2. Reemplaza los valores de ejemplo con tus credenciales reales
-3. **NUNCA** hagas commit de `config.js` (está en `.gitignore`)
+---
 
-```javascript
-// config.js
-const CONFIG_TMDB_API_KEY = 'tu_api_key_real_aqui';
-const CONFIG_GOOGLE_CLIENT_ID = 'tu_client_id_real_aqui.apps.googleusercontent.com';
-const CONFIG_GOOGLE_API_KEY = 'tu_google_api_key_aqui';
-```
+## Stack
 
-### 2️⃣ Iniciar el Servidor
+| Pieza | Uso |
+|---|---|
+| HTML / CSS / JS vanilla | UI y estado |
+| TMDB API | Búsqueda, detalles, episodios, providers |
+| Google Drive | Persistencia por usuario (`seenit-data.json`) |
+| Service Worker | Caché del shell; `config.js` en network-first |
+| GitHub Actions | Genera `config.js` y publica la carpeta `site/` |
 
-#### Opción A: Python (Recomendado)
+---
+
+## Qué debes hacer tú (checklist)
+
+### A) Google Cloud (una vez)
+
+1. Entra en [Google Cloud Console](https://console.cloud.google.com/).
+2. Crea o elige un proyecto.
+3. Activa **Google Drive API**.
+4. **Credenciales** → crear **OAuth 2.0 Client ID** (tipo *Aplicación web*).
+5. En el Client ID, **Orígenes JavaScript autorizados**, añade exactamente:
+   - `http://localhost:5500` (desarrollo)
+   - `https://TU_USUARIO.github.io` (origen de Pages; el path del repo no va en “origen”)
+6. **Pantalla de consentimiento OAuth**:
+   - Tipo **Externo**
+   - Scope de Drive si te lo pide
+   - **Publicar la app** (si queda en “Prueba”, solo los test users pueden entrar)
+7. (Opcional) Una **API key** de Google; el cliente Drive actual no la requiere. Si la creas, restríngela por referrer a tu dominio Pages.
+
+Copia:
+
+- Client ID (`….apps.googleusercontent.com`)
+- API key de [TMDB](https://www.themoviedb.org/settings/api)
+- API key de Google (opcional; el workflow aún puede pedir el secret)
+
+### B) GitHub Secrets + Pages
+
+1. Sube el código al repo (**sin** `config.js`).
+2. Repo → **Settings → Secrets and variables → Actions** → New repository secret:
+   - `TMDB_API_KEY`
+   - `GOOGLE_CLIENT_ID`
+   - `GOOGLE_API_KEY` (puede ser un placeholder si no usas key de Google)
+3. Repo → **Settings → Pages** → Source: **GitHub Actions**.
+4. Push a `main` (o Actions → *Deploy GitHub Pages* → Run workflow).
+5. Cuando el workflow termine, abre la URL de Pages y pulsa **Conectar con Google**.
+
+El workflow genera `config.js` en CI y publica solo runtime en `site/` (HTML/JS/CSS/icons/manifest/config), sin capturas ni JSON de TV Time.
+
+### C) Local (opcional)
+
 ```bash
+cp config.example.js config.js
+# edita config.js con tus claves
 python server.py
-# o en Python 3
-python3 server.py
-```
-
-Luego abre: http://localhost:5500
-
-#### Opción B: Node.js (http-server)
-```bash
-npx http-server -p 5500 -c-1
-```
-
-#### Opción C: Cualquier otro servidor web
-```bash
-# Con PHP
-php -S localhost:5500
-
-# Con Node.js (http-server globalmente instalado)
-http-server -p 5500
+# http://localhost:5500
 ```
 
 ---
 
-## 📋 Problemas Encontrados y Solucionados
+## Limitación importante (sin servidor)
 
-### ✅ Problema 1: Falta Inicialización de la Aplicación
-**Síntoma**: Página en blanco o errores en consola
-**Causa**: No había llamada a `initApp()` cuando se cargaba la página
-**Solución**: Se agregó listener de `DOMContentLoaded` en `index.html` para llamar a `initApp()`
+Las claves del deploy **acaban en el navegador** (cualquiera puede verlas en el JS).  
+GitHub Secrets solo las ocultan del historial de git.
 
-### ✅ Problema 2: Service Worker con Rutas Incorrectas
-**Síntoma**: Service Worker no se registraba o fallaba
-**Causa**: Rutas absolutas (`/sw.js`) no funcionan correctamente en localhost
-**Solución**: Cambié a rutas relativas (`./sw.js`)
+Mitigación:
 
-### ✅ Problema 3: Manifest.json con Rutas Absolutas
-**Síntoma**: PWA no se installaba correctamente
-**Causa**: `"start_url": "/index.html"` y `"scope": "/"` son rutas absolutas
-**Solución**: Cambié a `"start_url": "./index.html"` y `"scope": "./"`
-
-### ✅ Problema 4: CORS y Headers en Servidor
-**Síntoma**: Posibles errores de CORS con Google APIs
-**Causa**: El servidor necesita headers CORS correctos
-**Solución**: Proporcioné `server.py` con CORS habilitado correctamente
-
-### ✅ Problema 5: Credenciales Expuestas en el Código
-**Síntoma**: API Keys visibles en el código fuente
-**Causa**: Las credenciales estaban hardcodeadas en los servicios
-**Solución**: 
-- Creé `config.example.js` como plantilla
-- Añadí `.gitignore` para evitar que `config.js` se commitee
-- Incluí documentación sobre dónde obtener las credenciales
-
-### ✅ Problema 6: Listener DOMContentLoaded Duplicado
-**Síntoma**: Inicialización doble o comportamiento inconsistente
-**Causa**: `app.js` tenía su propio listener que conflictaba con el de HTML
-**Solución**: Removí el listener del `app.js`
+- Client ID protegido por orígenes autorizados
+- TMDB: key de uso público típico; si hay abuso, rotar
+- No uses un **Client Secret** de OAuth en el frontend
 
 ---
 
-## 🔧 Estructura de Archivos
+## Login y sync
 
-```
-SeenIt2/
-├── index.html           # Interfaz principal
-├── app.js              # Lógica de la aplicación
-├── tmdb-service.js     # Integración con TMDB API
-├── drive-service.js    # Integración con Google Drive
-├── sw.js               # Service Worker (caching offline)
-├── manifest.json       # Configuración PWA
-├── server.py           # Servidor Python con CORS
-├── config.example.js   # Plantilla de configuración (COPIAR A config.js)
-├── config.js           # ⚠️ NO COMMITEAR (tu configuración real)
-├── .gitignore          # Archivos a ignorar en git
-└── README.md           # Este archivo
-```
+1. Gate inicial: conectar Google (popup OAuth).
+2. Se carga / fusiona la biblioteca de Drive con lo local (backup en `localStorage` antes del merge).
+3. **Sincronizar** (Perfil → Ajustes) hace el mismo flujo: snapshot → pull → merge → push.
+4. Visitas siguientes pueden renovar el token en silencio si sigue válido.
 
 ---
 
-## 🛠️ Troubleshooting
+## Estructura del repo
 
-### "Error TMDB: 401" o "API Key inválida"
-- Verifica que tu `config.js` tiene la API Key correcta
-- Confirma que la API Key está habilitada en TMDB
-
-### "Error de autenticación con Google Drive"
-- Verifica que Google Drive API está habilitada
-- Confirma que `http://localhost:5500` está en "Orígenes autorizados"
-- Limpia el localStorage y vuelve a intentar
-- En consola: `localStorage.clear()`
-
-### "Puerto 5500 ya en uso"
-```bash
-# En Windows - encuentra qué usa el puerto
-netstat -ano | findstr :5500
-
-# En Linux/Mac
-lsof -i :5500
-
-# Luego mata el proceso o cambia el puerto en server.py
-```
-
-### "Service Worker no se registra"
-1. Abre DevTools → Console
-2. Verifica que no hay errores de CORS
-3. Comprueba que `sw.js` existe en la carpeta raíz
-4. En DevTools → Application → Service Workers verifica el estado
-
-### Datos no se sincronizan con Drive
-1. Verifica conexión a internet
-2. Abre DevTools → Network para ver si las peticiones se envían
-3. En consola busca errores: `[Drive]` y `[App]`
-4. Intenta desconectar y reconectar Drive
+| Archivo / carpeta | Rol |
+|---|---|
+| `index.html` | Shell UI |
+| `styles.css` | Estilos |
+| `app.js` | Lógica, vistas, sync |
+| `drive-service.js` | OAuth GIS + Drive |
+| `tmdb-service.js` | Cliente TMDB |
+| `tvtime-import.js` | Importación TV Time |
+| `sw.js` | Service Worker |
+| `manifest.json` / `icons/` | PWA |
+| `config.example.js` | Plantilla de claves |
+| `config.js` | Claves locales / CI (**no commitear**) |
+| `server.py` | Servidor estático local |
+| `.github/workflows/deploy-pages.yml` | Deploy Pages + inyección de secrets |
 
 ---
 
-## 📱 Uso de la App
+## Problemas frecuentes
 
-### Agregar Series/Películas
-1. Ve a la pestaña "🔍 Buscar"
-2. Escribe el nombre de la serie o película
-3. Haz clic en "+ Añadir"
-
-### Editar Detalles
-1. Haz clic en la película/serie en tu lista
-2. Modifica puntuación, estado, episodios visto
-3. Haz clic en "💾 Guardar"
-
-### Sincronizar con Drive
-1. Ve a "⚙️ Ajustes"
-2. Haz clic en "🔗 Conectar Google Drive"
-3. Autoriza la aplicación
-4. Tus datos se sincronizarán automáticamente
-
-### Exportar/Importar
-1. Ve a "⚙️ Ajustes"
-2. "📤 Exportar datos" descarga un JSON
-3. "📥 Importar datos" carga un JSON
+| Síntoma | Qué revisar |
+|---|---|
+| “Falta configuración” | Secrets mal puestos o workflow sin generar `config.js` |
+| `origin_mismatch` | Añade `window.location.origin` exacto en Orígenes JavaScript autorizados |
+| Amigo no puede entrar | Consent screen en **Prueba** → **Publicar**; o origen Pages mal configurado |
+| Popup no aparece | Permitir ventanas emergentes para el sitio |
+| TMDB 401 | Secret `TMDB_API_KEY` incorrecto |
+| App “vieja” tras un deploy | Recarga forzada; el SW avisa cuando hay nueva versión |
 
 ---
 
-## 🔒 Privacidad y Seguridad
+## Privacidad
 
-- ✅ **Datos locales**: Se almacenan en `localStorage` de tu navegador
-- ✅ **Drive**: Si conectas Drive, tus datos se sincronizarán de forma privada
-- ✅ **TMDB**: Solo se descargan datos públicos de películas/series
-- ✅ **Sin tracking**: No hay analytics ni tracking de datos
-- ⚠️ **Credenciales**: Mantenlas privadas en `config.js` (nunca en Git)
-
----
-
-## 🚀 Deploy (Opcional)
-
-Para deployar en producción:
-
-1. **Actualiza credenciales OAuth**:
-   - Añade tu dominio en Google Console
-   - Cambia localhost por tu dominio
-
-2. **Usa HTTPS**:
-   - Google OAuth requiere HTTPS en producción
-   - Service Worker también necesita HTTPS
-
-3. **Ejemplos de deploy**:
-   - **Vercel**: `vercel deploy`
-   - **Netlify**: `netlify deploy`
-   - **GitHub Pages**: Push a `main` branch
-   - **Tu servidor**: `scp -r * user@host:/var/www/seenit`
-
----
-
-## 📚 Documentación de APIs
-
-- [TMDB API](https://developers.themoviedb.org/3)
-- [Google Drive API](https://developers.google.com/drive/api)
-- [Web APIs - Service Workers](https://developer.mozilla.org/en-US/docs/Web/API/Service_Worker_API)
-- [PWA Manifest](https://developer.mozilla.org/en-US/docs/Web/Manifest)
-
----
-
-## 📝 Licencia
-
-MIT License - Libre para usar y modificar
-
----
-
-## 🐛 Reportar Bugs
-
-Si encuentras algún problema:
-
-1. Abre DevTools (F12)
-2. Ve a Console
-3. Busca mensajes de error (normalmente con prefijos `[App]`, `[Drive]`, `[TMDB]`, `[SW]`)
-4. Copia el error completo y el contexto
-
----
-
-**Última actualización**: Mayo 2026
-**Versión**: 1.0.0
+Los datos de cada usuario viven en su Google Drive (scope `drive.file`). No hay servidor tuyo que almacene bibliotecas ajenas. Un backup local adicional se guarda en el navegador (`seenit_data` / `seenit_data_backup`) antes de reconciliar con Drive.
