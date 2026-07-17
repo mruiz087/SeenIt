@@ -38,13 +38,23 @@ jobs:
             > config.js
           echo "config.js generado"
 
+      - name: Prepare site artifact
+        run: |
+          mkdir -p site/icons
+          cp index.html styles.css app.js drive-service.js tmdb-service.js tvtime-import.js \
+             manifest.json sw.js config.js config.example.js site/
+          cp icons/icon.svg icons/icon-192.png icons/icon-512.png \
+             icons/icon-maskable-192.png icons/icon-maskable-512.png site/icons/
+          # optional local server helper not required on Pages
+          ls -la site
+
       - name: Setup Pages
         uses: actions/configure-pages@v5
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: .
+          path: site
 
   deploy:
     needs: build
