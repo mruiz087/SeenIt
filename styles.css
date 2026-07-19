@@ -1404,8 +1404,8 @@ html, body {
 }
 
 .tvst-history-pull.is-empty {
-    min-height: 55vh;
-    padding-bottom: 1rem;
+    min-height: 70vh;
+    padding-bottom: 1.25rem;
 }
 
 .tvst-history-pull-label {
@@ -1812,6 +1812,11 @@ html, body {
     display: flex;
     flex-direction: column;
     gap: 1rem;
+}
+
+.tvst-stats-section {
+    margin-top: 1.25rem;
+    padding-bottom: 0.5rem;
 }
 
 .tvst-stats-block {

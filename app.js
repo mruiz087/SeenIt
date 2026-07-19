@@ -38,7 +38,7 @@ const AppState = {
     isDriveConnected: false,
     isSyncing: false,
     expandedSeasons: {},
-    timelineHistoryVisible: { 'pending-list': 12, upcoming: 4 },
+    timelineHistoryVisible: { 'pending-list': 0, upcoming: 4 },
     timelineHistoryCache: {},
     timelinePendingCache: { continueWatching: [], staleWatching: [] },
     driveReady: false,
@@ -817,11 +817,8 @@ function switchTab(tab) {
     AppState.currentTab = tab;
 
     if (tab === 'series') {
-        // Historial reciente ya encima; ancla a "Ver a continuación"
-        AppState.timelineHistoryVisible['pending-list'] = Math.max(
-            AppState.timelineHistoryVisible['pending-list'] || 0,
-            12,
-        );
+        // Al entrar: historial oculto; la vista arranca en «Ver a continuación»
+        AppState.timelineHistoryVisible['pending-list'] = 0;
         AppState.timelineHistoryVisible['upcoming'] = 4;
         window.__seenitHistoryLoadReady = false;
     }
@@ -842,10 +839,7 @@ function switchTab(tab) {
 function switchSubTab(subTab) {
     AppState.currentSubTab = subTab;
     if (subTab === 'pending-list') {
-        AppState.timelineHistoryVisible['pending-list'] = Math.max(
-            AppState.timelineHistoryVisible['pending-list'] || 0,
-            12,
-        );
+        AppState.timelineHistoryVisible['pending-list'] = 0;
         window.__seenitHistoryLoadReady = false;
     } else {
         AppState.timelineHistoryVisible[subTab] = 4;
@@ -1292,33 +1286,47 @@ function createEpisodeCardMarkup({
 }
 
 function getTimelineStickyOffset() {
-    // Solo la subnav: la barra "Ver a continuación" queda arriba del viewport
-    // para que la vista inicial coincida con VER A CONTINUACIÓN + lista + hueco
+    // Subnav sticky; el marcador «Ver a continuación» se pega bajo ella (top: 3rem)
     const subnav = document.querySelector('#content-series .tvst-subnav');
     return subnav?.offsetHeight || 48;
+}
+
+function clearTimelineAnchorTimers() {
+    if (Array.isArray(window.__seenitAnchorTimers)) {
+        window.__seenitAnchorTimers.forEach(id => clearTimeout(id));
+    }
+    window.__seenitAnchorTimers = [];
 }
 
 function anchorTimelineToNow(tabKey, behavior = 'auto') {
     const anchor = document.querySelector(`[data-timeline-anchor="${tabKey}"]`);
     if (!anchor) return;
 
+    clearTimelineAnchorTimers();
+    window.__seenitHistoryLoadReady = false;
+
     const scroll = () => {
+        if (AppState.currentTab !== 'series' || AppState.currentSubTab !== 'pending-list') return;
+        const el = document.querySelector(`[data-timeline-anchor="${tabKey}"]`);
+        if (!el) return;
         const stickyOffset = getTimelineStickyOffset();
-        const top = anchor.getBoundingClientRect().top + window.scrollY - stickyOffset;
-        window.scrollTo({ top: Math.max(0, top), behavior });
+        const top = el.getBoundingClientRect().top + window.scrollY - stickyOffset;
+        window.scrollTo({ top: Math.max(0, top), behavior: behavior === 'smooth' ? 'smooth' : 'auto' });
     };
 
-    // Varios intentos: layout / posters pueden desplazar el ancla
+    // Instantáneo primero; luego reintentos por layout/imágenes
+    scroll();
     requestAnimationFrame(() => {
         requestAnimationFrame(scroll);
     });
-    setTimeout(scroll, 60);
-    setTimeout(scroll, 200);
-    setTimeout(() => {
+    [50, 150, 300, 500, 800].forEach((ms) => {
+        window.__seenitAnchorTimers.push(setTimeout(scroll, ms));
+    });
+    window.__seenitAnchorTimers.push(setTimeout(() => {
         scroll();
         window.__seenitHistoryLoadReady = true;
         window.__seenitLastScrollY = window.scrollY;
-    }, 350);
+    }, 900));
 }
 
 function scrollToNowAnchor() {
@@ -1435,19 +1443,15 @@ function paintPendingTimeline(options = {}) {
     const continueWatching = AppState.timelinePendingCache.continueWatching || [];
     const staleWatching = AppState.timelinePendingCache.staleWatching || [];
 
-    const defaultVisible = Math.min(12, historyEpisodes.length || 12);
-    if (!options.preserveAnchor && !options.keepHistoryCount) {
-        AppState.timelineHistoryVisible['pending-list'] = Math.max(
-            AppState.timelineHistoryVisible['pending-list'] || 0,
-            defaultVisible,
-        );
-    }
-    AppState.timelineHistoryVisible['pending-list'] = Math.min(
-        AppState.timelineHistoryVisible['pending-list'] || defaultVisible,
-        historyEpisodes.length || AppState.timelineHistoryVisible['pending-list'] || defaultVisible,
+    // Historial solo al hacer scroll hacia arriba; al entrar visible = 0 → «Ver a continuación»
+    const historyVisibleCount = Math.min(
+        AppState.timelineHistoryVisible['pending-list'] || 0,
+        historyEpisodes.length,
     );
-    const historyVisibleCount = AppState.timelineHistoryVisible['pending-list'];
-    const visibleHistory = historyEpisodes.slice(-historyVisibleCount);
+    AppState.timelineHistoryVisible['pending-list'] = historyVisibleCount;
+    const visibleHistory = historyVisibleCount > 0
+        ? historyEpisodes.slice(-historyVisibleCount)
+        : [];
     const hasMoreHistory = historyEpisodes.length > historyVisibleCount;
 
     if (pendingEpisodes.length === 0 && historyEpisodes.length === 0) {
@@ -1467,16 +1471,26 @@ function paintPendingTimeline(options = {}) {
         show, episode, variant: 'pending', allAiredEpisodes: airedEpisodes, remainingCount, showAction: true,
     })).join('');
 
+    const historyBlock = visibleHistory.length
+        ? `
+            ${hasMoreHistory ? `
+                <div id="pending-history-sentinel" class="tvst-history-sentinel" aria-hidden="true">
+                    <span class="tvst-history-pull-label">Cargar más historial</span>
+                </div>
+            ` : ''}
+            ${visibleHistory.map(({ show, episode, airedEpisodes }) => createEpisodeCardMarkup({
+                show, episode, variant: 'history', allAiredEpisodes: airedEpisodes || [], showAction: false,
+            })).join('')}
+        `
+        : `
+            <div class="tvst-history-pull is-empty" aria-hidden="true">
+                ${hasMoreHistory ? '<span class="tvst-history-pull-label">Desliza hacia arriba para el historial</span>' : ''}
+            </div>
+        `;
+
     container.className = 'tvst-episode-list';
     container.innerHTML = `
-        ${hasMoreHistory ? `
-            <div id="pending-history-sentinel" class="tvst-history-sentinel" aria-hidden="true">
-                <span class="tvst-history-pull-label">Cargar más historial</span>
-            </div>
-        ` : ''}
-        ${visibleHistory.map(({ show, episode, airedEpisodes }) => createEpisodeCardMarkup({
-            show, episode, variant: 'history', allAiredEpisodes: airedEpisodes || [], showAction: false,
-        })).join('')}
+        ${historyBlock}
         <div data-timeline-anchor="pending-list" class="tvst-timeline-marker">Ver a continuación</div>
         ${continueWatching.length
             ? renderPendingCards(continueWatching)
@@ -1485,7 +1499,6 @@ function paintPendingTimeline(options = {}) {
             <div class="tvst-timeline-marker">Sin ver por un tiempo</div>
             ${renderPendingCards(staleWatching)}
         ` : ''}
-        ${options.loadingHistory ? '<p class="tvst-history-pull-label" style="text-align:center;padding:0.75rem 0;opacity:.7">Cargando historial…</p>' : ''}
         <div class="tvst-timeline-spacer" aria-hidden="true"></div>
     `;
 
@@ -1495,7 +1508,6 @@ function paintPendingTimeline(options = {}) {
     if (options.preserveAnchor) {
         preserveAnchorAfterHistoryLoad('pending-list', options.anchorOffset);
     } else if (!options.skipAnchor) {
-        window.__seenitHistoryLoadReady = false;
         anchorTimelineToNow('pending-list', 'auto');
     }
 }
@@ -1591,25 +1603,24 @@ async function renderPendingList(options = {}) {
         .sort(sortPendingEntries);
 
     AppState.timelinePendingCache = { continueWatching, staleWatching };
-    AppState.timelineHistoryCache['pending-list'] = AppState.timelineHistoryCache['pending-list'] || [];
+    AppState.timelineHistoryVisible['pending-list'] = 0;
 
-    paintPendingTimeline({
-        ...options,
-        loadingHistory: true,
-        skipAnchor: false,
-    });
+    // Primera pintura: zona de pull vacía + «Ver a continuación» anclado al viewport
+    paintPendingTimeline({ skipAnchor: false });
 
-    // Historial en segundo plano: solo temporadas con episodios vistos
+    // Historial en cache (no visible hasta scroll arriba)
     const historyEpisodes = (await buildHistoryEntries(allTvShows)).sort(sortHistoryEntries);
     AppState.timelineHistoryCache['pending-list'] = historyEpisodes;
 
+    // Re-pintar pull zone (ahora sabe que hay historial) sin perder el ancla
+    const anchorEl = document.querySelector('[data-timeline-anchor="pending-list"]');
     paintPendingTimeline({
         preserveAnchor: true,
-        anchorOffset: document.querySelector('[data-timeline-anchor="pending-list"]')?.getBoundingClientRect().top,
-        keepHistoryCount: true,
+        anchorOffset: anchorEl?.getBoundingClientRect().top,
+        skipAnchor: true,
     });
+    anchorTimelineToNow('pending-list', 'auto');
 
-    // Actualizar estados en background sin bloquear la UI
     mapPool(watchingShows, 3, refreshShowStatus).then(() => {
         saveLocalData();
     }).catch(() => {});
@@ -2253,23 +2264,25 @@ function getShowEpisodeRuntimeMinutes(show) {
 function renderWatchStats() {
     const seriesEl = document.getElementById('stats-series-time');
     const moviesEl = document.getElementById('stats-movies-time');
-    if (!seriesEl || !moviesEl) return;
 
-    let seriesMinutes = 0;
-    for (const show of AppState.shows) {
-        const watched = Array.isArray(show.capitulos_vistos) ? show.capitulos_vistos.length : 0;
-        seriesMinutes += watched * getShowEpisodeRuntimeMinutes(show);
+    if (seriesEl) {
+        let seriesMinutes = 0;
+        for (const show of AppState.shows) {
+            const watched = Array.isArray(show.capitulos_vistos) ? show.capitulos_vistos.length : 0;
+            seriesMinutes += watched * getShowEpisodeRuntimeMinutes(show);
+        }
+        seriesEl.textContent = formatWatchDuration(seriesMinutes);
     }
 
-    let moviesMinutes = 0;
-    for (const movie of AppState.movies) {
-        if (normalizeStatus(movie.estado) !== 'completed') continue;
-        const runtime = Number(movie.runtime);
-        moviesMinutes += runtime > 0 ? runtime : 100;
+    if (moviesEl) {
+        let moviesMinutes = 0;
+        for (const movie of AppState.movies) {
+            if (normalizeStatus(movie.estado) !== 'completed') continue;
+            const runtime = Number(movie.runtime);
+            moviesMinutes += runtime > 0 ? runtime : 100;
+        }
+        moviesEl.textContent = formatWatchDuration(moviesMinutes);
     }
-
-    seriesEl.textContent = formatWatchDuration(seriesMinutes);
-    moviesEl.textContent = formatWatchDuration(moviesMinutes);
 }
 
 function toggleProfileExpanded(kind) {
