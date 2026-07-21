@@ -2214,9 +2214,13 @@ html, body {
     gap: 0.55rem;
 }
 
+.tvst-favorites-rail.is-expanded {
+    /* misma rejilla; muestra todos los ítems al expandir */
+}
+
 @media (min-width: 768px) {
     .tvst-favorites-rail {
-        grid-template-columns: repeat(5, minmax(0, 1fr));
+        grid-template-columns: repeat(6, minmax(0, 1fr));
     }
 }
 
@@ -2230,13 +2234,28 @@ html, body {
     cursor: pointer;
     text-align: left;
     color: inherit;
+    min-width: 0;
 }
 
 .tvst-fav-card-poster {
+    position: relative;
     aspect-ratio: 2 / 3;
     border-radius: 0.35rem;
     overflow: hidden;
     background: #1a1a1a;
+}
+
+.tvst-fav-card-score {
+    position: absolute;
+    top: 0.3rem;
+    right: 0.3rem;
+    z-index: 2;
+    border-radius: 0.25rem;
+    background: rgba(0, 0, 0, 0.82);
+    color: #facc15;
+    padding: 0.12rem 0.35rem;
+    font-size: 0.6rem;
+    font-weight: 800;
 }
 
 .tvst-fav-card-poster img {

@@ -34,6 +34,83 @@ const TMDB_IMAGE_BASE_URL = 'https://image.tmdb.org/t/p';
 let searchTimeout = null;
 const seasonDetailsCache = new Map();
 const findExternalCache = new Map();
+const tvMetaCache = new Map();
+
+const SEASON_CACHE_STORAGE_KEY = 'seenit_tmdb_seasons_v1';
+const SEASON_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+let seasonCachePersistTimer = null;
+
+function slimSeasonPayload(details) {
+    return {
+        episodes: (details?.episodes || []).map(ep => ({
+            episode_number: ep.episode_number,
+            name: ep.name,
+            overview: ep.overview || '',
+            air_date: ep.air_date || null,
+            still_path: ep.still_path || null,
+        })),
+    };
+}
+
+function loadSeasonCacheFromStorage() {
+    try {
+        const raw = localStorage.getItem(SEASON_CACHE_STORAGE_KEY);
+        if (!raw) return;
+        const parsed = JSON.parse(raw);
+        if (!parsed?.savedAt || (Date.now() - Number(parsed.savedAt)) > SEASON_CACHE_TTL_MS) {
+            localStorage.removeItem(SEASON_CACHE_STORAGE_KEY);
+            return;
+        }
+        const entries = parsed.entries || {};
+        for (const [key, value] of Object.entries(entries)) {
+            if (value && Array.isArray(value.episodes)) {
+                seasonDetailsCache.set(key, value);
+            }
+        }
+        console.log(`[TMDB] Caché de temporadas restaurada (${seasonDetailsCache.size})`);
+    } catch (error) {
+        console.warn('[TMDB] No se pudo leer caché de temporadas:', error);
+    }
+}
+
+function persistSeasonCacheToStorage() {
+    try {
+        const entries = {};
+        let count = 0;
+        for (const [key, value] of seasonDetailsCache.entries()) {
+            entries[key] = slimSeasonPayload(value);
+            count += 1;
+            // Evitar saturar localStorage
+            if (count >= 400) break;
+        }
+        localStorage.setItem(SEASON_CACHE_STORAGE_KEY, JSON.stringify({
+            savedAt: Date.now(),
+            entries,
+        }));
+    } catch (error) {
+        console.warn('[TMDB] No se pudo guardar caché de temporadas:', error);
+        try {
+            // Si hay cuota, limpiar y reintentar con menos entradas
+            const trimmed = {};
+            let n = 0;
+            for (const [key, value] of seasonDetailsCache.entries()) {
+                trimmed[key] = slimSeasonPayload(value);
+                if (++n >= 120) break;
+            }
+            localStorage.setItem(SEASON_CACHE_STORAGE_KEY, JSON.stringify({
+                savedAt: Date.now(),
+                entries: trimmed,
+            }));
+        } catch (_) { /* ignore */ }
+    }
+}
+
+function schedulePersistSeasonCache() {
+    if (seasonCachePersistTimer) clearTimeout(seasonCachePersistTimer);
+    seasonCachePersistTimer = setTimeout(persistSeasonCacheToStorage, 400);
+}
+
+loadSeasonCacheFromStorage();
 
 // ============================================
 // FUNCIONES AUXILIARES
@@ -261,6 +338,37 @@ async function getTVDetails(id) {
 }
 
 /**
+ * Meta ligera de serie (status + temporadas) sin credits/recomendaciones.
+ * Usado por timelines para no pagar el coste del detalle completo.
+ */
+async function getTVShowMeta(id) {
+    const cacheKey = String(id);
+    if (tvMetaCache.has(cacheKey)) {
+        return tvMetaCache.get(cacheKey);
+    }
+
+    try {
+        const response = await fetchTMDB(`/tv/${id}`);
+        const meta = {
+            id_tmdb: response.id,
+            status: response.status || 'Unknown',
+            temporadas: (response.seasons || []).map(s => ({
+                numero: s.season_number,
+                nombre: s.season_number === 0 ? 'Especiales' : (s.name || `Temporada ${s.season_number}`),
+                episodio_count: s.episode_count,
+                poster: getImageUrl(s.poster_path, 'w342'),
+                especial: s.season_number === 0,
+            })),
+        };
+        tvMetaCache.set(cacheKey, meta);
+        return meta;
+    } catch (error) {
+        console.error('[TMDB] Error obteniendo meta de serie:', error);
+        throw error;
+    }
+}
+
+/**
  * Obtiene detalles de una temporada específica
  * @param {number} tvId - ID de TMDB de la serie
  * @param {number} seasonNumber - Número de temporada
@@ -274,8 +382,10 @@ async function getSeasonDetails(tvId, seasonNumber) {
 
     try {
         const details = await fetchTMDB(`/tv/${tvId}/season/${seasonNumber}`);
-        seasonDetailsCache.set(cacheKey, details);
-        return details;
+        const slim = slimSeasonPayload(details);
+        seasonDetailsCache.set(cacheKey, slim);
+        schedulePersistSeasonCache();
+        return slim;
     } catch (error) {
         console.error('[TMDB] Error obteniendo detalles de temporada:', error);
         throw error;
@@ -285,12 +395,16 @@ async function getSeasonDetails(tvId, seasonNumber) {
 function clearSeasonDetailsCache(tvId = null) {
     if (tvId == null) {
         seasonDetailsCache.clear();
+        tvMetaCache.clear();
+        try { localStorage.removeItem(SEASON_CACHE_STORAGE_KEY); } catch (_) { /* ignore */ }
         return;
     }
     const prefix = `${tvId}:`;
     for (const key of seasonDetailsCache.keys()) {
         if (key.startsWith(prefix)) seasonDetailsCache.delete(key);
     }
+    tvMetaCache.delete(String(tvId));
+    schedulePersistSeasonCache();
 }
 
 // ============================================
@@ -493,6 +607,7 @@ window.TMDBService = {
     searchTV,
     getMovieDetails,
     getTVDetails,
+    getTVShowMeta,
     getSeasonDetails,
     clearSeasonDetailsCache,
     findByExternalId,
@@ -512,6 +627,7 @@ window.searchTV = searchTV;
 window.hasTmdbConfig = hasTmdbConfig;
 window.getMovieDetails = getMovieDetails;
 window.getTVDetails = getTVDetails;
+window.getTVShowMeta = getTVShowMeta;
 window.getSeasonDetails = getSeasonDetails;
 window.clearSeasonDetailsCache = clearSeasonDetailsCache;
 window.findByExternalId = findByExternalId;

@@ -27,7 +27,7 @@ const AppState = {
     profileMoviesSearch: '',
     profileSeriesPlatform: 'all',
     profileMoviesPlatform: 'all',
-    profileExpanded: { series: false, movies: false },
+    profileExpanded: { series: false, movies: false, favoritesSeries: false, favoritesMovies: false },
     listSortMode: 'added',
     detailRecsExpanded: false,
     lastSearchResults: [],
@@ -40,14 +40,16 @@ const AppState = {
     expandedSeasons: {},
     timelineHistoryVisible: { 'pending-list': 0, upcoming: 4 },
     timelineHistoryCache: {},
-    timelinePendingCache: { continueWatching: [], staleWatching: [] },
+    timelinePendingCache: { continueWatching: [], staleWatching: [], builtAt: 0 },
+    timelineUpcomingCache: { html: '', builtAt: 0, items: [] },
     driveReady: false,
 };
 
 /** Cache en memoria de episodios ordenados (sesión). */
 const orderedEpisodesCache = new Map();
 const orderedEpisodesInflight = new Map();
-const TIMELINE_FETCH_CONCURRENCY = 6;
+const TIMELINE_FETCH_CONCURRENCY = 8;
+const TIMELINE_CACHE_FRESH_MS = 3 * 60 * 1000;
 
 let appInitialized = false;
 let syncToDriveTimeout = null;
@@ -186,6 +188,11 @@ async function enterAppAfterDrive() {
     setDriveGateVisible(false);
     switchTab('series');
     await renderCurrentView();
+    // Prefetch temporadas relevantes en idle para la siguiente visita
+    const idle = window.requestIdleCallback || ((cb) => setTimeout(cb, 800));
+    idle(() => {
+        prefetchTimelineSeasons().catch(() => {});
+    });
 }
 
 async function connectDriveFromGate() {
@@ -273,6 +280,8 @@ function normalizeStoredMovie(movie) {
     normalized.estado = normalizeStatus(normalized.estado);
     normalized.capitulos_vistos = Array.isArray(normalized.capitulos_vistos) ? normalized.capitulos_vistos : [];
     normalized.favorito = Boolean(normalized.favorito);
+    const score = Number(normalized.puntuacion);
+    normalized.puntuacion = Number.isFinite(score) && score > 0 ? Math.min(10, score) : 0;
     return normalized;
 }
 
@@ -293,6 +302,8 @@ function normalizeStoredShow(show) {
     normalized.episodios_vistos_count = Number(normalized.episodios_vistos_count) || normalized.capitulos_vistos.length;
     normalized.episode_run_time = Number(normalized.episode_run_time) || 45;
     normalized.favorito = Boolean(normalized.favorito);
+    const score = Number(normalized.puntuacion);
+    normalized.puntuacion = Number.isFinite(score) && score > 0 ? Math.min(10, score) : 0;
     return normalized;
 }
 
@@ -383,6 +394,8 @@ function mergeMovieOrShow(localItem, remoteItem, kind) {
         || (watchedB === watchedA && normalizeStatus(b.estado) === 'completed' && normalizeStatus(a.estado) !== 'completed');
     const base = preferRemote ? { ...a, ...b } : { ...b, ...a };
     base.favorito = Boolean(a.favorito || b.favorito);
+    // Conservar la mejor puntuación personal (no pisar con 0 del otro lado)
+    base.puntuacion = Math.max(Number(a.puntuacion) || 0, Number(b.puntuacion) || 0);
     if (kind === 'tv') {
         const ids = [...new Set([...(a.capitulos_vistos || []), ...(b.capitulos_vistos || [])])];
         base.capitulos_vistos = ids;
@@ -544,6 +557,7 @@ async function addShow(show) {
         const details = await getTVDetails(show.id_tmdb);
         details.estado = 'watching';
         AppState.shows.push(normalizeStoredShow(details));
+        invalidateTimelineCaches();
         saveLocalData();
         syncToDrive();
         renderCurrentView();
@@ -574,6 +588,7 @@ function removeMovie(id_tmdb) {
 function removeShow(id_tmdb) {
     AppState.shows = AppState.shows.filter(s => s.id_tmdb !== id_tmdb);
     removeItemFromAllLists('tv', id_tmdb);
+    invalidateTimelineCaches();
     saveLocalData();
     syncToDrive();
     renderCurrentView();
@@ -587,19 +602,26 @@ function removeShow(id_tmdb) {
  * @param {number} rating - Puntuación (0-10)
  */
 function updateRating(type, id_tmdb, rating) {
+    const value = Math.max(0, Math.min(10, Number(rating) || 0));
     if (type === 'movie') {
         const movie = AppState.movies.find(m => m.id_tmdb === id_tmdb);
         if (movie) {
-            movie.puntuacion = rating;
+            movie.puntuacion = value;
         }
     } else if (type === 'tv') {
         const show = AppState.shows.find(s => s.id_tmdb === id_tmdb);
         if (show) {
-            show.puntuacion = rating;
+            show.puntuacion = value;
         }
     }
     saveLocalData();
-    syncToDrive();
+    // Persistencia inmediata en Drive (sin debounce) para no perder notas
+    if (typeof isAuthenticated === 'function' && isAuthenticated()) {
+        syncToDriveNow().catch((error) => {
+            console.warn('[App] No se pudo sincronizar puntuación:', error);
+            syncToDrive();
+        });
+    }
 }
 
 /**
@@ -701,6 +723,7 @@ async function toggleEpisode(id_tmdb, episode) {
     }
 
     await refreshShowStatus(show);
+    invalidateTimelineCaches();
     saveLocalData();
     syncToDrive();
     if (AppState.selectedItem?.tipo === 'tv' && AppState.selectedItem.id_tmdb === id_tmdb) {
@@ -1592,8 +1615,29 @@ async function renderPendingList(options = {}) {
         return;
     }
 
+    const cacheFresh = !options.forceRefresh
+        && AppState.timelinePendingCache?.builtAt
+        && (Date.now() - AppState.timelinePendingCache.builtAt) < TIMELINE_CACHE_FRESH_MS
+        && (
+            (AppState.timelinePendingCache.continueWatching || []).length > 0
+            || (AppState.timelinePendingCache.staleWatching || []).length > 0
+            || watchingShows.length === 0
+        );
+
+    if (cacheFresh) {
+        AppState.timelineHistoryVisible['pending-list'] = 0;
+        paintPendingTimeline({ skipAnchor: false });
+        // Refresco suave en background
+        refreshPendingListInBackground(allTvShows, watchingShows);
+        return;
+    }
+
     container.innerHTML = emptyState('episodes', 'Cargando episodios...', { loading: true });
 
+    await rebuildPendingTimeline(allTvShows, watchingShows, { showLoading: false });
+}
+
+async function rebuildPendingTimeline(allTvShows, watchingShows, options = {}) {
     const pendingEpisodes = await buildWatchingPendingEntries(watchingShows);
     const continueWatching = pendingEpisodes
         .filter(({ show, episode }) => isShowInContinueSection(show, episode))
@@ -1602,38 +1646,49 @@ async function renderPendingList(options = {}) {
         .filter(({ show, episode }) => !isShowInContinueSection(show, episode))
         .sort(sortPendingEntries);
 
-    AppState.timelinePendingCache = { continueWatching, staleWatching };
+    AppState.timelinePendingCache = {
+        continueWatching,
+        staleWatching,
+        builtAt: Date.now(),
+    };
     AppState.timelineHistoryVisible['pending-list'] = 0;
 
-    // Primera pintura: zona de pull vacía + «Ver a continuación» anclado al viewport
     paintPendingTimeline({ skipAnchor: false });
 
-    // Historial en cache (no visible hasta scroll arriba)
-    const historyEpisodes = (await buildHistoryEntries(allTvShows)).sort(sortHistoryEntries);
-    AppState.timelineHistoryCache['pending-list'] = historyEpisodes;
-
-    // Re-pintar pull zone (ahora sabe que hay historial) sin perder el ancla
-    const anchorEl = document.querySelector('[data-timeline-anchor="pending-list"]');
-    paintPendingTimeline({
-        preserveAnchor: true,
-        anchorOffset: anchorEl?.getBoundingClientRect().top,
-        skipAnchor: true,
+    // Historial en segundo plano (no bloquea la vista)
+    void buildHistoryEntries(allTvShows).then((historyEpisodes) => {
+        AppState.timelineHistoryCache['pending-list'] = historyEpisodes.sort(sortHistoryEntries);
+        if (AppState.currentTab === 'series' && AppState.currentSubTab === 'pending-list') {
+            const anchorEl = document.querySelector('[data-timeline-anchor="pending-list"]');
+            paintPendingTimeline({
+                preserveAnchor: true,
+                anchorOffset: anchorEl?.getBoundingClientRect().top,
+                skipAnchor: true,
+            });
+        }
+    }).catch((error) => {
+        console.warn('[App] Historial pendiente en background:', error);
     });
-    anchorTimelineToNow('pending-list', 'auto');
 
     mapPool(watchingShows, 3, refreshShowStatus).then(() => {
         saveLocalData();
     }).catch(() => {});
 }
 
+async function refreshPendingListInBackground(allTvShows, watchingShows) {
+    try {
+        await rebuildPendingTimeline(allTvShows, watchingShows);
+    } catch (error) {
+        console.warn('[App] Refresco pendiente en background:', error);
+    }
+}
+
 /**
  * Renderiza la lista de próximos episodios
  */
-async function renderUpcomingList() {
+async function renderUpcomingList(options = {}) {
     const container = document.getElementById('upcoming-list-container');
     if (!container) return;
-
-    container.innerHTML = emptyState('calendar', 'Cargando próximos...', { loading: true });
 
     const upcomingShows = AppState.shows.filter(show => normalizeStatus(show.estado) !== 'dropped');
 
@@ -1650,6 +1705,24 @@ async function renderUpcomingList() {
         return;
     }
 
+    const cacheFresh = !options.forceRefresh
+        && AppState.timelineUpcomingCache?.builtAt
+        && (Date.now() - AppState.timelineUpcomingCache.builtAt) < TIMELINE_CACHE_FRESH_MS
+        && AppState.timelineUpcomingCache.html;
+
+    if (cacheFresh) {
+        container.className = 'tvst-episode-list';
+        container.innerHTML = AppState.timelineUpcomingCache.html;
+        requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: 'auto' }));
+        void rebuildUpcomingTimeline(upcomingShows, container).catch(() => {});
+        return;
+    }
+
+    container.innerHTML = emptyState('calendar', 'Cargando próximos...', { loading: true });
+    await rebuildUpcomingTimeline(upcomingShows, container);
+}
+
+async function rebuildUpcomingTimeline(upcomingShows, container) {
     await mapPool(upcomingShows, TIMELINE_FETCH_CONCURRENCY, ensureShowSeasonMeta);
 
     const chunks = await mapPool(upcomingShows, TIMELINE_FETCH_CONCURRENCY, async (show) => {
@@ -1664,7 +1737,6 @@ async function renderUpcomingList() {
             return daysUntil != null && daysUntil > 0;
         });
 
-        // Si no hay futuros en el recorte, probar temporada completa
         if (!future.length && seasonNumbers.length) {
             episodes = await getOrderedEpisodes(show, { includeSpecials: false });
             future = episodes.filter(episode => {
@@ -1682,11 +1754,13 @@ async function renderUpcomingList() {
     upcomingEpisodes.sort((a, b) => (a.episode.air_date || '9999').localeCompare(b.episode.air_date || '9999'));
 
     if (upcomingEpisodes.length === 0) {
-        container.innerHTML = emptyState(
+        const emptyHtml = emptyState(
             'calendar',
             'Sin episodios programados',
             { subtitle: 'No hay próximos estrenos de episodios en tus series.' },
         );
+        container.innerHTML = emptyHtml;
+        AppState.timelineUpcomingCache = { html: emptyHtml, builtAt: Date.now(), items: [] };
         return;
     }
 
@@ -1709,7 +1783,7 @@ async function renderUpcomingList() {
     });
 
     container.className = 'tvst-episode-list';
-    container.innerHTML = dayKeys.map(label => `
+    const html = dayKeys.map(label => `
         <div class="tvst-day-capsule-wrap"><span class="tvst-day-capsule">${label}</span></div>
         ${groupedUpcoming[label].map(({ show, episode, airedEpisodes }) => createEpisodeCardMarkup({
             show,
@@ -1720,8 +1794,30 @@ async function renderUpcomingList() {
             airMeta: getAirTimeMeta(episode.air_date, label),
         })).join('')}
     `).join('');
+    container.innerHTML = html;
+    AppState.timelineUpcomingCache = { html, builtAt: Date.now(), items: upcomingEpisodes };
 
     requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: 'auto' }));
+}
+
+function invalidateTimelineCaches() {
+    AppState.timelinePendingCache = { continueWatching: [], staleWatching: [], builtAt: 0 };
+    AppState.timelineUpcomingCache = { html: '', builtAt: 0, items: [] };
+}
+
+async function prefetchTimelineSeasons() {
+    const watching = AppState.shows.filter(s => normalizeStatus(s.estado) === 'watching');
+    const upcoming = AppState.shows.filter(s => normalizeStatus(s.estado) !== 'dropped').slice(0, 25);
+    const targets = [...new Map([...watching, ...upcoming].map(s => [s.id_tmdb, s])).values()];
+    await mapPool(targets, TIMELINE_FETCH_CONCURRENCY, async (show) => {
+        await ensureShowSeasonMeta(show);
+        const seasons = [
+            ...getWatchedSeasonNumbers(show).slice(-1),
+            ...getUpcomingSeasonNumbers(show),
+        ];
+        if (!seasons.length) return;
+        await getOrderedEpisodes(show, { includeSpecials: false, seasonNumbers: [...new Set(seasons)] });
+    });
 }
 
 /**
@@ -1940,21 +2036,38 @@ function renderProfileFavorites() {
     const moviesEl = document.getElementById('profile-movies-favorites');
     if (!seriesEl || !moviesEl) return;
 
-    const renderFavs = (items, tipo) => {
+    const collapsedLimit = window.matchMedia('(min-width: 768px)').matches ? 6 : 3;
+
+    const renderFavs = (items, tipo, expandedKey, moreBtnId, railEl) => {
         const favs = items
             .filter(item => Boolean(item.favorito))
             .sort((a, b) => (a.titulo || '').localeCompare(b.titulo || '', 'es', { sensitivity: 'base' }));
+        const moreBtn = document.getElementById(moreBtnId);
+        const expanded = Boolean(AppState.profileExpanded[expandedKey]);
+
         if (!favs.length) {
-            return `<p class="tvst-lists-empty">Sin favoritos todavía. Abre un título → menú ⋯ → Añadir a favoritos.</p>`;
+            if (moreBtn) moreBtn.classList.add('hidden');
+            railEl.classList.remove('is-expanded');
+            return `<p class="tvst-lists-empty">Sin favoritos todavía. Abre un título → ★ o menú ⋯.</p>`;
         }
-        return favs.map(item => {
+
+        if (moreBtn) {
+            moreBtn.classList.toggle('hidden', favs.length <= collapsedLimit);
+            moreBtn.textContent = expanded ? 'Mostrar menos' : 'Mostrar más';
+        }
+        railEl.classList.toggle('is-expanded', expanded);
+
+        const visible = expanded ? favs : favs.slice(0, collapsedLimit);
+        return visible.map(item => {
             const img = item.portada || item.poster;
+            const score = Number(item.puntuacion) > 0 ? Number(item.puntuacion).toFixed(1) : null;
             return `
                 <button type="button" class="tvst-fav-card" onclick="openDetail('${tipo}', ${item.id_tmdb})">
                     <div class="tvst-fav-card-poster">
                         ${img
                             ? `<img src="${img}" alt="${escapeHtml(item.titulo || '')}" loading="lazy">`
                             : `<div class="tvst-poster-fallback">${escapeHtml((item.titulo || '?').slice(0, 1))}</div>`}
+                        ${score ? `<span class="tvst-fav-card-score">★ ${score}</span>` : ''}
                     </div>
                     <p class="tvst-fav-card-title">${escapeHtml(item.titulo || 'Sin título')}</p>
                 </button>
@@ -1962,8 +2075,12 @@ function renderProfileFavorites() {
         }).join('');
     };
 
-    seriesEl.innerHTML = renderFavs(AppState.shows, 'tv');
-    moviesEl.innerHTML = renderFavs(AppState.movies, 'movie');
+    seriesEl.innerHTML = renderFavs(
+        AppState.shows, 'tv', 'favoritesSeries', 'profile-series-fav-more', seriesEl,
+    );
+    moviesEl.innerHTML = renderFavs(
+        AppState.movies, 'movie', 'favoritesMovies', 'profile-movies-fav-more', moviesEl,
+    );
 }
 
 function toggleFavorite(tipo, id_tmdb) {
@@ -2702,7 +2819,9 @@ async function ensureShowSeasonMeta(show) {
         return show;
     }
     try {
-        const fresh = await getTVDetails(show.id_tmdb);
+        const fresh = typeof getTVShowMeta === 'function'
+            ? await getTVShowMeta(show.id_tmdb)
+            : await getTVDetails(show.id_tmdb);
         if (fresh?.temporadas?.length) show.temporadas = fresh.temporadas;
         if (fresh?.status) show.status = fresh.status;
     } catch (error) {
@@ -3125,6 +3244,7 @@ async function toggleEpisodeAndUpdateSeason(id_tmdb, episode, seasonNumber, seas
     }
 
     await refreshShowStatus(show);
+    invalidateTimelineCaches();
     saveLocalData();
     syncToDrive();
 
@@ -3278,6 +3398,7 @@ async function toggleSeasonWatched(id_tmdb, seasonNumber) {
     }
 
     await refreshShowStatus(show);
+    invalidateTimelineCaches();
     saveLocalData();
     syncToDrive();
 
@@ -3316,13 +3437,23 @@ function renderStars(rating) {
  * @param {number} id_tmdb - ID de TMDB
  */
 function mergeDetailItem(existingItem, freshDetails) {
-    if (!existingItem) return freshDetails;
+    if (!existingItem) {
+        // No arrastrar puntuacion:0 por defecto de TMDB como nota personal
+        return {
+            ...freshDetails,
+            puntuacion: Number(freshDetails?.puntuacion) > 0 ? Number(freshDetails.puntuacion) : 0,
+            favorito: Boolean(freshDetails?.favorito),
+        };
+    }
+    const existingScore = Number(existingItem.puntuacion) || 0;
+    const freshScore = Number(freshDetails?.puntuacion) || 0;
     return {
         ...existingItem,
         ...freshDetails,
         tipo: existingItem.tipo || freshDetails.tipo || 'tv',
         estado: existingItem.estado || freshDetails.estado || 'pending',
-        puntuacion: existingItem.puntuacion ?? freshDetails.puntuacion ?? 0,
+        puntuacion: Math.max(existingScore, freshScore),
+        favorito: Boolean(existingItem.favorito || freshDetails?.favorito),
         capitulos_vistos: existingItem.capitulos_vistos || freshDetails.capitulos_vistos || [],
         capitulos_vistos_fecha: existingItem.capitulos_vistos_fecha || freshDetails.capitulos_vistos_fecha || {},
         credits: {
