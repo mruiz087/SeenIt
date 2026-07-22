@@ -131,6 +131,15 @@ html, body {
 #app .profile-card.is-standby {
     opacity: 0.42;
     filter: grayscale(0.35);
+    transition: opacity 0.18s ease, filter 0.18s ease;
+}
+
+@media (hover: hover) and (pointer: fine) {
+    .tvst-episode-row.is-standby:hover,
+    #app .profile-card.is-standby:hover {
+        opacity: 1;
+        filter: none;
+    }
 }
 
 .tvst-episode-poster {
@@ -744,7 +753,7 @@ html, body {
 
 @media (min-width: 768px) {
     .tvst-profile-rail.is-expanded {
-        grid-template-columns: repeat(5, minmax(0, 1fr));
+        grid-template-columns: repeat(6, minmax(0, 1fr));
     }
 }
 
@@ -2206,6 +2215,16 @@ html, body {
 .tvst-favorites-section {
     margin-top: 1.1rem;
     padding: 0 0.15rem 0.25rem;
+}
+
+.tvst-favorites-header {
+    position: sticky;
+    top: 2.85rem;
+    z-index: 18;
+    background: #000;
+    padding: 0.55rem 0 0.5rem;
+    margin-bottom: 0.65rem;
+    border-bottom: 1px solid var(--tvst-border);
 }
 
 .tvst-favorites-rail {

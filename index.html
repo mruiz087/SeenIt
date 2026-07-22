@@ -93,24 +93,26 @@
                 </nav>
 
                 <div id="profile-series-content">
-                    <div class="tvst-profile-toolbar">
-                        <input type="search" id="profile-series-search" class="tvst-profile-search" placeholder="Buscar en biblioteca…" oninput="renderProfileView()" autocomplete="off">
-                        <select id="profile-series-filter" onchange="renderProfileView()" class="tvst-profile-filter">
-                            <option value="all">Todas</option>
-                            <option value="pending">Pendiente</option>
-                            <option value="watching">Viendo</option>
-                            <option value="standby">Ver en otro momento</option>
-                            <option value="completed">Completada</option>
-                            <option value="dropped">Abandonada</option>
-                        </select>
-                        <select id="profile-series-platform" onchange="onProfilePlatformChange('series')" class="tvst-profile-filter">
-                            <option value="all">Todas las plataformas</option>
-                        </select>
-                        <button type="button" id="profile-series-more" class="tvst-show-more-btn" onclick="toggleProfileExpanded('series')">Mostrar más</button>
+                    <div class="tvst-profile-library">
+                        <div class="tvst-profile-toolbar">
+                            <input type="search" id="profile-series-search" class="tvst-profile-search" placeholder="Buscar en biblioteca…" oninput="renderProfileView()" autocomplete="off">
+                            <select id="profile-series-filter" onchange="renderProfileView()" class="tvst-profile-filter">
+                                <option value="all">Todas</option>
+                                <option value="pending">Pendiente</option>
+                                <option value="watching">Viendo</option>
+                                <option value="standby">Ver en otro momento</option>
+                                <option value="completed">Completada</option>
+                                <option value="dropped">Abandonada</option>
+                            </select>
+                            <select id="profile-series-platform" onchange="onProfilePlatformChange('series')" class="tvst-profile-filter">
+                                <option value="all">Todas las plataformas</option>
+                            </select>
+                            <button type="button" id="profile-series-more" class="tvst-show-more-btn" onclick="toggleProfileExpanded('series')">Mostrar más</button>
+                        </div>
+                        <div id="profile-series-container" class="tvst-profile-rail"></div>
                     </div>
-                    <div id="profile-series-container" class="tvst-profile-rail"></div>
                     <section class="tvst-favorites-section">
-                        <div class="tvst-lists-header">
+                        <div class="tvst-lists-header tvst-favorites-header">
                             <h2 class="tvst-lists-title">Favoritos</h2>
                             <button type="button" id="profile-series-fav-more" class="tvst-show-more-btn" onclick="toggleProfileExpanded('favoritesSeries')">Mostrar más</button>
                         </div>
@@ -137,21 +139,23 @@
                 </div>
 
                 <div id="profile-movies-content" class="hidden">
-                    <div class="tvst-profile-toolbar">
-                        <input type="search" id="profile-movies-search" class="tvst-profile-search" placeholder="Buscar en biblioteca…" oninput="renderProfileView()" autocomplete="off">
-                        <select id="profile-movies-filter" onchange="renderProfileView()" class="tvst-profile-filter">
-                            <option value="all">Todas</option>
-                            <option value="pending">Pendiente</option>
-                            <option value="completed">Vista</option>
-                        </select>
-                        <select id="profile-movies-platform" onchange="onProfilePlatformChange('movies')" class="tvst-profile-filter">
-                            <option value="all">Todas las plataformas</option>
-                        </select>
-                        <button type="button" id="profile-movies-more" class="tvst-show-more-btn" onclick="toggleProfileExpanded('movies')">Mostrar más</button>
+                    <div class="tvst-profile-library">
+                        <div class="tvst-profile-toolbar">
+                            <input type="search" id="profile-movies-search" class="tvst-profile-search" placeholder="Buscar en biblioteca…" oninput="renderProfileView()" autocomplete="off">
+                            <select id="profile-movies-filter" onchange="renderProfileView()" class="tvst-profile-filter">
+                                <option value="all">Todas</option>
+                                <option value="pending">Pendiente</option>
+                                <option value="completed">Vista</option>
+                            </select>
+                            <select id="profile-movies-platform" onchange="onProfilePlatformChange('movies')" class="tvst-profile-filter">
+                                <option value="all">Todas las plataformas</option>
+                            </select>
+                            <button type="button" id="profile-movies-more" class="tvst-show-more-btn" onclick="toggleProfileExpanded('movies')">Mostrar más</button>
+                        </div>
+                        <div id="profile-movies-container" class="tvst-profile-rail"></div>
                     </div>
-                    <div id="profile-movies-container" class="tvst-profile-rail"></div>
                     <section class="tvst-favorites-section">
-                        <div class="tvst-lists-header">
+                        <div class="tvst-lists-header tvst-favorites-header">
                             <h2 class="tvst-lists-title">Favoritos</h2>
                             <button type="button" id="profile-movies-fav-more" class="tvst-show-more-btn" onclick="toggleProfileExpanded('favoritesMovies')">Mostrar más</button>
                         </div>
