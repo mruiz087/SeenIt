@@ -341,9 +341,9 @@ async function getTVDetails(id) {
  * Meta ligera de serie (status + temporadas) sin credits/recomendaciones.
  * Usado por timelines para no pagar el coste del detalle completo.
  */
-async function getTVShowMeta(id) {
+async function getTVShowMeta(id, options = {}) {
     const cacheKey = String(id);
-    if (tvMetaCache.has(cacheKey)) {
+    if (!options.force && tvMetaCache.has(cacheKey)) {
         return tvMetaCache.get(cacheKey);
     }
 

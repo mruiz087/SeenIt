@@ -50,6 +50,7 @@ const orderedEpisodesCache = new Map();
 const orderedEpisodesInflight = new Map();
 const TIMELINE_FETCH_CONCURRENCY = 8;
 const TIMELINE_CACHE_FRESH_MS = 3 * 60 * 1000;
+const SHOW_META_TTL_MS = 12 * 60 * 60 * 1000;
 
 let appInitialized = false;
 let syncToDriveTimeout = null;
@@ -304,6 +305,9 @@ function normalizeStoredShow(show) {
     normalized.favorito = Boolean(normalized.favorito);
     const score = Number(normalized.puntuacion);
     normalized.puntuacion = Number.isFinite(score) && score > 0 ? Math.min(10, score) : 0;
+    if (normalized.metaCheckedAt) {
+        normalized.metaCheckedAt = String(normalized.metaCheckedAt);
+    }
     return normalized;
 }
 
@@ -1673,6 +1677,27 @@ async function rebuildPendingTimeline(allTvShows, watchingShows, options = {}) {
     mapPool(watchingShows, 3, refreshShowStatus).then(() => {
         saveLocalData();
     }).catch(() => {});
+
+    // Detectar temporadas nuevas en series completadas → Viendo
+    void refreshCompletedShowsForNewSeasons().then((result) => {
+        if (!result?.changed) return;
+        saveLocalData();
+        syncToDrive();
+        for (const show of result.reopened || []) {
+            const title = show.titulo || 'Serie';
+            showToast(`Nueva temporada: ${title}`, 'info');
+        }
+        if (result.reopened?.length
+            && AppState.currentTab === 'series'
+            && AppState.currentSubTab === 'pending-list') {
+            const watchingNow = AppState.shows.filter(s => normalizeStatus(s.estado) === 'watching');
+            invalidateTimelineCaches();
+            return rebuildPendingTimeline(AppState.shows, watchingNow);
+        }
+        return undefined;
+    }).catch((error) => {
+        console.warn('[App] Refresco de series completadas:', error);
+    });
 }
 
 async function refreshPendingListInBackground(allTvShows, watchingShows) {
@@ -1807,8 +1832,11 @@ function invalidateTimelineCaches() {
 
 async function prefetchTimelineSeasons() {
     const watching = AppState.shows.filter(s => normalizeStatus(s.estado) === 'watching');
+    const completed = AppState.shows.filter(s => normalizeStatus(s.estado) === 'completed');
     const upcoming = AppState.shows.filter(s => normalizeStatus(s.estado) !== 'dropped').slice(0, 25);
-    const targets = [...new Map([...watching, ...upcoming].map(s => [s.id_tmdb, s])).values()];
+    const targets = [...new Map(
+        [...watching, ...completed, ...upcoming].map(s => [s.id_tmdb, s]),
+    ).values()];
     await mapPool(targets, TIMELINE_FETCH_CONCURRENCY, async (show) => {
         await ensureShowSeasonMeta(show);
         const seasons = [
@@ -1818,6 +1846,19 @@ async function prefetchTimelineSeasons() {
         if (!seasons.length) return;
         await getOrderedEpisodes(show, { includeSpecials: false, seasonNumbers: [...new Set(seasons)] });
     });
+
+    // Tras prefetch, reabrir completadas si hay episodios nuevos
+    const result = await refreshCompletedShowsForNewSeasons();
+    if (result.changed) {
+        saveLocalData();
+        syncToDrive();
+        for (const show of result.reopened || []) {
+            showToast(`Nueva temporada: ${show.titulo || 'Serie'}`, 'info');
+        }
+        if (result.reopened?.length) {
+            invalidateTimelineCaches();
+        }
+    }
 }
 
 /**
@@ -2293,6 +2334,69 @@ function deleteSelectedList() {
     if (!confirm(`¿Eliminar la lista «${list.name}»? Los títulos no se borran de tu biblioteca.`)) return;
     deleteList(list.id);
     showToast('Lista eliminada', 'success');
+}
+
+/**
+ * Exporta la lista abierta como JSON portable (solo lectura / compartir archivo).
+ * No mezcla cuentas: es un fichero local descargable.
+ */
+function exportSelectedList() {
+    const list = AppState.lists.find(l => l.id === AppState.selectedListId);
+    if (!list) {
+        showToast('Abre una lista primero', 'info');
+        return;
+    }
+
+    const items = (list.itemIds || []).map((id) => {
+        const item = getLibraryItem(list.tipo, id);
+        if (!item) {
+            return {
+                id_tmdb: Number(id),
+                tipo: list.tipo,
+                missing: true,
+            };
+        }
+        return {
+            id_tmdb: item.id_tmdb,
+            tipo: list.tipo,
+            titulo: item.titulo || '',
+            titulo_original: item.titulo_original || '',
+            portada: item.portada || null,
+            fecha_estreno: item.fecha_estreno || null,
+            vote_average: item.vote_average ?? null,
+            estado: item.estado || null,
+            puntuacion: Number(item.puntuacion) > 0 ? Number(item.puntuacion) : 0,
+            favorito: Boolean(item.favorito),
+        };
+    });
+
+    const payload = {
+        format: 'seenit-list-v1',
+        exportedAt: new Date().toISOString(),
+        list: {
+            name: list.name,
+            tipo: list.tipo,
+            coverId: list.coverId || null,
+            itemCount: items.length,
+            items,
+        },
+    };
+
+    const safeName = String(list.name || 'lista')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-zA-Z0-9_-]+/g, '_')
+        .replace(/^_+|_+$/g, '')
+        .slice(0, 40) || 'lista';
+    const date = new Date().toISOString().split('T')[0];
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `seenit_lista_${safeName}_${date}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast('Lista exportada', 'success');
 }
 
 function openListPicker() {
@@ -2814,20 +2918,96 @@ async function mapPool(items, concurrency, mapper) {
     return results;
 }
 
-async function ensureShowSeasonMeta(show) {
-    if (!show || (show.temporadas?.length && show.status && show.status !== 'Unknown' && show.status !== 'unknown')) {
+function isShowMetaStale(show) {
+    if (!show?.metaCheckedAt) return true;
+    const ms = Date.parse(show.metaCheckedAt);
+    if (!Number.isFinite(ms)) return true;
+    return (Date.now() - ms) > SHOW_META_TTL_MS;
+}
+
+function countRegularSeasons(show) {
+    return (show?.temporadas || []).filter(season => !season.especial && season.numero !== 0).length;
+}
+
+async function ensureShowSeasonMeta(show, options = {}) {
+    if (!show) return show;
+
+    const force = Boolean(options.force);
+    const hasMeta = Boolean(
+        show.temporadas?.length
+        && show.status
+        && show.status !== 'Unknown'
+        && show.status !== 'unknown',
+    );
+    const stale = isShowMetaStale(show);
+
+    if (hasMeta && !force && !stale) {
         return show;
     }
+
     try {
+        const prevSeasons = countRegularSeasons(show);
         const fresh = typeof getTVShowMeta === 'function'
-            ? await getTVShowMeta(show.id_tmdb)
+            ? await getTVShowMeta(show.id_tmdb, { force: force || stale })
             : await getTVDetails(show.id_tmdb);
         if (fresh?.temporadas?.length) show.temporadas = fresh.temporadas;
         if (fresh?.status) show.status = fresh.status;
+        if (fresh?.numero_temporadas) show.numero_temporadas = fresh.numero_temporadas;
+        show.metaCheckedAt = new Date().toISOString();
+
+        const nextSeasons = countRegularSeasons(show);
+        if (nextSeasons !== prevSeasons) {
+            invalidateOrderedEpisodesCache(show.id_tmdb);
+        }
     } catch (error) {
         console.warn('[App] No se pudo cargar meta de temporadas:', show.titulo, error);
     }
     return show;
+}
+
+/**
+ * Refresca series completadas: si TMDB trae episodios nuevos emitidos → watching.
+ * @returns {{ changed: boolean, reopened: Array }}
+ */
+async function refreshCompletedShowsForNewSeasons() {
+    const completed = AppState.shows.filter(show => normalizeStatus(show.estado) === 'completed');
+    if (!completed.length) {
+        return { changed: false, reopened: [] };
+    }
+
+    const reopened = [];
+    let changed = false;
+
+    await mapPool(completed, 3, async (show) => {
+        const beforeEstado = normalizeStatus(show.estado);
+        const beforeMeta = show.metaCheckedAt || '';
+        const beforeSeasons = countRegularSeasons(show);
+
+        await ensureShowSeasonMeta(show);
+        await refreshShowStatus(show);
+
+        const afterSeasons = countRegularSeasons(show);
+        const seasonsGrew = afterSeasons > beforeSeasons;
+        // Temporada nueva anunciada (aunque aún no haya emitidos) → volver a Viendo
+        if (beforeEstado === 'completed' && seasonsGrew && normalizeStatus(show.estado) === 'completed') {
+            show.estado = 'watching';
+        }
+
+        const afterEstado = normalizeStatus(show.estado);
+        if (beforeEstado === 'completed' && afterEstado === 'watching') {
+            reopened.push(show);
+            changed = true;
+        }
+        if (
+            (show.metaCheckedAt || '') !== beforeMeta
+            || afterSeasons !== beforeSeasons
+            || afterEstado !== beforeEstado
+        ) {
+            changed = true;
+        }
+    });
+
+    return { changed, reopened };
 }
 
 function parseEpisodeIdParts(episodeId) {
@@ -4463,6 +4643,7 @@ window.openListModal = openListModal;
 window.closeListModal = closeListModal;
 window.renameSelectedList = renameSelectedList;
 window.deleteSelectedList = deleteSelectedList;
+window.exportSelectedList = exportSelectedList;
 window.removeItemFromList = removeItemFromList;
 window.openDetailFromList = openDetailFromList;
 window.onListItemClick = onListItemClick;
