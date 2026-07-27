@@ -257,6 +257,10 @@ function signOut() {
     clearPersistedDriveToken();
 }
 
+function resetDriveDataFileCache() {
+    dataFileId = null;
+}
+
 function isAuthenticated() {
     return Boolean(accessToken) && Date.now() < tokenExpiresAt;
 }
@@ -422,6 +426,7 @@ window.DriveService = {
     saveUserData,
     getUserInfo,
     findOrCreateDataFile,
+    resetDriveDataFileCache,
 };
 
 window.initDriveService = initDriveService;
@@ -435,5 +440,6 @@ window.loadUserData = loadUserData;
 window.saveUserData = saveUserData;
 window.getUserInfo = getUserInfo;
 window.findOrCreateDataFile = findOrCreateDataFile;
+window.resetDriveDataFileCache = resetDriveDataFileCache;
 
 console.log('[Drive] drive-service.js cargado');

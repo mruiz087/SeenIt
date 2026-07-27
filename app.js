@@ -37,12 +37,17 @@ const AppState = {
     listCoverPickMode: false,
     isDriveConnected: false,
     isSyncing: false,
+    syncDirty: false,
+    driveReady: false,
+    driveLoadOk: false,
+    driveUserId: null,
+    deletedIds: { movie: [], tv: [] },
+    deletedListIds: [],
     expandedSeasons: {},
     timelineHistoryVisible: { 'pending-list': 0, upcoming: 4 },
     timelineHistoryCache: {},
     timelinePendingCache: { continueWatching: [], staleWatching: [], builtAt: 0 },
     timelineUpcomingCache: { html: '', builtAt: 0, items: [] },
-    driveReady: false,
 };
 
 /** Cache en memoria de episodios ordenados (sesión). */
@@ -51,9 +56,12 @@ const orderedEpisodesInflight = new Map();
 const TIMELINE_FETCH_CONCURRENCY = 8;
 const TIMELINE_CACHE_FRESH_MS = 3 * 60 * 1000;
 const SHOW_META_TTL_MS = 12 * 60 * 60 * 1000;
+const DRIVE_USER_STORAGE_KEY = 'seenit_drive_user';
+const LEGACY_DATA_KEY = 'seenit_data';
 
 let appInitialized = false;
 let syncToDriveTimeout = null;
+let syncFlushBound = false;
 let tvTimeSeriesJson = null;
 let tvTimeMoviesJson = null;
 
@@ -107,8 +115,13 @@ async function initApp() {
     appInitialized = true;
 
     console.log('[App] Inicializando aplicación...');
+    const storedUser = getStoredDriveUser();
+    if (storedUser?.id) {
+        AppState.driveUserId = storedUser.id;
+    }
     loadLocalData();
     setupEventListeners();
+    bindSyncFlushListeners();
     setDriveGateVisible(true);
     setDriveGateStatus('Preparando…');
 
@@ -163,14 +176,52 @@ async function initApp() {
     console.log('[App] Aplicación inicializada');
 }
 
+async function resolveDriveUser() {
+    try {
+        const info = await getUserInfo();
+        const id = info?.permissionId || info?.emailAddress || info?.email || null;
+        if (!id) return getStoredDriveUser();
+        const user = {
+            id: String(id),
+            email: info?.emailAddress || info?.email || '',
+            name: info?.displayName || info?.name || '',
+        };
+        setStoredDriveUser(user);
+        return user;
+    } catch (error) {
+        console.warn('[App] No se pudo obtener usuario de Drive:', error);
+        return getStoredDriveUser();
+    }
+}
+
 async function enterAppAfterDrive() {
-    updateDriveStatus(true);
     setDriveGateStatus('Cargando tu biblioteca…');
+    AppState.driveLoadOk = false;
+
+    const prevUserId = AppState.driveUserId;
+    const user = await resolveDriveUser();
+    const userId = user?.id || null;
+    AppState.driveUserId = userId;
+
+    if (userId !== prevUserId && typeof resetDriveDataFileCache === 'function') {
+        resetDriveDataFileCache();
+    }
+
+    // Siempre cargar el local de la cuenta activa (evita mezclar A→B).
+    if (userId) {
+        loadLocalData(userId);
+    } else if (prevUserId) {
+        clearLibraryState();
+    }
+
     const localSnapshot = snapshotLibrary();
     try {
         const data = await loadUserData();
         const result = reconcileWithDriveData(data, localSnapshot);
         saveLocalData();
+        AppState.driveLoadOk = true;
+        updateDriveStatus(true);
+        AppState.driveReady = true;
         if (result === 'local-upload' || result === 'merged') {
             await syncToDriveNow();
         }
@@ -179,17 +230,22 @@ async function enterAppAfterDrive() {
         } else if (result === 'merged') {
             showToast('Biblioteca fusionada con Drive', 'info');
         }
+        setDriveGateStatus('');
+        setDriveGateVisible(false);
     } catch (error) {
         console.warn('[App] Error cargando Drive al entrar:', error);
         applyLibrary(localSnapshot);
         saveLocalData();
+        AppState.driveLoadOk = false;
+        AppState.driveReady = true;
+        updateDriveStatus(false);
+        setDriveGateStatus('');
+        setDriveGateVisible(false);
+        showToast('No se pudo leer Drive; cambios no se subirán hasta reconectar', 'error');
     }
-    AppState.driveReady = true;
-    setDriveGateStatus('');
-    setDriveGateVisible(false);
+
     switchTab('series');
     await renderCurrentView();
-    // Prefetch temporadas relevantes en idle para la siguiente visita
     const idle = window.requestIdleCallback || ((cb) => setTimeout(cb, 800));
     idle(() => {
         prefetchTimelineSeasons().catch(() => {});
@@ -257,18 +313,159 @@ async function connectDriveFromGate() {
     }
 }
 
-/**
- * Carga datos desde localStorage
- */
-function loadLocalData() {
+function nowIso() {
+    return new Date().toISOString();
+}
+
+function touchUpdatedAt(item) {
+    if (!item || typeof item !== 'object') return item;
+    item.updatedAt = nowIso();
+    return item;
+}
+
+function getStoredDriveUser() {
     try {
-        const savedData = localStorage.getItem('seenit_data');
+        const raw = localStorage.getItem(DRIVE_USER_STORAGE_KEY);
+        if (!raw) return null;
+        const data = JSON.parse(raw);
+        if (!data?.id) return null;
+        return { id: String(data.id), email: data.email || '', name: data.name || '' };
+    } catch (_) {
+        return null;
+    }
+}
+
+function setStoredDriveUser(user) {
+    if (!user?.id) {
+        localStorage.removeItem(DRIVE_USER_STORAGE_KEY);
+        AppState.driveUserId = null;
+        return;
+    }
+    const payload = {
+        id: String(user.id),
+        email: user.email || '',
+        name: user.name || '',
+    };
+    localStorage.setItem(DRIVE_USER_STORAGE_KEY, JSON.stringify(payload));
+    AppState.driveUserId = payload.id;
+}
+
+function getDataStorageKey(userId = AppState.driveUserId) {
+    if (userId) return `seenit_data__${userId}`;
+    return LEGACY_DATA_KEY;
+}
+
+function migrateLegacyDataIfNeeded(userId) {
+    if (!userId) return;
+    const userKey = getDataStorageKey(userId);
+    if (localStorage.getItem(userKey)) return;
+    const legacy = localStorage.getItem(LEGACY_DATA_KEY);
+    if (!legacy) return;
+    try {
+        localStorage.setItem(userKey, legacy);
+        console.log('[App] Migrados datos legacy a', userKey);
+    } catch (error) {
+        console.warn('[App] No se pudo migrar seenit_data legacy:', error);
+    }
+}
+
+function normalizeDeletedIds(raw) {
+    const toEntries = (arr) => {
+        if (!Array.isArray(arr)) return [];
+        return arr.map((entry) => {
+            if (entry && typeof entry === 'object' && entry.id != null) {
+                const id = Number(entry.id);
+                if (!Number.isFinite(id) || id <= 0) return null;
+                return { id, deletedAt: entry.deletedAt || nowIso() };
+            }
+            const id = Number(entry);
+            if (!Number.isFinite(id) || id <= 0) return null;
+            return { id, deletedAt: nowIso() };
+        }).filter(Boolean);
+    };
+    return {
+        movie: toEntries(raw?.movie),
+        tv: toEntries(raw?.tv),
+    };
+}
+
+function normalizeDeletedListIds(raw) {
+    if (!Array.isArray(raw)) return [];
+    return raw.map((entry) => {
+        if (entry && typeof entry === 'object' && entry.id != null) {
+            return { id: String(entry.id), deletedAt: entry.deletedAt || nowIso() };
+        }
+        if (entry == null || entry === '') return null;
+        return { id: String(entry), deletedAt: nowIso() };
+    }).filter(Boolean);
+}
+
+function recordItemTombstone(tipo, id_tmdb) {
+    const bucket = tipo === 'movie' ? 'movie' : 'tv';
+    const id = Number(id_tmdb);
+    if (!Number.isFinite(id) || id <= 0) return;
+    const list = AppState.deletedIds[bucket] || [];
+    const existing = list.find(e => e.id === id);
+    if (existing) {
+        existing.deletedAt = nowIso();
+    } else {
+        list.push({ id, deletedAt: nowIso() });
+    }
+    AppState.deletedIds[bucket] = list;
+}
+
+function clearItemTombstone(tipo, id_tmdb) {
+    const bucket = tipo === 'movie' ? 'movie' : 'tv';
+    const id = Number(id_tmdb);
+    AppState.deletedIds[bucket] = (AppState.deletedIds[bucket] || []).filter(e => e.id !== id);
+}
+
+function recordListTombstone(listId) {
+    const id = String(listId || '');
+    if (!id) return;
+    const existing = AppState.deletedListIds.find(e => e.id === id);
+    if (existing) {
+        existing.deletedAt = nowIso();
+    } else {
+        AppState.deletedListIds.push({ id, deletedAt: nowIso() });
+    }
+}
+
+function clearListTombstone(listId) {
+    const id = String(listId || '');
+    AppState.deletedListIds = AppState.deletedListIds.filter(e => e.id !== id);
+}
+
+function clearLibraryState() {
+    AppState.movies = [];
+    AppState.shows = [];
+    AppState.lists = [];
+    AppState.deletedIds = { movie: [], tv: [] };
+    AppState.deletedListIds = [];
+    AppState.selectedItem = null;
+    AppState.selectedListId = null;
+    invalidateTimelineCaches();
+}
+
+/**
+ * Carga datos desde localStorage (clave por cuenta Google si hay userId)
+ */
+function loadLocalData(userId = AppState.driveUserId) {
+    try {
+        if (userId) migrateLegacyDataIfNeeded(userId);
+        const key = getDataStorageKey(userId);
+        const savedData = localStorage.getItem(key);
         if (savedData) {
             const data = JSON.parse(savedData);
             AppState.movies = (data.movies || []).map(normalizeStoredMovie);
             AppState.shows = (data.shows || []).map(normalizeStoredShow);
             AppState.lists = (data.lists || []).map(normalizeStoredList);
-            console.log('[App] Datos locales cargados');
+            AppState.deletedIds = normalizeDeletedIds(data.deletedIds);
+            AppState.deletedListIds = normalizeDeletedListIds(data.deletedListIds);
+            console.log('[App] Datos locales cargados', key);
+        } else {
+            clearLibraryState();
+            console.log('[App] Sin datos locales para', key);
         }
     } catch (error) {
         console.error('[App] Error cargando datos locales:', error);
@@ -283,6 +480,7 @@ function normalizeStoredMovie(movie) {
     normalized.favorito = Boolean(normalized.favorito);
     const score = Number(normalized.puntuacion);
     normalized.puntuacion = Number.isFinite(score) && score > 0 ? Math.min(10, score) : 0;
+    normalized.updatedAt = normalized.updatedAt || normalized.lastModified || nowIso();
     return normalized;
 }
 
@@ -308,6 +506,7 @@ function normalizeStoredShow(show) {
     if (normalized.metaCheckedAt) {
         normalized.metaCheckedAt = String(normalized.metaCheckedAt);
     }
+    normalized.updatedAt = normalized.updatedAt || normalized.lastModified || nowIso();
     return normalized;
 }
 
@@ -322,6 +521,7 @@ function normalizeStoredList(list) {
         tipo,
         itemIds,
         coverId: Number(list?.coverId) || itemIds[0] || null,
+        updatedAt: list?.updatedAt || list?.lastModified || nowIso(),
     };
 }
 
@@ -334,17 +534,19 @@ function saveLocalData() {
             movies: AppState.movies,
             shows: AppState.shows,
             lists: AppState.lists,
-            lastModified: new Date().toISOString(),
+            deletedIds: AppState.deletedIds,
+            deletedListIds: AppState.deletedListIds,
+            lastModified: nowIso(),
         };
-        localStorage.setItem('seenit_data', JSON.stringify(data));
+        localStorage.setItem(getDataStorageKey(), JSON.stringify(data));
     } catch (error) {
         console.error('[App] Error guardando datos locales:', error);
     }
 }
 
-function getStoredLastModified() {
+function getStoredLastModified(userId = AppState.driveUserId) {
     try {
-        const raw = localStorage.getItem('seenit_data');
+        const raw = localStorage.getItem(getDataStorageKey(userId));
         if (!raw) return null;
         const data = JSON.parse(raw);
         return data?.lastModified || null;
@@ -361,7 +563,12 @@ function snapshotLibrary() {
             ...l,
             itemIds: [...(l.itemIds || [])],
         })),
-        lastModified: getStoredLastModified() || new Date().toISOString(),
+        deletedIds: {
+            movie: (AppState.deletedIds.movie || []).map(e => ({ ...e })),
+            tv: (AppState.deletedIds.tv || []).map(e => ({ ...e })),
+        },
+        deletedListIds: (AppState.deletedListIds || []).map(e => ({ ...e })),
+        lastModified: getStoredLastModified() || nowIso(),
     };
 }
 
@@ -371,8 +578,10 @@ function backupLibraryBeforeMerge(localSnapshot) {
             movies: localSnapshot?.movies || [],
             shows: localSnapshot?.shows || [],
             lists: localSnapshot?.lists || [],
+            deletedIds: localSnapshot?.deletedIds || { movie: [], tv: [] },
+            deletedListIds: localSnapshot?.deletedListIds || [],
             lastModified: localSnapshot?.lastModified || getStoredLastModified() || null,
-            backedUpAt: new Date().toISOString(),
+            backedUpAt: nowIso(),
         }));
     } catch (error) {
         console.warn('[App] No se pudo guardar backup local antes del merge:', error);
@@ -389,47 +598,81 @@ function parseModifiedMs(value) {
     return Number.isFinite(ms) ? ms : 0;
 }
 
+function itemUpdatedMs(item) {
+    return parseModifiedMs(item?.updatedAt || item?.lastModified);
+}
+
+function pickNewerByUpdatedAt(a, b) {
+    const aMs = itemUpdatedMs(a);
+    const bMs = itemUpdatedMs(b);
+    if (bMs > aMs) return b;
+    if (aMs > bMs) return a;
+    const aWatched = Array.isArray(a?.capitulos_vistos) ? a.capitulos_vistos.length : 0;
+    const bWatched = Array.isArray(b?.capitulos_vistos) ? b.capitulos_vistos.length : 0;
+    if (bWatched > aWatched) return b;
+    return a;
+}
+
+/**
+ * LWW por updatedAt: gana el ítem más reciente (sin unión ciega de episodios/favoritos).
+ */
 function mergeMovieOrShow(localItem, remoteItem, kind) {
     const a = kind === 'movie' ? normalizeStoredMovie(localItem) : normalizeStoredShow(localItem);
     const b = kind === 'movie' ? normalizeStoredMovie(remoteItem) : normalizeStoredShow(remoteItem);
-    const watchedA = Array.isArray(a.capitulos_vistos) ? a.capitulos_vistos.length : 0;
-    const watchedB = Array.isArray(b.capitulos_vistos) ? b.capitulos_vistos.length : 0;
-    const preferRemote = watchedB > watchedA
-        || (watchedB === watchedA && normalizeStatus(b.estado) === 'completed' && normalizeStatus(a.estado) !== 'completed');
-    const base = preferRemote ? { ...a, ...b } : { ...b, ...a };
-    base.favorito = Boolean(a.favorito || b.favorito);
-    // Conservar la mejor puntuación personal (no pisar con 0 del otro lado)
-    base.puntuacion = Math.max(Number(a.puntuacion) || 0, Number(b.puntuacion) || 0);
-    if (kind === 'tv') {
-        const ids = [...new Set([...(a.capitulos_vistos || []), ...(b.capitulos_vistos || [])])];
-        base.capitulos_vistos = ids;
-        base.capitulos_vistos_fecha = {
-            ...(a.capitulos_vistos_fecha || {}),
-            ...(b.capitulos_vistos_fecha || {}),
-        };
-        base.episodios_vistos_count = ids.length;
-        // Prefer explicit non-pending user states when tie
-        if (normalizeStatus(a.estado) === 'watching' || normalizeStatus(b.estado) === 'watching') {
-            if (normalizeStatus(base.estado) === 'pending' && ids.length === 0) {
-                base.estado = 'watching';
-            }
-        }
-        if (normalizeStatus(a.estado) === 'dropped' || normalizeStatus(b.estado) === 'dropped') {
-            if (normalizeStatus(a.estado) === 'dropped' && normalizeStatus(b.estado) !== 'watching') {
-                base.estado = 'dropped';
-            }
+    const winner = pickNewerByUpdatedAt(a, b);
+    return kind === 'movie' ? normalizeStoredMovie({ ...winner }) : normalizeStoredShow({ ...winner });
+}
+
+function mergeTombstoneLists(aList, bList) {
+    const map = new Map();
+    for (const entry of [...(aList || []), ...(bList || [])]) {
+        if (!entry || entry.id == null) continue;
+        const key = String(entry.id);
+        const prev = map.get(key);
+        if (!prev || parseModifiedMs(entry.deletedAt) >= parseModifiedMs(prev.deletedAt)) {
+            map.set(key, { ...entry });
         }
     }
-    return kind === 'movie' ? normalizeStoredMovie(base) : normalizeStoredShow(base);
+    return [...map.values()];
+}
+
+function mergeDeletedIds(localDel, remoteDel) {
+    const local = normalizeDeletedIds(localDel);
+    const remote = normalizeDeletedIds(remoteDel);
+    return {
+        movie: mergeTombstoneLists(local.movie, remote.movie).map(e => ({ id: Number(e.id), deletedAt: e.deletedAt })),
+        tv: mergeTombstoneLists(local.tv, remote.tv).map(e => ({ id: Number(e.id), deletedAt: e.deletedAt })),
+    };
+}
+
+function isItemTombstoned(id, tombstones, itemUpdatedAt) {
+    const idNum = Number(id);
+    const entry = (tombstones || []).find(e => Number(e.id) === idNum);
+    if (!entry) return false;
+    return parseModifiedMs(entry.deletedAt) >= itemUpdatedMs({ updatedAt: itemUpdatedAt });
+}
+
+function isListTombstoned(id, tombstones, listUpdatedAt) {
+    const idStr = String(id);
+    const entry = (tombstones || []).find(e => String(e.id) === idStr);
+    if (!entry) return false;
+    return parseModifiedMs(entry.deletedAt) >= itemUpdatedMs({ updatedAt: listUpdatedAt });
 }
 
 function mergeLibraries(localLib, remoteLib) {
+    const deletedIds = mergeDeletedIds(localLib?.deletedIds, remoteLib?.deletedIds);
+    const deletedListIds = mergeTombstoneLists(
+        normalizeDeletedListIds(localLib?.deletedListIds),
+        normalizeDeletedListIds(remoteLib?.deletedListIds),
+    );
+
     const movieMap = new Map();
     for (const m of remoteLib.movies || []) movieMap.set(Number(m.id_tmdb), normalizeStoredMovie(m));
     for (const m of localLib.movies || []) {
         const id = Number(m.id_tmdb);
         movieMap.set(id, movieMap.has(id) ? mergeMovieOrShow(m, movieMap.get(id), 'movie') : normalizeStoredMovie(m));
     }
+    const movies = [...movieMap.values()].filter(m => !isItemTombstoned(m.id_tmdb, deletedIds.movie, m.updatedAt));
 
     const showMap = new Map();
     for (const s of remoteLib.shows || []) showMap.set(Number(s.id_tmdb), normalizeStoredShow(s));
@@ -437,31 +680,50 @@ function mergeLibraries(localLib, remoteLib) {
         const id = Number(s.id_tmdb);
         showMap.set(id, showMap.has(id) ? mergeMovieOrShow(s, showMap.get(id), 'tv') : normalizeStoredShow(s));
     }
+    const shows = [...showMap.values()].filter(s => !isItemTombstoned(s.id_tmdb, deletedIds.tv, s.updatedAt));
 
-    const listMap = new Map();
+    const byId = new Map();
+    const byNameKey = new Map();
     const listKey = (l) => `${l.tipo}::${String(l.name || '').toLowerCase()}`;
-    for (const l of [...(remoteLib.lists || []), ...(localLib.lists || [])]) {
-        const normalized = normalizeStoredList(l);
-        const key = listKey(normalized);
-        if (!listMap.has(key)) {
-            listMap.set(key, normalized);
-        } else {
-            const prev = listMap.get(key);
-            const itemIds = [...new Set([...(prev.itemIds || []), ...(normalized.itemIds || [])])];
-            listMap.set(key, normalizeStoredList({
-                ...prev,
-                ...normalized,
-                id: prev.id,
-                itemIds,
-                coverId: prev.coverId || normalized.coverId || itemIds[0] || null,
-            }));
+
+    const considerList = (raw) => {
+        const normalized = normalizeStoredList(raw);
+        if (isListTombstoned(normalized.id, deletedListIds, normalized.updatedAt)) return;
+
+        if (byId.has(normalized.id)) {
+            const prev = byId.get(normalized.id);
+            const winner = itemUpdatedMs(normalized) >= itemUpdatedMs(prev) ? normalized : prev;
+            byId.set(normalized.id, winner);
+            return;
         }
+
+        const key = listKey(normalized);
+        if (byNameKey.has(key)) {
+            const prevId = byNameKey.get(key);
+            const prev = byId.get(prevId);
+            if (prev) {
+                const winner = itemUpdatedMs(normalized) >= itemUpdatedMs(prev) ? normalized : prev;
+                byId.delete(prevId);
+                byId.set(winner.id, winner);
+                byNameKey.set(key, winner.id);
+                return;
+            }
+        }
+
+        byId.set(normalized.id, normalized);
+        byNameKey.set(key, normalized.id);
+    };
+
+    for (const l of [...(remoteLib.lists || []), ...(localLib.lists || [])]) {
+        considerList(l);
     }
 
     return {
-        movies: [...movieMap.values()],
-        shows: [...showMap.values()],
-        lists: [...listMap.values()],
+        movies,
+        shows,
+        lists: [...byId.values()],
+        deletedIds,
+        deletedListIds,
     };
 }
 
@@ -469,10 +731,12 @@ function applyLibrary(lib) {
     AppState.movies = (lib.movies || []).map(normalizeStoredMovie);
     AppState.shows = (lib.shows || []).map(normalizeStoredShow);
     AppState.lists = (lib.lists || []).map(normalizeStoredList);
+    AppState.deletedIds = normalizeDeletedIds(lib.deletedIds);
+    AppState.deletedListIds = normalizeDeletedListIds(lib.deletedListIds);
 }
 
 /**
- * Integra datos de Drive con lo local (backup + lastModified + merge).
+ * Integra datos de Drive con lo local (backup + LWW + tombstones).
  * @returns {'remote'|'local-upload'|'merged'|'unchanged'}
  */
 function reconcileWithDriveData(remoteData, localSnapshot) {
@@ -482,6 +746,8 @@ function reconcileWithDriveData(remoteData, localSnapshot) {
         movies: (remoteData?.movies || []).map(normalizeStoredMovie),
         shows: (remoteData?.shows || []).map(normalizeStoredShow),
         lists: (remoteData?.lists || []).map(normalizeStoredList),
+        deletedIds: normalizeDeletedIds(remoteData?.deletedIds),
+        deletedListIds: normalizeDeletedListIds(remoteData?.deletedListIds),
         lastModified: remoteData?.lastModified || null,
     };
     const remoteCount = libraryItemCount(remoteLib);
@@ -489,26 +755,21 @@ function reconcileWithDriveData(remoteData, localSnapshot) {
     const remoteMs = parseModifiedMs(remoteLib.lastModified);
     const localMs = parseModifiedMs(localSnapshot?.lastModified);
 
-    // Drive vacío y hay datos locales → restaurar/subir local
     if (remoteCount === 0 && localCount > 0) {
         applyLibrary(localSnapshot);
         return 'local-upload';
     }
 
-    // Ambos con datos → merge por unión; si remoto es claramente más nuevo
-    // y local no tiene ítems, aplicar remoto (cubierto abajo)
     if (remoteCount > 0 && localCount > 0) {
         applyLibrary(mergeLibraries(localSnapshot, remoteLib));
         return 'merged';
     }
 
-    // Solo remoto (local vacío): aplicar remoto
     if (remoteCount > 0) {
         applyLibrary(remoteLib);
         return 'remote';
     }
 
-    // Ambos vacíos, o remoto vacío sin local
     if (remoteCount === 0 && localCount === 0 && remoteMs > localMs && remoteMs > 0) {
         applyLibrary(remoteLib);
         return 'remote';
@@ -535,7 +796,9 @@ async function addMovie(movie) {
     try {
         const details = await getMovieDetails(movie.id_tmdb);
         details.estado = 'pending';
-        AppState.movies.push(normalizeStoredMovie(details));
+        const normalized = touchUpdatedAt(normalizeStoredMovie(details));
+        clearItemTombstone('movie', normalized.id_tmdb);
+        AppState.movies.push(normalized);
         saveLocalData();
         syncToDrive();
         renderCurrentView();
@@ -559,13 +822,15 @@ async function addShow(show) {
 
     try {
         const details = await getTVDetails(show.id_tmdb);
-        details.estado = 'watching';
-        AppState.shows.push(normalizeStoredShow(details));
+        details.estado = 'pending';
+        const normalized = touchUpdatedAt(normalizeStoredShow(details));
+        clearItemTombstone('tv', normalized.id_tmdb);
+        AppState.shows.push(normalized);
         invalidateTimelineCaches();
         saveLocalData();
         syncToDrive();
         renderCurrentView();
-        showToast('Serie añadida (Viendo)', 'success');
+        showToast('Serie añadida (Pendiente)', 'success');
     } catch (error) {
         console.error('[App] Error añadiendo serie:', error);
         showToast('Error al añadir serie', 'error');
@@ -578,6 +843,7 @@ async function addShow(show) {
  */
 function removeMovie(id_tmdb) {
     AppState.movies = AppState.movies.filter(m => m.id_tmdb !== id_tmdb);
+    recordItemTombstone('movie', id_tmdb);
     removeItemFromAllLists('movie', id_tmdb);
     saveLocalData();
     syncToDrive();
@@ -591,6 +857,7 @@ function removeMovie(id_tmdb) {
  */
 function removeShow(id_tmdb) {
     AppState.shows = AppState.shows.filter(s => s.id_tmdb !== id_tmdb);
+    recordItemTombstone('tv', id_tmdb);
     removeItemFromAllLists('tv', id_tmdb);
     invalidateTimelineCaches();
     saveLocalData();
@@ -611,11 +878,13 @@ function updateRating(type, id_tmdb, rating) {
         const movie = AppState.movies.find(m => m.id_tmdb === id_tmdb);
         if (movie) {
             movie.puntuacion = value;
+            touchUpdatedAt(movie);
         }
     } else if (type === 'tv') {
         const show = AppState.shows.find(s => s.id_tmdb === id_tmdb);
         if (show) {
             show.puntuacion = value;
+            touchUpdatedAt(show);
         }
     }
     saveLocalData();
@@ -641,6 +910,7 @@ async function updateStatus(type, id_tmdb, status) {
         const movie = AppState.movies.find(m => m.id_tmdb === id_tmdb);
         if (movie) {
             movie.estado = normalizedStatus;
+            touchUpdatedAt(movie);
         }
     } else if (type === 'tv') {
         const show = AppState.shows.find(s => s.id_tmdb === id_tmdb);
@@ -652,6 +922,7 @@ async function updateStatus(type, id_tmdb, status) {
                 const airedEpisodeIds = episodes.filter(isEpisodeAired).map(ep => ep.id);
                 show.capitulos_vistos = [...new Set([...(show.capitulos_vistos || []), ...airedEpisodeIds])];
             }
+            touchUpdatedAt(show);
         }
     }
 
@@ -696,6 +967,7 @@ async function toggleEpisode(id_tmdb, episode) {
 
     const wasStandby = normalizeStatus(show.estado) === 'standby';
     const wasDropped = normalizeStatus(show.estado) === 'dropped';
+    const wasPending = normalizeStatus(show.estado) === 'pending';
     const index = show.capitulos_vistos.indexOf(episode);
     let markedWatched = false;
     const newlyWatchedIds = [];
@@ -725,8 +997,12 @@ async function toggleEpisode(id_tmdb, episode) {
     if (wasDropped && markedWatched) {
         show.estado = 'watching';
     }
+    if (wasPending && markedWatched) {
+        show.estado = 'watching';
+    }
 
     await refreshShowStatus(show);
+    touchUpdatedAt(show);
     invalidateTimelineCaches();
     saveLocalData();
     syncToDrive();
@@ -748,7 +1024,7 @@ async function toggleEpisode(id_tmdb, episode) {
  * Sincroniza datos con Google Drive en segundo plano (con debounce)
  */
 function syncToDrive() {
-    if (!isAuthenticated()) {
+    if (!isAuthenticated() || !AppState.driveLoadOk) {
         return;
     }
 
@@ -758,8 +1034,45 @@ function syncToDrive() {
     }, 2000);
 }
 
+function buildDrivePayload() {
+    return {
+        movies: AppState.movies,
+        shows: AppState.shows,
+        lists: AppState.lists,
+        deletedIds: AppState.deletedIds,
+        deletedListIds: AppState.deletedListIds,
+        lastModified: nowIso(),
+    };
+}
+
+function bindSyncFlushListeners() {
+    if (syncFlushBound) return;
+    syncFlushBound = true;
+    const flush = () => {
+        if (!isAuthenticated() || !AppState.driveLoadOk) return;
+        clearTimeout(syncToDriveTimeout);
+        syncToDriveNow();
+    };
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') flush();
+    });
+    window.addEventListener('pagehide', flush);
+}
+
 async function syncToDriveNow() {
-    if (!isAuthenticated() || AppState.isSyncing) {
+    if (!AppState.driveLoadOk) {
+        return;
+    }
+
+    if (!isAuthenticated()) {
+        updateDriveStatus(false);
+        setDriveGateVisible(true, 'Sesión de Drive caducada. Vuelve a conectar.');
+        showToast('Sesión de Drive caducada. Vuelve a conectar.', 'error');
+        return;
+    }
+
+    if (AppState.isSyncing) {
+        AppState.syncDirty = true;
         return;
     }
 
@@ -770,22 +1083,21 @@ async function syncToDriveNow() {
             await ensureValidAccessToken({ interactive: false });
         } catch (_) { /* syncToDrive will fail below if needed */ }
 
-        const data = {
-            movies: AppState.movies,
-            shows: AppState.shows,
-            lists: AppState.lists,
-            lastModified: new Date().toISOString(),
-        };
-        await saveUserData(data);
+        await saveUserData(buildDrivePayload());
         console.log('[App] Datos sincronizados con Drive');
     } catch (error) {
         console.error('[App] Error sincronizando con Drive:', error);
         if (!isAuthenticated()) {
             updateDriveStatus(false);
             setDriveGateVisible(true, 'Sesión de Drive caducada. Vuelve a conectar.');
+            showToast('Sesión de Drive caducada. Vuelve a conectar.', 'error');
         }
     } finally {
         AppState.isSyncing = false;
+        if (AppState.syncDirty) {
+            AppState.syncDirty = false;
+            syncToDriveNow();
+        }
     }
 }
 
@@ -811,6 +1123,7 @@ async function loadFromDrive(options = {}) {
         const data = await loadUserData();
         const result = reconcileWithDriveData(data, localSnapshot);
         saveLocalData();
+        AppState.driveLoadOk = true;
         if (result === 'local-upload' || result === 'merged') {
             await syncToDriveNow();
         }
@@ -825,6 +1138,7 @@ async function loadFromDrive(options = {}) {
         }
     } catch (error) {
         console.error('[App] Error cargando desde Drive:', error);
+        AppState.driveLoadOk = false;
         if (!silent) showToast('Error al cargar datos desde Drive', 'error');
         throw error;
     } finally {
@@ -1036,6 +1350,7 @@ async function toggleMovieWatched(id_tmdb) {
 
     const isCompleted = normalizeStatus(movie.estado) === 'completed';
     movie.estado = isCompleted ? 'pending' : 'completed';
+    touchUpdatedAt(movie);
     saveLocalData();
     syncToDrive();
 
@@ -1281,7 +1596,7 @@ function createEpisodeCardMarkup({
 
     let rightSide = '';
     if (showAction) {
-        rightSide = `<button type="button" class="tvst-check-btn" onclick="event.stopPropagation(); toggleEpisode(${show.id_tmdb}, '${episode.id}')" aria-label="Marcar visto">✓</button>`;
+        rightSide = `<button type="button" class="tvst-check-btn" onclick="event.stopPropagation(); toggleEpisode(${show.id_tmdb}, '${escapeHtml(String(episode.id || ''))}')" aria-label="Marcar visto">✓</button>`;
     } else if (variant === 'history') {
         rightSide = `<span class="tvst-check-btn is-watched" aria-hidden="true">✓</span>`;
     } else if (airMeta) {
@@ -1289,27 +1604,37 @@ function createEpisodeCardMarkup({
             ? airMeta
             : { text: airMeta, className: 'tvst-air-time' };
         rightSide = `<div class="tvst-row-meta">
-            <span class="${meta.className || 'tvst-air-time'}">${meta.text}</span>
-            ${meta.sub ? `<span class="tvst-air-sub">${meta.sub}</span>` : ''}
+            <span class="${escapeHtml(meta.className || 'tvst-air-time')}">${escapeHtml(meta.text || '')}</span>
+            ${meta.sub ? `<span class="tvst-air-sub">${escapeHtml(meta.sub)}</span>` : ''}
         </div>`;
     }
 
+    const epIdAttr = escapeHtml(String(episode.id || ''));
     return `
         <article class="tvst-episode-row${variant === 'history' ? ' is-history' : ''}${normalizeStatus(show.estado) === 'standby' ? ' is-standby' : ''}"
-            onclick="openEpisodeDetail(${show.id_tmdb}, '${episode.id}')"
+            data-show-id="${show.id_tmdb}"
+            data-episode-id="${epIdAttr}"
+            onclick="openEpisodeDetail(${show.id_tmdb}, '${epIdAttr}')"
+            onkeydown="handleEpisodeRowKeydown(event, ${show.id_tmdb}, '${epIdAttr}')"
             role="button" tabindex="0">
             <div class="tvst-episode-poster">${poster}</div>
             <div class="tvst-episode-body">
-                <a href="#" onclick="event.stopPropagation(); openDetail('tv', ${show.id_tmdb});return false;" class="tvst-show-pill">${show.titulo} ›</a>
+                <a href="#" onclick="event.stopPropagation(); openDetail('tv', ${show.id_tmdb});return false;" class="tvst-show-pill">${escapeHtml(show.titulo || 'Sin título')} ›</a>
                 <div class="tvst-episode-code-row">
-                    <span class="tvst-episode-code">${episodeCode}</span>
+                    <span class="tvst-episode-code">${escapeHtml(episodeCode)}</span>
                     ${remainingCount > 0 ? `<span class="tvst-remaining">+${remainingCount}</span>` : ''}
                 </div>
-                ${episode.name ? `<p class="tvst-episode-title">${episode.name}</p>` : ''}
-                ${badges.length ? `<div class="tvst-badges">${badges.map(b => `<span class="${b.className}">${b.label}</span>`).join('')}</div>` : ''}
+                ${episode.name ? `<p class="tvst-episode-title">${escapeHtml(episode.name)}</p>` : ''}
+                ${badges.length ? `<div class="tvst-badges">${badges.map(b => `<span class="${escapeHtml(b.className)}">${escapeHtml(b.label)}</span>`).join('')}</div>` : ''}
             </div>
             ${rightSide}
         </article>`;
+}
+
+function handleEpisodeRowKeydown(event, showId, episodeId) {
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    openEpisodeDetail(showId, episodeId);
 }
 
 function getTimelineStickyOffset() {
@@ -1562,8 +1887,15 @@ async function buildWatchingPendingEntries(watchingShows) {
         }
 
         if (!nextEpisode) return null;
-        const remainingCount = Math.max(0, airedEpisodes.filter(ep => !show.capitulos_vistos?.includes(ep.id)).length - 1);
-        return { show, episode: nextEpisode, airedEpisodes, remainingCount };
+
+        // Contador +N sobre la lista completa (el hint puede quedarse corto)
+        let allAiredForCount = airedEpisodes;
+        if (seasonHint.length) {
+            const allEpisodes = await getOrderedEpisodes(show, { includeSpecials: false });
+            allAiredForCount = allEpisodes.filter(isEpisodeAired);
+        }
+        const remainingCount = Math.max(0, allAiredForCount.filter(ep => !show.capitulos_vistos?.includes(ep.id)).length - 1);
+        return { show, episode: nextEpisode, airedEpisodes: allAiredForCount, remainingCount };
     });
 
     return results.filter(Boolean);
@@ -1611,7 +1943,7 @@ async function renderPendingList(options = {}) {
             'spark',
             'Tu lista está vacía',
             {
-                subtitle: 'Añade series desde Explorar. Se marcan como «Viendo» y aparecen aquí.',
+                subtitle: 'Añade series desde Explorar (quedan en Pendiente). Al marcar un episodio pasan a «Viendo» y aparecen aquí.',
                 actionLabel: 'Explorar',
                 actionOnClick: "switchTab('explore')",
             },
@@ -1715,6 +2047,23 @@ async function renderUpcomingList(options = {}) {
     const container = document.getElementById('upcoming-list-container');
     if (!container) return;
 
+    // Reabrir completed→watching si hay temporada nueva antes de listar
+    try {
+        const result = await refreshCompletedShowsForNewSeasons();
+        if (result.changed) {
+            saveLocalData();
+            syncToDrive();
+            for (const show of result.reopened || []) {
+                showToast(`Nueva temporada: ${show.titulo || 'Serie'}`, 'info');
+            }
+            if (result.reopened?.length) {
+                invalidateTimelineCaches();
+            }
+        }
+    } catch (error) {
+        console.warn('[App] Refresco completed en próximos:', error);
+    }
+
     const upcomingShows = AppState.shows.filter(show => normalizeStatus(show.estado) !== 'dropped');
 
     if (upcomingShows.length === 0) {
@@ -1759,7 +2108,7 @@ async function rebuildUpcomingTimeline(upcomingShows, container) {
         let future = episodes.filter(episode => {
             if (!episode.air_date) return false;
             const daysUntil = getDaysUntilAir(episode.air_date);
-            return daysUntil != null && daysUntil > 0;
+            return daysUntil != null && daysUntil >= 0;
         });
 
         if (!future.length && seasonNumbers.length) {
@@ -1767,7 +2116,7 @@ async function rebuildUpcomingTimeline(upcomingShows, container) {
             future = episodes.filter(episode => {
                 if (!episode.air_date) return false;
                 const daysUntil = getDaysUntilAir(episode.air_date);
-                return daysUntil != null && daysUntil > 0;
+                return daysUntil != null && daysUntil >= 0;
             });
         }
 
@@ -1832,10 +2181,12 @@ function invalidateTimelineCaches() {
 
 async function prefetchTimelineSeasons() {
     const watching = AppState.shows.filter(s => normalizeStatus(s.estado) === 'watching');
-    const completed = AppState.shows.filter(s => normalizeStatus(s.estado) === 'completed');
-    const upcoming = AppState.shows.filter(s => normalizeStatus(s.estado) !== 'dropped').slice(0, 25);
+    const completedStale = AppState.shows.filter(s =>
+        normalizeStatus(s.estado) === 'completed' && isShowMetaStale(s)
+    ).slice(0, 8);
+    const upcoming = AppState.shows.filter(s => normalizeStatus(s.estado) !== 'dropped').slice(0, 12);
     const targets = [...new Map(
-        [...watching, ...completed, ...upcoming].map(s => [s.id_tmdb, s]),
+        [...watching, ...completedStale, ...upcoming].map(s => [s.id_tmdb, s]),
     ).values()];
     await mapPool(targets, TIMELINE_FETCH_CONCURRENCY, async (show) => {
         await ensureShowSeasonMeta(show);
@@ -1887,33 +2238,8 @@ async function renderProfileView() {
 
     populatePlatformFilters();
 
-    const filteredSeries = AppState.shows
-        .filter(show => filterProfileSeries(show))
-        .filter(show => matchesProfileSearch(show, AppState.profileSeriesSearch))
-        .filter(show => matchesProfilePlatform(show, AppState.profileSeriesPlatform))
-        .sort((a, b) => (a.titulo || '').localeCompare(b.titulo || '', 'es', { sensitivity: 'base' }));
-    const filteredMovies = AppState.movies
-        .filter(movie => filterProfileMovies(movie))
-        .filter(movie => matchesProfileSearch(movie, AppState.profileMoviesSearch))
-        .filter(movie => matchesProfilePlatform(movie, AppState.profileMoviesPlatform))
-        .sort((a, b) => (a.titulo || '').localeCompare(b.titulo || '', 'es', { sensitivity: 'base' }));
-
-    const seriesExpanded = Boolean(AppState.profileExpanded.series);
-    const moviesExpanded = Boolean(AppState.profileExpanded.movies);
-
-    seriesContainer.className = `tvst-profile-rail${seriesExpanded ? ' is-expanded' : ''}`;
-    moviesContainer.className = `tvst-profile-rail${moviesExpanded ? ' is-expanded' : ''}`;
-
-    const seriesMoreBtn = document.getElementById('profile-series-more');
-    const moviesMoreBtn = document.getElementById('profile-movies-more');
-    if (seriesMoreBtn) seriesMoreBtn.textContent = seriesExpanded ? 'Mostrar menos' : 'Mostrar más';
-    if (moviesMoreBtn) moviesMoreBtn.textContent = moviesExpanded ? 'Mostrar menos' : 'Mostrar más';
-
-    seriesContainer.innerHTML = renderProfileCards(filteredSeries, 'tv');
-    moviesContainer.innerHTML = renderProfileCards(filteredMovies, 'movie');
-    renderProfileFavorites();
-    renderProfileLists();
-    renderWatchStats();
+    paintProfileLibrary();
+    void refreshProfileProgressInBackground();
 }
 
 // ============================================
@@ -1946,6 +2272,8 @@ function createList(name, tipo) {
         itemIds: [],
         coverId: null,
     });
+    touchUpdatedAt(list);
+    clearListTombstone(list.id);
     AppState.lists.push(list);
     saveLocalData();
     syncToDrive();
@@ -1954,6 +2282,7 @@ function createList(name, tipo) {
 
 function deleteList(listId) {
     AppState.lists = AppState.lists.filter(l => l.id !== listId);
+    recordListTombstone(listId);
     if (AppState.selectedListId === listId) {
         closeListModal();
     }
@@ -1968,6 +2297,7 @@ function renameList(listId, name) {
     const next = String(name || '').trim();
     if (!next) return;
     list.name = next;
+    touchUpdatedAt(list);
     saveLocalData();
     syncToDrive();
     renderProfileLists();
@@ -1985,6 +2315,7 @@ function addItemToList(listId, id_tmdb) {
     if (list.itemIds.includes(id)) return false;
     list.itemIds.push(id);
     if (!list.coverId) list.coverId = id;
+    touchUpdatedAt(list);
     saveLocalData();
     syncToDrive();
     return true;
@@ -1998,6 +2329,7 @@ function removeItemFromList(listId, id_tmdb) {
     if (Number(list.coverId) === id) {
         list.coverId = list.itemIds[0] || null;
     }
+    touchUpdatedAt(list);
     saveLocalData();
     syncToDrive();
     renderProfileLists();
@@ -2010,9 +2342,13 @@ function removeItemFromAllLists(tipo, id_tmdb) {
     const id = Number(id_tmdb);
     for (const list of AppState.lists) {
         if (list.tipo !== tipo) continue;
+        const before = list.itemIds.length;
         list.itemIds = list.itemIds.filter(x => x !== id);
         if (Number(list.coverId) === id) {
             list.coverId = list.itemIds[0] || null;
+        }
+        if (list.itemIds.length !== before) {
+            touchUpdatedAt(list);
         }
     }
 }
@@ -2131,8 +2467,9 @@ function toggleFavorite(tipo, id_tmdb) {
         return;
     }
     item.favorito = !Boolean(item.favorito);
+    touchUpdatedAt(item);
     if (AppState.selectedItem?.id_tmdb === id_tmdb && AppState.selectedItem?.tipo === tipo) {
-        AppState.selectedItem = { ...AppState.selectedItem, favorito: item.favorito };
+        AppState.selectedItem = { ...AppState.selectedItem, favorito: item.favorito, updatedAt: item.updatedAt };
         updateDetailHeroFavorite(AppState.selectedItem);
     }
     saveLocalData();
@@ -2301,6 +2638,7 @@ function setListCover(listId, id_tmdb) {
     const id = Number(id_tmdb);
     if (!list.itemIds.includes(id)) return;
     list.coverId = id;
+    touchUpdatedAt(list);
     AppState.listCoverPickMode = false;
     saveLocalData();
     syncToDrive();
@@ -2547,6 +2885,92 @@ function getShowProgressInfo(show) {
     };
 }
 
+/**
+ * Actualiza solo contadores de progreso (sin cambiar estado).
+ */
+async function refreshShowAiredCounts(show) {
+    if (!show || show.tipo === 'movie') return false;
+    await ensureShowSeasonMeta(show);
+    const episodes = await getOrderedEpisodes(show, { includeSpecials: false });
+    const airedEpisodes = episodes.filter(isEpisodeAired);
+    const watchedEpisodes = airedEpisodes.filter(ep => show.capitulos_vistos?.includes(ep.id));
+    const nextAired = airedEpisodes.length;
+    const nextWatched = watchedEpisodes.length;
+    const changed = Number(show.episodios_emitidos || 0) !== nextAired
+        || Number(show.episodios_vistos_count || 0) !== nextWatched;
+    show.episodios_emitidos = nextAired;
+    show.episodios_vistos_count = nextWatched;
+    return changed;
+}
+
+let profileProgressRefreshToken = 0;
+
+async function refreshProfileProgressInBackground() {
+    const token = ++profileProgressRefreshToken;
+    const shows = [...AppState.shows];
+    if (!shows.length) return;
+
+    let changed = false;
+    await mapPool(shows, 4, async (show) => {
+        try {
+            if (await refreshShowAiredCounts(show)) changed = true;
+        } catch (error) {
+            console.warn('[App] Progress refresh falló para', show?.id_tmdb, error);
+        }
+    });
+
+    if (token !== profileProgressRefreshToken) return;
+    if (!changed) return;
+    if (AppState.currentTab !== 'profile') return;
+
+    saveLocalData();
+    syncToDrive();
+    // Re-pintar sin lanzar otro refresh en cascada
+    paintProfileLibrary();
+}
+
+function paintProfileLibrary() {
+    const seriesContainer = document.getElementById('profile-series-container');
+    const moviesContainer = document.getElementById('profile-movies-container');
+    if (!seriesContainer || !moviesContainer) return;
+
+    const collapsedLimit = window.matchMedia('(min-width: 768px)').matches ? 6 : 3;
+
+    const filteredSeries = AppState.shows
+        .filter(show => filterProfileSeries(show))
+        .filter(show => matchesProfileSearch(show, AppState.profileSeriesSearch))
+        .filter(show => matchesProfilePlatform(show, AppState.profileSeriesPlatform))
+        .sort((a, b) => (a.titulo || '').localeCompare(b.titulo || '', 'es', { sensitivity: 'base' }));
+    const filteredMovies = AppState.movies
+        .filter(movie => filterProfileMovies(movie))
+        .filter(movie => matchesProfileSearch(movie, AppState.profileMoviesSearch))
+        .filter(movie => matchesProfilePlatform(movie, AppState.profileMoviesPlatform))
+        .sort((a, b) => (a.titulo || '').localeCompare(b.titulo || '', 'es', { sensitivity: 'base' }));
+
+    const seriesExpanded = Boolean(AppState.profileExpanded.series);
+    const moviesExpanded = Boolean(AppState.profileExpanded.movies);
+
+    seriesContainer.className = `tvst-profile-rail${seriesExpanded ? ' is-expanded' : ''}`;
+    moviesContainer.className = `tvst-profile-rail${moviesExpanded ? ' is-expanded' : ''}`;
+
+    const seriesMoreBtn = document.getElementById('profile-series-more');
+    const moviesMoreBtn = document.getElementById('profile-movies-more');
+    if (seriesMoreBtn) {
+        seriesMoreBtn.classList.toggle('hidden', filteredSeries.length <= collapsedLimit);
+        seriesMoreBtn.textContent = seriesExpanded ? 'Mostrar menos' : 'Mostrar más';
+    }
+    if (moviesMoreBtn) {
+        moviesMoreBtn.classList.toggle('hidden', filteredMovies.length <= collapsedLimit);
+        moviesMoreBtn.textContent = moviesExpanded ? 'Mostrar menos' : 'Mostrar más';
+    }
+
+    seriesContainer.innerHTML = renderProfileCards(filteredSeries, 'tv');
+    moviesContainer.innerHTML = renderProfileCards(filteredMovies, 'movie');
+    renderProfileFavorites();
+    renderProfileLists();
+    renderWatchStats();
+}
+
 function filterProfileSeries(show) {
     const status = normalizeStatus(show.estado);
     if (AppState.profileSeriesFilter === 'all') return true;
@@ -2722,6 +3146,7 @@ function renderDetailInfo(item) {
                 `).join('')}
             </div>
             <p class="tvst-nota-hint">Tu nota · toca para cambiar</p>
+            ${personal > 0 ? `<button type="button" class="tvst-clear-rating" onclick="setPersonalRating(0)">Quitar nota</button>` : ''}
         </div>
     ` : `
         <p class="tvst-info-overview">Añádela a tu lista para puntuarla.</p>
@@ -2731,12 +3156,12 @@ function renderDetailInfo(item) {
         <div class="tvst-info-section">
             <h3>Nota</h3>
             ${ratingControl}
-            <p class="tvst-info-overview tvst-nota-tmdb">TMDB: ${voteAverage}/10</p>
+            <p class="tvst-info-overview tvst-nota-tmdb">TMDB: ${escapeHtml(String(voteAverage))}/10</p>
         </div>
         <div class="tvst-info-section">
             <h3>Descripción</h3>
-            <p class="tvst-info-overview">${overview}</p>
-            ${item?.generos?.length ? `<p class="tvst-info-overview" style="margin-top:0.5rem">${item.generos.slice(0, 4).join(' · ')}</p>` : ''}
+            <p class="tvst-info-overview">${escapeHtml(overview)}</p>
+            ${item?.generos?.length ? `<p class="tvst-info-overview" style="margin-top:0.5rem">${escapeHtml(item.generos.slice(0, 4).join(' · '))}</p>` : ''}
         </div>
         ${providers.length ? `
             <div class="tvst-info-section">
@@ -2807,16 +3232,10 @@ function setPersonalRating(rating) {
     const value = Math.max(0, Math.min(10, Number(rating) || 0));
     updateRating(item.tipo, item.id_tmdb, value);
     AppState.selectedItem = { ...item, puntuacion: value };
-    const scoreEl = document.getElementById('detail-personal-score');
-    if (scoreEl) scoreEl.textContent = value > 0 ? value.toFixed(1) : '—';
-    document.querySelectorAll('.tvst-nota-star').forEach((btn, idx) => {
-        const n = idx + 1;
-        const on = n <= Math.round(value);
-        btn.classList.toggle('is-on', on);
-        btn.textContent = on ? '★' : '☆';
-    });
     const hidden = document.getElementById('modal-rating-input');
     if (hidden) hidden.value = value;
+    renderDetailInfo(AppState.selectedItem);
+    showToast(value > 0 ? 'Nota actualizada' : 'Nota eliminada', value > 0 ? 'success' : 'info');
 }
 
 function switchDetailTab(tab) {
@@ -2995,6 +3414,7 @@ async function refreshCompletedShowsForNewSeasons() {
 
         const afterEstado = normalizeStatus(show.estado);
         if (beforeEstado === 'completed' && afterEstado === 'watching') {
+            touchUpdatedAt(show);
             reopened.push(show);
             changed = true;
         }
@@ -3212,10 +3632,10 @@ function renderSearchResults(results) {
                     : `<div class="w-full h-full flex items-center justify-center text-lg">🎬</div>`}
             </div>
             <div class="tvst-search-body">
-                <h3 class="tvst-search-title">${item.titulo || 'Sin título'}</h3>
+                <h3 class="tvst-search-title">${escapeHtml(item.titulo || 'Sin título')}</h3>
                 <div class="tvst-search-sub">
                     ${typeIcon(item.tipo)}
-                    <span>${formatPopularityLabel(popularitySource, item.tipo)}</span>
+                    <span>${escapeHtml(formatPopularityLabel(popularitySource, item.tipo))}</span>
                 </div>
             </div>
             <button type="button"
@@ -3393,6 +3813,7 @@ async function toggleEpisodeAndUpdateSeason(id_tmdb, episode, seasonNumber, seas
 
     const wasStandby = normalizeStatus(show.estado) === 'standby';
     const wasDropped = normalizeStatus(show.estado) === 'dropped';
+    const wasPending = normalizeStatus(show.estado) === 'pending';
     const index = show.capitulos_vistos.indexOf(episode);
     let markedWatched = false;
     const newlyWatchedIds = [];
@@ -3422,8 +3843,12 @@ async function toggleEpisodeAndUpdateSeason(id_tmdb, episode, seasonNumber, seas
     if (wasDropped && markedWatched) {
         show.estado = 'watching';
     }
+    if (wasPending && markedWatched) {
+        show.estado = 'watching';
+    }
 
     await refreshShowStatus(show);
+    touchUpdatedAt(show);
     invalidateTimelineCaches();
     saveLocalData();
     syncToDrive();
@@ -3553,6 +3978,8 @@ async function toggleSeasonWatched(id_tmdb, seasonNumber) {
     const allWatched = episodeIds.every(id => show.capitulos_vistos.includes(id));
     const watched = !allWatched;
     const wasStandby = normalizeStatus(show.estado) === 'standby';
+    const wasDropped = normalizeStatus(show.estado) === 'dropped';
+    const wasPending = normalizeStatus(show.estado) === 'pending';
     const touchedIds = [];
 
     episodeIds.forEach(episodeId => {
@@ -3573,11 +4000,12 @@ async function toggleSeasonWatched(id_tmdb, seasonNumber) {
         bumpPendingHistoryAfterWatch();
     }
 
-    if (wasStandby && watched && touchedIds.length) {
+    if ((wasStandby || wasDropped || wasPending) && watched && touchedIds.length) {
         show.estado = 'watching';
     }
 
     await refreshShowStatus(show);
+    touchUpdatedAt(show);
     invalidateTimelineCaches();
     saveLocalData();
     syncToDrive();
@@ -3972,7 +4400,7 @@ async function openDetail(type, id_tmdb) {
                 : mergeDetailItem(item, await getTVDetails(id_tmdb));
         }
 
-        if (type === 'tv') {
+        if (type === 'tv' && isItemAlreadyAdded('tv', id_tmdb)) {
             await refreshShowStatus(item);
         }
 
@@ -4047,21 +4475,26 @@ async function saveContent() {
 }
 
 /**
- * Elimina el contenido actual
+ * Elimina el contenido actual y deja la ficha abierta con «Añadir»
  */
-function removeContent() {
+async function removeContent() {
     if (!AppState.selectedItem) return;
-    
+
     const item = AppState.selectedItem;
-    
-    if (confirm(`¿Estás seguro de eliminar "${item.titulo}"?`)) {
-        if (item.tipo === 'movie') {
-            removeMovie(item.id_tmdb);
-        } else {
-            removeShow(item.id_tmdb);
-        }
-        closeModal();
+    const tipo = item.tipo;
+    const id_tmdb = item.id_tmdb;
+
+    if (!confirm(`¿Estás seguro de eliminar "${item.titulo}"?`)) return;
+
+    if (tipo === 'movie') {
+        removeMovie(id_tmdb);
+    } else {
+        removeShow(id_tmdb);
     }
+
+    // Mantener ficha abierta (fuera de biblioteca) → barra Añadir
+    closeDetailMenu();
+    await openDetail(tipo, id_tmdb);
 }
 
 /**
@@ -4167,6 +4600,11 @@ async function connectDrive() {
 function disconnectDrive() {
     signOut();
     AppState.driveReady = false;
+    AppState.driveLoadOk = false;
+    AppState.syncDirty = false;
+    clearTimeout(syncToDriveTimeout);
+    clearLibraryState();
+    setStoredDriveUser(null);
     updateDriveStatus(false);
     setDriveGateVisible(true);
     showToast('Desconectado de Google Drive', 'info');
@@ -4230,6 +4668,8 @@ function exportData() {
         movies: AppState.movies,
         shows: AppState.shows,
         lists: AppState.lists,
+        deletedIds: AppState.deletedIds,
+        deletedListIds: AppState.deletedListIds,
         exportDate: new Date().toISOString(),
     };
     
@@ -4268,6 +4708,8 @@ function handleImport(event) {
                 AppState.movies = (data.movies || []).map(normalizeStoredMovie);
                 AppState.shows = (data.shows || []).map(normalizeStoredShow);
                 AppState.lists = (data.lists || []).map(normalizeStoredList);
+                AppState.deletedIds = normalizeDeletedIds(data.deletedIds);
+                AppState.deletedListIds = normalizeDeletedListIds(data.deletedListIds);
                 saveLocalData();
                 syncToDriveNow();
                 renderCurrentView();
@@ -4291,9 +4733,7 @@ function handleImport(event) {
  */
 function clearAllData() {
     if (confirm('¿Estás seguro de borrar todos los datos? Esta acción no se puede deshacer.')) {
-        AppState.movies = [];
-        AppState.shows = [];
-        AppState.lists = [];
+        clearLibraryState();
         saveLocalData();
         syncToDriveNow();
         renderCurrentView();
@@ -4623,6 +5063,7 @@ window.removeContent = removeContent;
 window.setRating = setRating;
 window.setStatus = setStatus;
 window.setPersonalRating = setPersonalRating;
+window.handleEpisodeRowKeydown = handleEpisodeRowKeydown;
 window.toggleDetailMenu = toggleDetailMenu;
 window.runDetailMenuAction = runDetailMenuAction;
 window.closeDetailMenu = closeDetailMenu;

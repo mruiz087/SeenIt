@@ -10,10 +10,14 @@
     <link rel="icon" type="image/svg+xml" href="./icons/icon.svg">
     <link rel="icon" type="image/png" sizes="192x192" href="./icons/icon-192.png">
     <link rel="apple-touch-icon" href="./icons/icon-192.png">
-    <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="styles.css">
 </head>
 <body class="bg-black text-white min-h-screen antialiased">
+
+    <div id="sw-update-banner" class="tvst-sw-banner hidden" role="status">
+        <span>Nueva versión disponible</span>
+        <button type="button" id="btn-sw-reload">Recargar</button>
+    </div>
 
     <div id="drive-gate" class="tvst-drive-gate hidden">
         <div class="tvst-drive-gate-card">
@@ -400,25 +404,43 @@
         }
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', () => {
+                let waitingWorker = null;
+                let refreshing = false;
+
+                const banner = document.getElementById('sw-update-banner');
+                const reloadBtn = document.getElementById('btn-sw-reload');
+
+                const showUpdateBanner = (worker) => {
+                    waitingWorker = worker;
+                    banner?.classList.remove('hidden');
+                };
+
+                reloadBtn?.addEventListener('click', () => {
+                    if (waitingWorker) {
+                        waitingWorker.postMessage({ type: 'SKIP_WAITING' });
+                    } else {
+                        location.reload();
+                    }
+                });
+
+                navigator.serviceWorker.addEventListener('controllerchange', () => {
+                    if (refreshing) return;
+                    refreshing = true;
+                    location.reload();
+                });
+
                 navigator.serviceWorker.register('./sw.js').then((reg) => {
+                    if (reg.waiting && navigator.serviceWorker.controller) {
+                        showUpdateBanner(reg.waiting);
+                    }
                     reg.addEventListener('updatefound', () => {
                         const worker = reg.installing;
                         if (!worker) return;
                         worker.addEventListener('statechange', () => {
                             if (worker.state === 'installed' && navigator.serviceWorker.controller) {
-                                if (typeof showToast === 'function') {
-                                    showToast('Nueva versión disponible. Recarga la página.', 'info');
-                                }
+                                showUpdateBanner(worker);
                             }
                         });
-                    });
-                    let refreshing = false;
-                    navigator.serviceWorker.addEventListener('controllerchange', () => {
-                        if (refreshing) return;
-                        refreshing = true;
-                        if (typeof showToast === 'function') {
-                            showToast('Nueva versión; recarga la página.', 'info');
-                        }
                     });
                 }).catch(console.error);
             });
