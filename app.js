@@ -1171,18 +1171,15 @@ function syncMobileChromeHeights() {
     const moviesVisible = !document.getElementById('content-movies')?.classList.contains('hidden');
     const seriesVisible = !document.getElementById('content-series')?.classList.contains('hidden');
     const activeSubnav = moviesVisible ? subnavMovies : (seriesVisible ? subnavSeries : (subnavSeries || subnavMovies));
-    const continueBar = document.getElementById('series-continue-bar');
     const profileTabs = document.querySelector('.tvst-profile-tabs');
     const bottomNav = document.querySelector('.tvst-bottom-nav');
 
     if (isMobile) {
         root.style.setProperty('--tvst-subnav-h', `${measure(activeSubnav, 48)}px`);
-        root.style.setProperty('--tvst-continue-h', `${measure(continueBar, 36)}px`);
         root.style.setProperty('--tvst-profile-tabs-h', `${measure(profileTabs, 46)}px`);
         root.style.setProperty('--tvst-bottom-nav-h', `${measure(bottomNav, 56)}px`);
     } else {
         root.style.setProperty('--tvst-subnav-h', '3rem');
-        root.style.setProperty('--tvst-continue-h', '2.25rem');
         root.style.setProperty('--tvst-profile-tabs-h', '2.85rem');
         root.style.setProperty('--tvst-bottom-nav-h', '3.5rem');
     }
@@ -1237,11 +1234,6 @@ function switchSubTab(subTab) {
 
     document.querySelectorAll('#content-series .tvst-tab-panel').forEach(el => el.classList.add('hidden'));
     document.getElementById(`subtab-content-${subTab}`)?.classList.remove('hidden');
-
-    const continueBar = document.getElementById('series-continue-bar');
-    if (continueBar) {
-        continueBar.classList.toggle('is-hidden', subTab === 'upcoming');
-    }
 
     Promise.resolve(renderCurrentView()).finally(() => {
         scheduleSyncMobileChromeHeights();
@@ -1588,10 +1580,13 @@ function getDaysSinceWatchActivity(isoDate) {
     return Math.round((today - watched) / 86400000);
 }
 
-/** Serie en "Ver a continuación" si el próximo ep es reciente o hubo actividad de visionado reciente (retomada). */
-function isShowInContinueSection(show, nextEpisode) {
-    if (getDaysSinceAir(nextEpisode?.air_date) <= 14) return true;
+/** Serie en «continuar» si avanzó capítulos en los últimos 14 días; si no, «Sin ver por un tiempo». */
+function isShowInContinueSection(show) {
     const lastActivity = getShowLastWatchActivity(show);
+    if (!lastActivity) {
+        const watched = show?.capitulos_vistos?.length || 0;
+        return watched === 0;
+    }
     return getDaysSinceWatchActivity(lastActivity) <= 14;
 }
 
@@ -1745,10 +1740,7 @@ function scrollAnchorIntoView(anchorEl, stickyOffset, behavior = 'auto') {
 
 function getTimelineStickyOffset() {
     const styles = getComputedStyle(document.documentElement);
-    const subnavH = parseFloat(styles.getPropertyValue('--tvst-subnav-h')) || 48;
-    const continueH = parseFloat(styles.getPropertyValue('--tvst-continue-h')) || 0;
-    const continueHidden = document.getElementById('series-continue-bar')?.classList.contains('is-hidden');
-    return subnavH + (continueHidden ? 0 : continueH);
+    return parseFloat(styles.getPropertyValue('--tvst-subnav-h')) || 48;
 }
 
 function clearTimelineAnchorTimers() {
@@ -2128,10 +2120,10 @@ async function renderPendingList(options = {}) {
 async function rebuildPendingTimeline(allTvShows, watchingShows, options = {}) {
     const pendingEpisodes = await buildWatchingPendingEntries(watchingShows);
     const continueWatching = pendingEpisodes
-        .filter(({ show, episode }) => isShowInContinueSection(show, episode))
+        .filter(({ show }) => isShowInContinueSection(show))
         .sort(sortPendingEntries);
     const staleWatching = pendingEpisodes
-        .filter(({ show, episode }) => !isShowInContinueSection(show, episode))
+        .filter(({ show }) => !isShowInContinueSection(show))
         .sort(sortPendingEntries);
 
     AppState.timelinePendingCache = {

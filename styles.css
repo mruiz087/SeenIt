@@ -13,7 +13,6 @@
     --tvst-check-fg: #666666;
     --tvst-green: #22c55e;
     --tvst-subnav-h: 3rem;
-    --tvst-continue-h: 2.25rem;
     --tvst-profile-tabs-h: 2.85rem;
     --tvst-bottom-nav-h: 3.5rem;
     --tvst-safe-top: env(safe-area-inset-top, 0px);
@@ -119,42 +118,6 @@ html, body {
 .tvst-subnav-tab.is-active {
     color: var(--tvst-accent);
     border-bottom-color: var(--tvst-accent);
-}
-
-.tvst-continue-bar {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    position: sticky;
-    top: var(--tvst-subnav-h);
-    z-index: 49;
-    padding: 0.55rem 0.5rem;
-    border-bottom: 1px solid var(--tvst-border);
-    background: #0a0a0a;
-    width: 100%;
-    box-sizing: border-box;
-}
-
-.tvst-continue-bar.is-hidden {
-    display: none;
-}
-
-.tvst-continue-btn {
-    padding: 0.3rem 0.85rem;
-    font-size: 0.625rem;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: #fff;
-    background: #2a2a2a;
-    border: none;
-    border-radius: 9999px;
-    cursor: pointer;
-}
-
-.tvst-continue-btn:hover {
-    transform: none;
-    background: #3a3a3a;
 }
 
 /* ── Episode list / rows ── */
@@ -410,17 +373,13 @@ html, body {
     border-bottom: 1px solid var(--tvst-border);
     background: #000;
     position: sticky;
-    top: calc(var(--tvst-subnav-h) + var(--tvst-continue-h));
-    z-index: 15;
-}
-
-#content-series:has(.tvst-continue-bar.is-hidden) .tvst-timeline-marker {
     top: var(--tvst-subnav-h);
+    z-index: 15;
 }
 
 /* Espacio vacío debajo para poder anclar "Ver a continuación" al inicio */
 .tvst-timeline-spacer {
-    min-height: calc(100dvh - var(--tvst-subnav-h) - var(--tvst-continue-h) - var(--tvst-bottom-nav-h) - 6rem);
+    min-height: calc(100dvh - var(--tvst-subnav-h) - var(--tvst-bottom-nav-h) - 6rem);
     flex-shrink: 0;
 }
 
