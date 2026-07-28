@@ -12,6 +12,12 @@
     --tvst-check-bg: #ffffff;
     --tvst-check-fg: #666666;
     --tvst-green: #22c55e;
+    --tvst-subnav-h: 3rem;
+    --tvst-continue-h: 2.25rem;
+    --tvst-profile-tabs-h: 2.85rem;
+    --tvst-bottom-nav-h: 3.5rem;
+    --tvst-safe-top: env(safe-area-inset-top, 0px);
+    --tvst-safe-bottom: env(safe-area-inset-bottom, 0px);
 }
 
 html, body {
@@ -21,27 +27,49 @@ html, body {
     line-height: 1.5;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+    height: 100%;
+    overflow: hidden;
 }
 
 #app {
     background: var(--tvst-bg);
     color: var(--tvst-text);
-    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 100dvh;
+    min-height: 100svh;
+    overflow: hidden;
+    padding-top: var(--tvst-safe-top);
+    padding-bottom: var(--tvst-safe-bottom);
+    box-sizing: border-box;
 }
 
 /* ── Main ── */
 .tvst-main {
-    flex: 1;
+    flex: 1 1 auto;
+    min-height: 0;
     width: 100%;
     max-width: 32rem;
     margin: 0 auto;
-    padding: 0 0.75rem 5.5rem;
+    padding: 0 0.75rem 0.5rem;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-y: contain;
 }
 
 @media (min-width: 768px) {
     .tvst-main {
         max-width: 48rem;
-        padding: 0 1rem 5.5rem;
+        padding: 0 1rem 0.5rem;
+    }
+
+    .tvst-subnav,
+    .tvst-continue-bar,
+    .tvst-profile-tabs {
+        margin-left: -1rem;
+        margin-right: -1rem;
+        width: calc(100% + 2rem);
     }
 }
 
@@ -53,7 +81,11 @@ html, body {
     background: #000;
     position: sticky;
     top: 0;
-    z-index: 20;
+    z-index: 50;
+    margin-left: -0.75rem;
+    margin-right: -0.75rem;
+    width: calc(100% + 1.5rem);
+    box-sizing: border-box;
 }
 
 .tvst-subnav-tab {
@@ -84,10 +116,16 @@ html, body {
     display: flex;
     align-items: center;
     justify-content: center;
-    position: relative;
+    position: sticky;
+    top: var(--tvst-subnav-h);
+    z-index: 49;
     padding: 0.55rem 0.5rem;
     border-bottom: 1px solid var(--tvst-border);
     background: #0a0a0a;
+    margin-left: -0.75rem;
+    margin-right: -0.75rem;
+    width: calc(100% + 1.5rem);
+    box-sizing: border-box;
 }
 
 .tvst-continue-bar.is-hidden {
@@ -362,13 +400,17 @@ html, body {
     border-bottom: 1px solid var(--tvst-border);
     background: #000;
     position: sticky;
-    top: 3rem;
+    top: calc(var(--tvst-subnav-h) + var(--tvst-continue-h));
     z-index: 15;
+}
+
+#content-series:has(.tvst-continue-bar.is-hidden) .tvst-timeline-marker {
+    top: var(--tvst-subnav-h);
 }
 
 /* Espacio vacío debajo para poder anclar "Ver a continuación" al inicio */
 .tvst-timeline-spacer {
-    min-height: calc(100vh - 10rem);
+    min-height: calc(100dvh - var(--tvst-subnav-h) - var(--tvst-continue-h) - var(--tvst-bottom-nav-h) - 6rem);
     flex-shrink: 0;
 }
 
@@ -605,19 +647,18 @@ html, body {
 
 /* ── Bottom nav (todas las viewports) ── */
 .tvst-bottom-nav {
-    position: fixed;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    z-index: 40;
+    position: static;
+    flex-shrink: 0;
+    z-index: 60;
     display: flex;
     justify-content: space-around;
     align-items: stretch;
+    width: 100%;
     max-width: 48rem;
     margin: 0 auto;
     background: #000;
     border-top: 1px solid var(--tvst-border);
-    padding-bottom: env(safe-area-inset-bottom);
+    box-sizing: border-box;
 }
 
 .tvst-bottom-nav-btn {
@@ -627,7 +668,7 @@ html, body {
     align-items: center;
     justify-content: center;
     gap: 0.2rem;
-    padding: 0.55rem 0.25rem 0.45rem;
+    padding: 0.5rem 0.25rem 0.55rem;
     background: transparent;
     border: none;
     color: #888;
@@ -661,8 +702,12 @@ html, body {
     border-bottom: 1px solid var(--tvst-border);
     position: sticky;
     top: 0;
-    z-index: 20;
+    z-index: 50;
     background: #000;
+    margin-left: -0.75rem;
+    margin-right: -0.75rem;
+    width: calc(100% + 1.5rem);
+    box-sizing: border-box;
 }
 
 .tvst-profile-tab {
@@ -697,7 +742,7 @@ html, body {
     gap: 0.5rem 0.75rem;
     padding: 0.75rem 0 0.55rem;
     position: sticky;
-    top: 2.85rem;
+    top: var(--tvst-profile-tabs-h);
     z-index: 19;
     background: #000;
     border-bottom: 1px solid var(--tvst-border);
@@ -1121,8 +1166,84 @@ html, body {
 .tvst-hero-fav.is-active {
     color: #f5c518;
 }
+
+.tvst-hero-fav:hover {
+    transform: none;
+    background: var(--tvst-accent);
+    color: #000;
+}
+
 .tvst-hero-fav.hidden {
     display: none;
+}
+
+.tvst-hero-actions {
+    display: none;
+}
+
+.tvst-hero-action-btn {
+    width: 2.25rem;
+    height: 2.25rem;
+    border: none;
+    background: rgba(0, 0, 0, 0.35);
+    color: #fff;
+    border-radius: 50%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    line-height: 1;
+    flex-shrink: 0;
+    padding: 0;
+}
+
+.tvst-hero-action-btn svg {
+    width: 1.05rem;
+    height: 1.05rem;
+    stroke: currentColor;
+    fill: none;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    pointer-events: none;
+}
+
+.tvst-hero-action-btn svg[data-fill="1"] {
+    fill: currentColor;
+    stroke: none;
+}
+
+.tvst-hero-action-btn:hover {
+    transform: none;
+    background: var(--tvst-accent);
+    color: #000;
+}
+
+.tvst-hero-action-btn.is-danger:hover {
+    background: var(--tvst-accent);
+    color: #000;
+}
+
+@media (min-width: 768px) {
+    .tvst-hero-menu {
+        display: none;
+    }
+
+    .tvst-hero-fav {
+        right: 0.75rem;
+    }
+
+    .tvst-hero-actions {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+        gap: 0.35rem;
+        position: absolute;
+        top: 0.75rem;
+        right: 3.35rem;
+        left: 3.5rem;
+        z-index: 2;
+    }
 }
 
 .tvst-overflow-menu {
@@ -1567,16 +1688,25 @@ html, body {
 
 .tvst-season-header {
     display: flex;
-    align-items: center;
-    gap: 0.65rem;
-    padding: 0.85rem 0.75rem 1rem;
+    flex-direction: column;
+    gap: 0.5rem;
+    padding: 0.85rem 0.85rem;
     cursor: pointer;
     width: 100%;
+    box-sizing: border-box;
     background: transparent;
     border: none;
     color: #fff;
     text-align: left;
-    position: relative;
+}
+
+.tvst-season-header-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
 }
 
 .tvst-season-header-main {
@@ -1591,16 +1721,19 @@ html, body {
     font-size: 0.9rem;
     font-weight: 700;
     margin: 0;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .tvst-season-bar-track {
-    position: absolute;
-    left: 0;
-    right: 0;
-    bottom: 0;
+    width: 100%;
     height: 4px;
     background: rgba(250, 204, 21, 0.22);
     overflow: hidden;
+    border-radius: 2px;
+    flex-shrink: 0;
 }
 
 .tvst-season-bar-fill {
@@ -1674,6 +1807,7 @@ html, body {
     flex-shrink: 0;
     width: 2rem;
     height: 2rem;
+    box-sizing: border-box;
     border-radius: 50%;
     border: 2px solid rgba(255, 255, 255, 0.35);
     background: #111;
@@ -1685,6 +1819,10 @@ html, body {
     font-size: 0.75rem;
     font-weight: 700;
     padding: 0;
+}
+
+.tvst-season-header-row .tvst-circle-check {
+    margin-right: 0.1rem;
 }
 
 .tvst-circle-check.is-watched {

@@ -246,6 +246,7 @@ async function enterAppAfterDrive() {
 
     switchTab('series');
     await renderCurrentView();
+    scheduleSyncMobileChromeHeights();
     const idle = window.requestIdleCallback || ((cb) => setTimeout(cb, 800));
     idle(() => {
         prefetchTimelineSeasons().catch(() => {});
@@ -1150,6 +1151,50 @@ async function loadFromDrive(options = {}) {
 // NAVEGACIÓN
 // ============================================
 
+let chromeResizeTimer = null;
+let pendingAnchorObserver = null;
+let pendingAnchorScrollGeneration = 0;
+
+function syncMobileChromeHeights() {
+    const root = document.documentElement;
+    const isMobile = window.matchMedia('(max-width: 767px)').matches;
+    const measure = (el, fallbackPx) => {
+        if (!el) return fallbackPx;
+        const hidden = el.classList.contains('hidden') || el.classList.contains('is-hidden');
+        if (hidden) return 0;
+        const rect = el.getBoundingClientRect();
+        return Math.round(rect.height) || el.offsetHeight || fallbackPx;
+    };
+
+    const subnavSeries = document.querySelector('#content-series .tvst-subnav');
+    const subnavMovies = document.querySelector('#content-movies .tvst-subnav');
+    const moviesVisible = !document.getElementById('content-movies')?.classList.contains('hidden');
+    const seriesVisible = !document.getElementById('content-series')?.classList.contains('hidden');
+    const activeSubnav = moviesVisible ? subnavMovies : (seriesVisible ? subnavSeries : (subnavSeries || subnavMovies));
+    const continueBar = document.getElementById('series-continue-bar');
+    const profileTabs = document.querySelector('.tvst-profile-tabs');
+    const bottomNav = document.querySelector('.tvst-bottom-nav');
+
+    if (isMobile) {
+        root.style.setProperty('--tvst-subnav-h', `${measure(activeSubnav, 48)}px`);
+        root.style.setProperty('--tvst-continue-h', `${measure(continueBar, 36)}px`);
+        root.style.setProperty('--tvst-profile-tabs-h', `${measure(profileTabs, 46)}px`);
+        root.style.setProperty('--tvst-bottom-nav-h', `${measure(bottomNav, 56)}px`);
+    } else {
+        root.style.setProperty('--tvst-subnav-h', '3rem');
+        root.style.setProperty('--tvst-continue-h', '2.25rem');
+        root.style.setProperty('--tvst-profile-tabs-h', '2.85rem');
+        root.style.setProperty('--tvst-bottom-nav-h', '3.5rem');
+    }
+}
+
+function scheduleSyncMobileChromeHeights() {
+    requestAnimationFrame(() => {
+        syncMobileChromeHeights();
+        requestAnimationFrame(syncMobileChromeHeights);
+    });
+}
+
 /**
  * Cambia entre pestañas
  * @param {string} tab - Nombre de la pestaña
@@ -1171,8 +1216,9 @@ function switchTab(tab) {
     document.querySelector(`.tvst-bottom-nav-btn[data-tab="${tab}"]`)?.classList.add('is-active');
 
     Promise.resolve(renderCurrentView()).finally(() => {
+        scheduleSyncMobileChromeHeights();
         if (tab === 'profile') {
-            window.scrollTo({ top: 0, behavior: 'auto' });
+            setScrollTop(0, 'auto');
         }
     });
 }
@@ -1198,8 +1244,9 @@ function switchSubTab(subTab) {
     }
 
     Promise.resolve(renderCurrentView()).finally(() => {
+        scheduleSyncMobileChromeHeights();
         if (subTab === 'upcoming') {
-            window.scrollTo({ top: 0, behavior: 'auto' });
+            setScrollTop(0, 'auto');
         }
     });
 }
@@ -1214,8 +1261,9 @@ function switchMoviesSubTab(subTab) {
     document.getElementById(`movies-subtab-content-${subTab}`)?.classList.remove('hidden');
 
     Promise.resolve(renderCurrentView()).finally(() => {
+        scheduleSyncMobileChromeHeights();
         if (subTab === 'upcoming') {
-            window.scrollTo({ top: 0, behavior: 'auto' });
+            setScrollTop(0, 'auto');
         }
     });
 }
@@ -1235,7 +1283,8 @@ function switchProfileTab(tab) {
     }
 
     Promise.resolve(renderProfileView()).finally(() => {
-        window.scrollTo({ top: 0, behavior: 'auto' });
+        scheduleSyncMobileChromeHeights();
+        setScrollTop(0, 'auto');
     });
 }
 
@@ -1637,10 +1686,69 @@ function handleEpisodeRowKeydown(event, showId, episodeId) {
     openEpisodeDetail(showId, episodeId);
 }
 
+function getAppScrollEl() {
+    return document.querySelector('.tvst-main');
+}
+
+function getScrollTop() {
+    const el = getAppScrollEl();
+    return el ? el.scrollTop : window.scrollY;
+}
+
+function setScrollTop(top, behavior = 'auto') {
+    const el = getAppScrollEl();
+    const scrollBehavior = behavior === 'smooth' ? 'smooth' : 'auto';
+    if (el) {
+        el.scrollTo({ top: Math.max(0, top), behavior: scrollBehavior });
+    } else {
+        window.scrollTo({ top: Math.max(0, top), behavior: scrollBehavior });
+    }
+}
+
+function scrollByDelta(delta) {
+    const el = getAppScrollEl();
+    if (el) el.scrollBy(0, delta);
+    else window.scrollBy(0, delta);
+}
+
+function scrollElementToStart(targetEl, behavior = 'auto') {
+    const container = getAppScrollEl();
+    if (!targetEl) return;
+    if (container) {
+        const top = targetEl.getBoundingClientRect().top
+            - container.getBoundingClientRect().top
+            + container.scrollTop;
+        container.scrollTo({
+            top: Math.max(0, top),
+            behavior: behavior === 'smooth' ? 'smooth' : 'auto',
+        });
+    } else {
+        targetEl.scrollIntoView({ behavior: behavior === 'smooth' ? 'smooth' : 'auto', block: 'start' });
+    }
+}
+
+function scrollAnchorIntoView(anchorEl, stickyOffset, behavior = 'auto') {
+    const container = getAppScrollEl();
+    if (!anchorEl) return;
+    const scrollBehavior = behavior === 'smooth' ? 'smooth' : 'auto';
+    if (container) {
+        const top = anchorEl.getBoundingClientRect().top
+            - container.getBoundingClientRect().top
+            + container.scrollTop
+            - stickyOffset;
+        container.scrollTo({ top: Math.max(0, top), behavior: scrollBehavior });
+    } else {
+        const top = anchorEl.getBoundingClientRect().top + window.scrollY - stickyOffset;
+        window.scrollTo({ top: Math.max(0, top), behavior: scrollBehavior });
+    }
+}
+
 function getTimelineStickyOffset() {
-    // Subnav sticky; el marcador «Ver a continuación» se pega bajo ella (top: 3rem)
-    const subnav = document.querySelector('#content-series .tvst-subnav');
-    return subnav?.offsetHeight || 48;
+    const styles = getComputedStyle(document.documentElement);
+    const subnavH = parseFloat(styles.getPropertyValue('--tvst-subnav-h')) || 48;
+    const continueH = parseFloat(styles.getPropertyValue('--tvst-continue-h')) || 0;
+    const continueHidden = document.getElementById('series-continue-bar')?.classList.contains('is-hidden');
+    return subnavH + (continueHidden ? 0 : continueH);
 }
 
 function clearTimelineAnchorTimers() {
@@ -1655,36 +1763,73 @@ function anchorTimelineToNow(tabKey, behavior = 'auto') {
     if (!anchor) return;
 
     clearTimelineAnchorTimers();
+    if (pendingAnchorObserver) {
+        pendingAnchorObserver.disconnect();
+        pendingAnchorObserver = null;
+    }
     window.__seenitHistoryLoadReady = false;
+
+    const generation = ++pendingAnchorScrollGeneration;
 
     const scroll = () => {
         if (AppState.currentTab !== 'series' || AppState.currentSubTab !== 'pending-list') return;
+        if (generation !== pendingAnchorScrollGeneration) return;
         const el = document.querySelector(`[data-timeline-anchor="${tabKey}"]`);
         if (!el) return;
         const stickyOffset = getTimelineStickyOffset();
-        const top = el.getBoundingClientRect().top + window.scrollY - stickyOffset;
-        window.scrollTo({ top: Math.max(0, top), behavior: behavior === 'smooth' ? 'smooth' : 'auto' });
+        scrollAnchorIntoView(el, stickyOffset, behavior);
     };
 
-    // Instantáneo primero; luego reintentos por layout/imágenes
     scroll();
     requestAnimationFrame(() => {
         requestAnimationFrame(scroll);
     });
-    [50, 150, 300, 500, 800].forEach((ms) => {
-        window.__seenitAnchorTimers.push(setTimeout(scroll, ms));
-    });
     window.__seenitAnchorTimers.push(setTimeout(() => {
         scroll();
         window.__seenitHistoryLoadReady = true;
-        window.__seenitLastScrollY = window.scrollY;
-    }, 900));
+        window.__seenitLastScrollY = getScrollTop();
+    }, 100));
+
+    attachPendingAnchorResizeObserver(tabKey, generation);
+}
+
+function attachPendingAnchorResizeObserver(tabKey, generation) {
+    const container = document.getElementById('pending-list-container');
+    if (!container || typeof ResizeObserver === 'undefined') return;
+
+    let lastHeight = container.offsetHeight;
+    let resizeScrollDone = false;
+
+    pendingAnchorObserver = new ResizeObserver(() => {
+        if (generation !== pendingAnchorScrollGeneration) {
+            pendingAnchorObserver?.disconnect();
+            pendingAnchorObserver = null;
+            return;
+        }
+        if (AppState.currentTab !== 'series' || AppState.currentSubTab !== 'pending-list') return;
+        const newHeight = container.offsetHeight;
+        if (Math.abs(newHeight - lastHeight) < 2) return;
+        lastHeight = newHeight;
+        if (resizeScrollDone) return;
+        resizeScrollDone = true;
+
+        const el = document.querySelector(`[data-timeline-anchor="${tabKey}"]`);
+        if (!el) return;
+        const stickyOffset = getTimelineStickyOffset();
+        scrollAnchorIntoView(el, stickyOffset, 'auto');
+        window.__seenitHistoryLoadReady = true;
+        window.__seenitLastScrollY = getScrollTop();
+        pendingAnchorObserver?.disconnect();
+        pendingAnchorObserver = null;
+    });
+
+    pendingAnchorObserver.observe(container);
 }
 
 function scrollToNowAnchor() {
     if (AppState.currentTab === 'series' && AppState.currentSubTab === 'upcoming') {
         const upcoming = document.getElementById('upcoming-list-container');
-        if (upcoming) upcoming.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        if (upcoming) scrollElementToStart(upcoming, 'smooth');
         return;
     }
     window.__seenitHistoryLoadReady = false;
@@ -1695,7 +1840,7 @@ function handleTimelineScroll() {
     if (AppState.currentTab !== 'series' || AppState.currentSubTab !== 'pending-list') return;
     if (!window.__seenitHistoryLoadReady) return;
 
-    const y = window.scrollY;
+    const y = getScrollTop();
     const lastY = window.__seenitLastScrollY ?? y;
     const scrollingUp = y < lastY - 2;
     window.__seenitLastScrollY = y;
@@ -1748,7 +1893,9 @@ function attachPendingHistoryObserver() {
 
 function attachTimelineScrollPersistence() {
     if (window.__seenitTimelineListenerAttached) return;
-    window.addEventListener('scroll', handleTimelineScroll, { passive: true });
+    const scrollEl = getAppScrollEl();
+    const target = scrollEl || window;
+    target.addEventListener('scroll', handleTimelineScroll, { passive: true });
     window.__seenitTimelineListenerAttached = true;
 }
 
@@ -1758,7 +1905,7 @@ function preserveAnchorAfterHistoryLoad(tabKey, previousOffset) {
     const newOffset = anchor.getBoundingClientRect().top;
     const delta = newOffset - previousOffset;
     if (Math.abs(delta) > 1) {
-        window.scrollBy(0, delta);
+        scrollByDelta(delta);
     }
 }
 
@@ -1860,7 +2007,9 @@ function paintPendingTimeline(options = {}) {
     if (options.preserveAnchor) {
         preserveAnchorAfterHistoryLoad('pending-list', options.anchorOffset);
     } else if (!options.skipAnchor) {
-        anchorTimelineToNow('pending-list', 'auto');
+        requestAnimationFrame(() => {
+            requestAnimationFrame(() => anchorTimelineToNow('pending-list', 'auto'));
+        });
     }
 }
 
@@ -1962,7 +2111,10 @@ async function renderPendingList(options = {}) {
 
     if (cacheFresh) {
         AppState.timelineHistoryVisible['pending-list'] = 0;
-        paintPendingTimeline({ skipAnchor: false });
+        paintPendingTimeline({ skipAnchor: true });
+        requestAnimationFrame(() => {
+            requestAnimationFrame(() => anchorTimelineToNow('pending-list', 'auto'));
+        });
         // Refresco suave en background
         refreshPendingListInBackground(allTvShows, watchingShows);
         return;
@@ -1989,7 +2141,10 @@ async function rebuildPendingTimeline(allTvShows, watchingShows, options = {}) {
     };
     AppState.timelineHistoryVisible['pending-list'] = 0;
 
-    paintPendingTimeline({ skipAnchor: false });
+    paintPendingTimeline({ skipAnchor: true });
+    requestAnimationFrame(() => {
+        requestAnimationFrame(() => anchorTimelineToNow('pending-list', 'auto'));
+    });
 
     // Historial en segundo plano (no bloquea la vista)
     void buildHistoryEntries(allTvShows).then((historyEpisodes) => {
@@ -2087,7 +2242,7 @@ async function renderUpcomingList(options = {}) {
     if (cacheFresh) {
         container.className = 'tvst-episode-list';
         container.innerHTML = AppState.timelineUpcomingCache.html;
-        requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: 'auto' }));
+        requestAnimationFrame(() => setScrollTop(0, 'auto'));
         void rebuildUpcomingTimeline(upcomingShows, container).catch(() => {});
         return;
     }
@@ -2171,7 +2326,7 @@ async function rebuildUpcomingTimeline(upcomingShows, container) {
     container.innerHTML = html;
     AppState.timelineUpcomingCache = { html, builtAt: Date.now(), items: upcomingEpisodes };
 
-    requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: 'auto' }));
+    requestAnimationFrame(() => setScrollTop(0, 'auto'));
 }
 
 function invalidateTimelineCaches() {
@@ -3721,15 +3876,17 @@ async function renderEpisodes(show) {
             seasonsHTML += `
                 <div class="tvst-season-block">
                     <div class="tvst-season-header" role="button" tabindex="0" onclick="toggleSeasonAccordion('${seasonId}', '${seasonKey}')">
-                        <div class="tvst-season-header-main">
-                            <p class="tvst-season-name">${seasonLabel}</p>
-                            <span class="tvst-season-chevron" id="chevron-${seasonId}">${isExpanded ? '▲' : '▼'}</span>
+                        <div class="tvst-season-header-row">
+                            <div class="tvst-season-header-main">
+                                <p class="tvst-season-name">${seasonLabel}</p>
+                                <span class="tvst-season-chevron" id="chevron-${seasonId}">${isExpanded ? '▲' : '▼'}</span>
+                            </div>
+                            <span class="tvst-season-count">${watchedInSeason}/${totalInSeason}</span>
+                            <button type="button"
+                                class="tvst-circle-check${allWatchedInSeason ? ' is-watched' : ''}"
+                                onclick="event.stopPropagation(); toggleSeasonWatched(${show.id_tmdb}, ${season.numero})"
+                                aria-label="Marcar temporada">✓</button>
                         </div>
-                        <span class="tvst-season-count">${watchedInSeason}/${totalInSeason}</span>
-                        <button type="button"
-                            class="tvst-circle-check${allWatchedInSeason ? ' is-watched' : ''}"
-                            onclick="event.stopPropagation(); toggleSeasonWatched(${show.id_tmdb}, ${season.numero})"
-                            aria-label="Marcar temporada">✓</button>
                         <div class="tvst-season-bar-track">
                             <div class="tvst-season-bar-fill${allWatchedInSeason ? ' is-complete' : ''}" style="width:${Math.max(0, Math.min(100, pct))}%"></div>
                         </div>
@@ -4117,19 +4274,28 @@ function toggleDetailMenu(event) {
     const actions = [
         { id: 'toggle-favorite', label: isFavorite ? 'Quitar de favoritos' : 'Añadir a favoritos' },
         { id: 'add-to-list', label: 'Añadir a lista' },
+        { id: 'pending', label: 'Marcar como pendiente' },
         { id: 'standby', label: 'Ver en otro momento' },
         { id: 'remove', label: 'Eliminar', danger: true },
     ];
 
+    const st = normalizeStatus(item.estado);
+    if (st === 'pending') {
+        actions.splice(actions.findIndex(a => a.id === 'pending'), 1);
+    }
+    if (st === 'standby') {
+        actions.splice(actions.findIndex(a => a.id === 'standby'), 1);
+    }
+
     if (item.tipo === 'movie') {
-        const st = normalizeStatus(item.estado);
-        actions.splice(3, 0, st === 'completed'
-            ? { id: 'movie-unwatch', label: 'Marcar como no vista' }
-            : { id: 'movie-watch', label: 'Marcar como vista' });
+        if (st === 'completed') {
+            actions.splice(3, 0, { id: 'movie-unwatch', label: 'Marcar como no vista' });
+        } else {
+            actions.splice(3, 0, { id: 'movie-watch', label: 'Marcar como vista' });
+        }
     }
 
     if (item.tipo === 'tv' && watchedCount > 0) {
-        const st = normalizeStatus(item.estado);
         if (st === 'dropped') {
             actions.splice(3, 0, { id: 'resume', label: 'Seguir viendo' });
         } else {
@@ -4155,6 +4321,18 @@ async function runDetailMenuAction(action) {
 
     if (action === 'add-to-list') {
         openListPicker();
+        return;
+    }
+
+    if (action === 'pending') {
+        await updateStatus(item.tipo, item.id_tmdb, 'pending');
+        const updated = item.tipo === 'tv'
+            ? AppState.shows.find(s => s.id_tmdb === item.id_tmdb)
+            : AppState.movies.find(m => m.id_tmdb === item.id_tmdb);
+        AppState.selectedItem = { ...(updated || item), tipo: item.tipo, estado: 'pending' };
+        showToast('Marcada como pendiente', 'success');
+        renderCurrentView();
+        updateDetailHero(AppState.selectedItem);
         return;
     }
 
@@ -4284,6 +4462,78 @@ function updateDetailHero(item) {
 
     updateDetailHeroFavorite(item);
     updateDetailAddBar(item);
+    updateDetailHeroActions(item);
+}
+
+const DETAIL_HERO_ACTION_ICONS = {
+    'add-to-list': '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h11M4 12h11M4 18h7"/><path d="M17 14v6M14 17h6"/></svg>',
+    pending: '<svg viewBox="0 0 24 24" aria-hidden="true" data-fill="1"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>',
+    standby: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
+    dropped: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>',
+    resume: '<svg viewBox="0 0 24 24" aria-hidden="true" data-fill="1"><path d="M8 5v14l11-7z"/></svg>',
+    remove: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16"/><path d="M10 11v6M14 11v6"/><path d="M6 7l1 12a2 2 0 002 2h6a2 2 0 002-2l1-12"/><path d="M9 7V5a1 1 0 011-1h4a1 1 0 011 1v2"/></svg>',
+    'movie-watch': '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12l5 5L20 7"/></svg>',
+    'movie-unwatch': '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/></svg>',
+};
+
+function buildDetailHeroActionList(item) {
+    if (!item || !isItemAlreadyAdded(item.tipo, item.id_tmdb)) return [];
+
+    const st = normalizeStatus(item.estado);
+    const watchedCount = item.tipo === 'tv'
+        ? (item.capitulos_vistos?.length || item.episodios_vistos_count || 0)
+        : 0;
+
+    const actions = [
+        { id: 'add-to-list', label: 'Añadir a lista' },
+        { id: 'pending', label: 'Marcar como pendiente' },
+        { id: 'standby', label: 'Ver en otro momento' },
+        { id: 'remove', label: 'Eliminar', danger: true },
+    ];
+
+    if (st === 'pending') {
+        actions.splice(actions.findIndex(a => a.id === 'pending'), 1);
+    }
+    if (st === 'standby') {
+        actions.splice(actions.findIndex(a => a.id === 'standby'), 1);
+    }
+
+    if (item.tipo === 'movie') {
+        if (st === 'completed') {
+            actions.splice(3, 0, { id: 'movie-unwatch', label: 'Marcar como no vista' });
+        } else {
+            actions.splice(3, 0, { id: 'movie-watch', label: 'Marcar como vista' });
+        }
+    } else if (item.tipo === 'tv') {
+        if (st === 'dropped') {
+            if (watchedCount > 0) {
+                actions.splice(3, 0, { id: 'resume', label: 'Seguir viendo' });
+            }
+        } else if (watchedCount > 0) {
+            actions.splice(3, 0, { id: 'dropped', label: 'Dejar de ver' });
+        }
+    }
+
+    return actions;
+}
+
+function updateDetailHeroActions(item) {
+    const container = document.getElementById('modal-hero-actions');
+    if (!container) return;
+
+    const actions = buildDetailHeroActionList(item);
+    if (!actions.length) {
+        container.innerHTML = '';
+        return;
+    }
+
+    container.innerHTML = actions.map((action) => `
+        <button type="button"
+            class="tvst-hero-action-btn${action.danger ? ' is-danger' : ''}"
+            onclick="runDetailMenuAction('${action.id}')"
+            aria-label="${action.label}"
+            title="${action.label}">${DETAIL_HERO_ACTION_ICONS[action.id] || '•'}</button>
+    `).join('');
 }
 
 async function openEpisodeDetail(id_tmdb, episodeId) {
@@ -4999,7 +5249,17 @@ function getStatusBadge(status) {
  * Configura los event listeners
  */
 function setupEventListeners() {
-    // Event listeners ya están configurados en el HTML con onclick
+    syncMobileChromeHeights();
+    window.addEventListener('resize', () => {
+        clearTimeout(chromeResizeTimer);
+        chromeResizeTimer = setTimeout(syncMobileChromeHeights, 100);
+    });
+    if (window.visualViewport) {
+        window.visualViewport.addEventListener('resize', () => {
+            clearTimeout(chromeResizeTimer);
+            chromeResizeTimer = setTimeout(syncMobileChromeHeights, 100);
+        });
+    }
     console.log('[App] Event listeners configurados');
 }
 

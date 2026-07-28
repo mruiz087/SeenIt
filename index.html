@@ -2,7 +2,7 @@
 <html lang="es" class="dark">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>SeenIt - Seguimiento de Series y Películas</title>
     <meta name="description" content="App privada para seguimiento de series y películas">
     <meta name="theme-color" content="#000000">
@@ -12,7 +12,7 @@
     <link rel="apple-touch-icon" href="./icons/icon-192.png">
     <link rel="stylesheet" href="styles.css">
 </head>
-<body class="bg-black text-white min-h-screen antialiased">
+<body class="bg-black text-white antialiased">
 
     <div id="sw-update-banner" class="tvst-sw-banner hidden" role="status">
         <span>Nueva versión disponible</span>
@@ -31,7 +31,7 @@
         </div>
     </div>
 
-    <div id="app" class="flex flex-col min-h-screen bg-black">
+    <div id="app" class="flex flex-col bg-black">
 
         <main class="tvst-main">
 
@@ -266,6 +266,7 @@
                         <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
                     </button>
                     <button type="button" id="modal-hero-fav" class="tvst-hero-fav" onclick="toggleFavoriteFromHero(event)" aria-label="Favorito" title="Favorito">★</button>
+                    <div id="modal-hero-actions" class="tvst-hero-actions" aria-label="Acciones"></div>
                     <button type="button" class="tvst-hero-menu" onclick="toggleDetailMenu(event)" aria-label="Opciones">⋯</button>
                     <div id="detail-overflow-menu" class="tvst-overflow-menu hidden" role="menu"></div>
                     <div class="tvst-hero-fade"></div>
