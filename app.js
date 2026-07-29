@@ -1197,6 +1197,13 @@ function scheduleSyncMobileChromeHeights() {
  * @param {string} tab - Nombre de la pestaña
  */
 function switchTab(tab) {
+    if (!document.getElementById('detail-modal')?.classList.contains('hidden')) {
+        closeModal();
+    }
+    if (!document.getElementById('episode-modal')?.classList.contains('hidden')) {
+        closeEpisodeModal();
+    }
+
     AppState.currentTab = tab;
 
     if (tab === 'series') {
@@ -1216,6 +1223,8 @@ function switchTab(tab) {
         scheduleSyncMobileChromeHeights();
         if (tab === 'profile') {
             setScrollTop(0, 'auto');
+        } else if (tab === 'series' && AppState.currentSubTab === 'pending-list') {
+            resetPendingListScroll();
         }
     });
 }
@@ -1239,6 +1248,8 @@ function switchSubTab(subTab) {
         scheduleSyncMobileChromeHeights();
         if (subTab === 'upcoming') {
             setScrollTop(0, 'auto');
+        } else if (subTab === 'pending-list') {
+            resetPendingListScroll();
         }
     });
 }
@@ -1739,8 +1750,29 @@ function scrollAnchorIntoView(anchorEl, stickyOffset, behavior = 'auto') {
 }
 
 function getTimelineStickyOffset() {
-    const styles = getComputedStyle(document.documentElement);
-    return parseFloat(styles.getPropertyValue('--tvst-subnav-h')) || 48;
+    const raw = getComputedStyle(document.documentElement)
+        .getPropertyValue('--tvst-subnav-h')
+        .trim();
+    if (!raw) return 48;
+    if (raw.endsWith('rem')) {
+        const rem = parseFloat(raw);
+        const rootPx = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+        return (Number.isFinite(rem) ? rem : 3) * rootPx;
+    }
+    const px = parseFloat(raw);
+    return Number.isFinite(px) ? px : 48;
+}
+
+function getPendingListContentAboveAnchor() {
+    const list = document.getElementById('pending-list-container');
+    const anchor = list?.querySelector('[data-timeline-anchor="pending-list"]');
+    if (!list || !anchor) return 0;
+    let above = 0;
+    for (const child of list.children) {
+        if (child === anchor) break;
+        above += child.offsetHeight;
+    }
+    return above;
 }
 
 function clearTimelineAnchorTimers() {
@@ -1748,6 +1780,43 @@ function clearTimelineAnchorTimers() {
         window.__seenitAnchorTimers.forEach(id => clearTimeout(id));
     }
     window.__seenitAnchorTimers = [];
+}
+
+/**
+ * Posiciona «Ver a continuación» bajo el subnav.
+ * Mide el bloque encima del ancla y resta el offset sticky del subnav
+ * para que el hint quede fuera del viewport hasta deslizar hacia arriba.
+ */
+function resetPendingListScroll() {
+    clearTimelineAnchorTimers();
+    if (pendingAnchorObserver) {
+        pendingAnchorObserver.disconnect();
+        pendingAnchorObserver = null;
+    }
+    window.__seenitHistoryLoadReady = false;
+    pendingAnchorScrollGeneration += 1;
+    const generation = pendingAnchorScrollGeneration;
+
+    syncMobileChromeHeights();
+
+    const apply = () => {
+        if (generation !== pendingAnchorScrollGeneration) return;
+        if (AppState.currentTab !== 'series' || AppState.currentSubTab !== 'pending-list') return;
+        const above = getPendingListContentAboveAnchor();
+        const stickyOffset = getTimelineStickyOffset();
+        const top = Math.max(0, above - stickyOffset);
+        setScrollTop(top, 'auto');
+        window.__seenitLastScrollY = top;
+    };
+
+    apply();
+    requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+            apply();
+            if (generation !== pendingAnchorScrollGeneration) return;
+            window.__seenitHistoryLoadReady = true;
+        });
+    });
 }
 
 function anchorTimelineToNow(tabKey, behavior = 'auto') {
@@ -1999,9 +2068,7 @@ function paintPendingTimeline(options = {}) {
     if (options.preserveAnchor) {
         preserveAnchorAfterHistoryLoad('pending-list', options.anchorOffset);
     } else if (!options.skipAnchor) {
-        requestAnimationFrame(() => {
-            requestAnimationFrame(() => anchorTimelineToNow('pending-list', 'auto'));
-        });
+        resetPendingListScroll();
     }
 }
 
@@ -2104,9 +2171,7 @@ async function renderPendingList(options = {}) {
     if (cacheFresh) {
         AppState.timelineHistoryVisible['pending-list'] = 0;
         paintPendingTimeline({ skipAnchor: true });
-        requestAnimationFrame(() => {
-            requestAnimationFrame(() => anchorTimelineToNow('pending-list', 'auto'));
-        });
+        resetPendingListScroll();
         // Refresco suave en background
         refreshPendingListInBackground(allTvShows, watchingShows);
         return;
@@ -2131,12 +2196,20 @@ async function rebuildPendingTimeline(allTvShows, watchingShows, options = {}) {
         staleWatching,
         builtAt: Date.now(),
     };
-    AppState.timelineHistoryVisible['pending-list'] = 0;
+    if (options.resetScroll !== false) {
+        AppState.timelineHistoryVisible['pending-list'] = 0;
+    }
 
-    paintPendingTimeline({ skipAnchor: true });
-    requestAnimationFrame(() => {
-        requestAnimationFrame(() => anchorTimelineToNow('pending-list', 'auto'));
+    const anchorEl = document.querySelector('[data-timeline-anchor="pending-list"]');
+    const preserveScroll = options.resetScroll === false;
+    paintPendingTimeline({
+        skipAnchor: true,
+        preserveAnchor: preserveScroll,
+        anchorOffset: preserveScroll ? anchorEl?.getBoundingClientRect().top : undefined,
     });
+    if (!preserveScroll) {
+        resetPendingListScroll();
+    }
 
     // Historial en segundo plano (no bloquea la vista)
     void buildHistoryEntries(allTvShows).then((historyEpisodes) => {
@@ -2181,7 +2254,7 @@ async function rebuildPendingTimeline(allTvShows, watchingShows, options = {}) {
 
 async function refreshPendingListInBackground(allTvShows, watchingShows) {
     try {
-        await rebuildPendingTimeline(allTvShows, watchingShows);
+        await rebuildPendingTimeline(allTvShows, watchingShows, { resetScroll: false });
     } catch (error) {
         console.warn('[App] Refresco pendiente en background:', error);
     }
