@@ -1549,7 +1549,7 @@ html, body {
     text-transform: uppercase;
 }
 
-/* Zona encima del ancla: permite subir al historial sin mostrarlo de primeras */
+/* Zona encima del ancla: al entrar queda fuera del viewport; al subir se ve el hint */
 .tvst-history-pull {
     display: flex;
     align-items: flex-end;
@@ -1559,7 +1559,7 @@ html, body {
 }
 
 .tvst-history-pull.is-empty {
-    min-height: 3.5rem;
+    min-height: calc(var(--tvst-subnav-h) + 4rem);
     padding-bottom: 0.75rem;
 }
 

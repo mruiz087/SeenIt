@@ -1835,10 +1835,13 @@ function anchorTimelineToNow(tabKey, behavior = 'auto') {
     const scroll = () => {
         if (AppState.currentTab !== 'series' || AppState.currentSubTab !== 'pending-list') return;
         if (generation !== pendingAnchorScrollGeneration) return;
-        const el = document.querySelector(`[data-timeline-anchor="${tabKey}"]`);
-        if (!el) return;
+        if (!document.querySelector(`[data-timeline-anchor="${tabKey}"]`)) return;
+        syncMobileChromeHeights();
+        const above = getPendingListContentAboveAnchor();
         const stickyOffset = getTimelineStickyOffset();
-        scrollAnchorIntoView(el, stickyOffset, behavior);
+        const top = Math.max(0, above - stickyOffset);
+        setScrollTop(top, behavior);
+        window.__seenitLastScrollY = top;
     };
 
     scroll();
@@ -1850,8 +1853,6 @@ function anchorTimelineToNow(tabKey, behavior = 'auto') {
         window.__seenitHistoryLoadReady = true;
         window.__seenitLastScrollY = getScrollTop();
     }, 100));
-
-    attachPendingAnchorResizeObserver(tabKey, generation);
 }
 
 function attachPendingAnchorResizeObserver(tabKey, generation) {
