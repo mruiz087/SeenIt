@@ -1,8 +1,10 @@
 # SeenIt
 
-PWA para seguimiento de **series y películas**. Datos de catálogo vía [TMDB](https://www.themoviedb.org/); biblioteca personal en **Google Drive** del usuario. Sin backend propio: se puede publicar en **GitHub Pages**.
+PWA para seguimiento de **series y películas**. Catálogo vía [TMDB](https://www.themoviedb.org/); biblioteca personal en el **Google Drive** de cada usuario. Sin backend propio: se puede publicar en **GitHub Pages**.
 
 Cada persona inicia sesión con **su** cuenta de Google y guarda datos en **su** Drive. El enlace de la app no comparte bibliotecas entre cuentas.
+
+**Manual técnico completo:** [`docs/README.md`](docs/README.md) — arquitectura, modelo de datos, sync, UI, PWA y guía de mantenimiento (pensado para mantener la app sin IA y como material de formación).
 
 ---
 
@@ -10,27 +12,39 @@ Cada persona inicia sesión con **su** cuenta de Google y guarda datos en **su**
 
 ### Series
 - **Lista pendiente** — episodios por ver de series en estado *Viendo*
-- **Próximamente** — estrenos futuros de todas las series salvo *Abandonada*
-- Marcado de episodios, progreso por temporada, estados: pendiente, viendo, completada, standby, abandonada
-- Series nuevas se añaden como *Viendo*
+  - Sección **Ver a continuación** (actividad reciente o boost por temporada nueva)
+  - Sección **Sin ver por un tiempo** (sin avance en ~14 días)
+  - Historial de episodios vistos al deslizar hacia arriba desde el ancla
+- **Próximamente** — estrenos futuros (todas salvo *Abandonada*)
+- Marcado de episodios, progreso por temporada
+- Estados: pendiente, viendo, completada, standby («ver en otro momento»), abandonada
+- Series **nuevas se añaden como *Pendiente***; al marcar un episodio pasan a *Viendo*
+- Si una serie *Completada* gana temporada nueva en TMDB: toast, vuelve a *Viendo* y entra en **Ver a continuación** (`continueBoostAt`)
 
 ### Películas
 - Lista pendiente y próximos estrenos
 - Estado pendiente / vista
+- **Filtros** (panel colapsable bajo el subnav): género, plataforma y duración máxima (slider en vivo)
+- Plataformas principales unificadas (Netflix, Prime Video, Disney+, Max, Movistar Plus+, Apple TV, SkyShowtime, RTVE, Atresplayer, Filmin, Rakuten) + **Otros**
+
+### Ficha (detalle)
+- Hero con progreso, meta TMDB y **badge de estado** de visionado
+- Nota personal (1–10) + TMDB; botón **Quitar nota**
+- **Crítica** personal (Añadir → Guardar → Modificar), solo si está en la biblioteca
+- Episodios (series), providers, reparto, recomendaciones
+- Acciones: listas, estados, favorito, eliminar
 
 ### Perfil
-- Biblioteca de series y películas con filtros por estado
-- Búsqueda por título y filtro por plataforma (dónde ver / TMDB watch providers)
-- **Favoritos** (estrella en el detalle y en las cards)
-- **Listas personalizadas** con banner, portada, orden (nombre / progreso / añadido)
-- Estadísticas de tiempo visto
-- Importación desde exportes de TV Time
-- Backup local (exportar / importar JSON) y sincronización con Drive
+- Biblioteca con búsqueda, filtro por estado y plataforma (mismas unificaciones)
+- **Favoritos**, **listas personalizadas**, estadísticas de tiempo visto
+- Importación TV Time, export/import JSON, sincronizar con Drive
+- Sticky de pestañas / toolbar / cabecera de favoritos alineados al chrome
 
 ### Técnica
-- PWA instalable (Service Worker, iconos, manifest)
-- Auth Google Identity Services (OAuth) + Drive API (`drive.file`)
-- Merge seguro local ↔ Drive (backup previo, unión por `id_tmdb`, sync bidireccional)
+- PWA instalable (Service Worker **v52**, manifest, iconos)
+- Banner «Nueva versión disponible» por encima del menú inferior
+- Auth Google Identity Services + Drive API (`drive.file`)
+- Merge seguro local ↔ Drive (backup previo, LWW por `updatedAt`, tombstones)
 
 ---
 
@@ -38,11 +52,11 @@ Cada persona inicia sesión con **su** cuenta de Google y guarda datos en **su**
 
 | Pieza | Uso |
 |---|---|
-| HTML / CSS / JS vanilla | UI y estado |
-| TMDB API | Búsqueda, detalles, episodios, providers |
-| Google Drive | Persistencia por usuario (`seenit-data.json`) |
-| Service Worker | Caché del shell; `config.js` en network-first |
-| GitHub Actions | Genera `config.js` y publica la carpeta `site/` |
+| HTML / CSS / JS vanilla | UI y estado (`AppState`) |
+| TMDB API | Búsqueda, detalles, episodios, watch providers |
+| Google Drive | Persistencia por usuario (`tv_showtime_data.json`) |
+| Service Worker | Shell cache-first; `config.js` network-first |
+| GitHub Actions | Genera `config.js` y publica `site/` |
 
 ---
 
@@ -61,26 +75,25 @@ Cada persona inicia sesión con **su** cuenta de Google y guarda datos en **su**
    - Tipo **Externo**
    - Scope de Drive si te lo pide
    - **Publicar la app** (si queda en “Prueba”, solo los test users pueden entrar)
-7. (Opcional) Una **API key** de Google; el cliente Drive actual no la requiere. Si la creas, restríngela por referrer a tu dominio Pages.
+7. (Opcional) Una **API key** de Google; el cliente Drive actual no la requiere.
 
 Copia:
 
 - Client ID (`….apps.googleusercontent.com`)
 - API key de [TMDB](https://www.themoviedb.org/settings/api)
-- API key de Google (opcional; el workflow aún puede pedir el secret)
 
 ### B) GitHub Secrets + Pages
 
 1. Sube el código al repo (**sin** `config.js`).
-2. Repo → **Settings → Secrets and variables → Actions** → New repository secret:
+2. Repo → **Settings → Secrets and variables → Actions**:
    - `TMDB_API_KEY`
    - `GOOGLE_CLIENT_ID`
-   - `GOOGLE_API_KEY` (puede ser un placeholder si no usas key de Google)
+   - `GOOGLE_API_KEY` (puede ser placeholder)
 3. Repo → **Settings → Pages** → Source: **GitHub Actions**.
 4. Push a `main` (o Actions → *Deploy GitHub Pages* → Run workflow).
-5. Cuando el workflow termine, abre la URL de Pages y pulsa **Conectar con Google**.
+5. Abre la URL de Pages y pulsa **Conectar con Google**.
 
-El workflow genera `config.js` en CI y publica solo runtime en `site/` (HTML/JS/CSS/icons/manifest/config), sin capturas ni JSON de TV Time.
+El workflow genera `config.js` en CI y publica el runtime en `site/`.
 
 ### C) Local (opcional)
 
@@ -95,10 +108,7 @@ python server.py
 
 ## Limitación importante (sin servidor)
 
-Las claves del deploy **acaban en el navegador** (cualquiera puede verlas en el JS).  
-GitHub Secrets solo las ocultan del historial de git.
-
-Mitigación:
+Las claves del deploy **acaban en el navegador**. GitHub Secrets solo las ocultan del historial de git.
 
 - Client ID protegido por orígenes autorizados
 - TMDB: key de uso público típico; si hay abuso, rotar
@@ -109,9 +119,12 @@ Mitigación:
 ## Login y sync
 
 1. Gate inicial: conectar Google (popup OAuth).
-2. Se carga / fusiona la biblioteca de Drive con lo local (backup en `localStorage` antes del merge).
-3. **Sincronizar** (Perfil → Ajustes) hace el mismo flujo: snapshot → pull → merge → push.
+2. Carga / fusión de Drive con lo local (backup en `localStorage` antes del merge).
+3. **Sincronizar** (Perfil → Ajustes): snapshot → pull → merge → push.
 4. Visitas siguientes pueden renovar el token en silencio si sigue válido.
+5. Tras un deploy, el banner **Nueva versión disponible** permite recargar el shell (SW).
+
+Detalle: [`docs/03-persistencia-y-sync.md`](docs/03-persistencia-y-sync.md), [`docs/05-drive-oauth.md`](docs/05-drive-oauth.md).
 
 ---
 
@@ -130,7 +143,20 @@ Mitigación:
 | `config.example.js` | Plantilla de claves |
 | `config.js` | Claves locales / CI (**no commitear**) |
 | `server.py` | Servidor estático local |
+| `docs/` | **Manual técnico** |
 | `.github/workflows/deploy-pages.yml` | Deploy Pages + inyección de secrets |
+
+---
+
+## Novedades recientes (resumen)
+
+- Timeline pendiente con ancla, historial y `continueBoostAt` por temporada nueva
+- Filtros de películas (género / plataforma / duración) + providers unificados
+- Crítica personal en ficha; badge de estado en el hero
+- Sticky chrome sin huecos; banner SW sobre el bottom nav
+- Documentación en `docs/`
+
+Más contexto: [`docs/15-decisiones-y-historial.md`](docs/15-decisiones-y-historial.md).
 
 ---
 
@@ -138,15 +164,16 @@ Mitigación:
 
 | Síntoma | Qué revisar |
 |---|---|
-| “Falta configuración” | Secrets mal puestos o workflow sin generar `config.js` |
-| `origin_mismatch` | Añade `window.location.origin` exacto en Orígenes JavaScript autorizados |
-| Amigo no puede entrar | Consent screen en **Prueba** → **Publicar**; o origen Pages mal configurado |
-| Popup no aparece | Permitir ventanas emergentes para el sitio |
-| TMDB 401 | Secret `TMDB_API_KEY` incorrecto |
-| App “vieja” tras un deploy | Recarga forzada; el SW avisa cuando hay nueva versión |
+| “Falta configuración” | Secrets o workflow sin `config.js` |
+| `origin_mismatch` | `window.location.origin` en Orígenes JavaScript autorizados |
+| Amigo no puede entrar | Consent screen **Publicar**; origen Pages |
+| Popup bloqueado | Permitir popups |
+| TMDB 401 | `TMDB_API_KEY` |
+| App “vieja” | Banner de recarga / hard refresh; bump SW en `sw.js` |
+| Hueco bajo pestañas sticky | Alturas medidas en `syncMobileChromeHeights` |
 
 ---
 
 ## Privacidad
 
-Los datos de cada usuario viven en su Google Drive (scope `drive.file`). No hay servidor tuyo que almacene bibliotecas ajenas. Un backup local adicional se guarda en el navegador (`seenit_data` / `seenit_data_backup`) antes de reconciliar con Drive.
+Los datos viven en el Google Drive del usuario (scope `drive.file`). No hay servidor propio que almacene bibliotecas ajenas. Backup local en el navegador (`seenit_data__*`, `seenit_data_backup`) antes de reconciliar con Drive.
