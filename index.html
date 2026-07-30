@@ -62,6 +62,7 @@
                     <button type="button" onclick="switchMoviesSubTab('upcoming')" id="movies-subtab-upcoming" class="tvst-subnav-tab">Próximamente</button>
                 </nav>
                 <div id="movies-subtab-content-pending-list" class="tvst-tab-panel">
+                    <div id="movies-pending-filters" class="tvst-movies-filters" aria-label="Filtros pendientes"></div>
                     <div id="movies-pending-list-container" class="tvst-poster-grid">
                         <!-- filled by JS -->
                     </div>
@@ -280,7 +281,10 @@
                             <div class="tvst-hero-progress-track">
                                 <div id="modal-hero-progress" class="tvst-hero-progress-fill" style="width:0%"></div>
                             </div>
-                            <p id="modal-hero-meta" class="tvst-hero-meta"></p>
+                            <div class="tvst-hero-meta-row">
+                                <p id="modal-hero-meta" class="tvst-hero-meta"></p>
+                                <span id="modal-hero-status" class="tvst-hero-status-badge hidden"></span>
+                            </div>
                         </div>
                     </div>
                 </header>
@@ -420,6 +424,10 @@
                 reloadBtn?.addEventListener('click', () => {
                     if (waitingWorker) {
                         waitingWorker.postMessage({ type: 'SKIP_WAITING' });
+                        // Si controllerchange no llega, forzar recarga
+                        setTimeout(() => {
+                            if (!refreshing) location.reload();
+                        }, 800);
                     } else {
                         location.reload();
                     }

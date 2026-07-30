@@ -730,10 +730,12 @@ html, body {
     gap: 0.5rem 0.75rem;
     padding: 0.75rem 0 0.55rem;
     position: sticky;
-    top: var(--tvst-profile-tabs-h);
-    z-index: 19;
+    top: calc(var(--tvst-profile-tabs-h) - 2px);
+    z-index: 40;
     background: #000;
+    border-top: none;
     border-bottom: 1px solid var(--tvst-border);
+    box-shadow: 0 -2px 0 #000;
 }
 
 .tvst-profile-search {
@@ -1348,6 +1350,223 @@ html, body {
     color: #888 !important;
 }
 
+/* ── Movies pending filters ── */
+.tvst-movies-filters {
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    border-top: none;
+    border-bottom: 1px solid var(--tvst-border);
+    background: #000;
+    position: sticky;
+    top: calc(var(--tvst-subnav-h) - 2px);
+    z-index: 40;
+    margin-top: 0;
+    box-shadow: 0 -2px 0 #000;
+}
+
+.tvst-movies-filters-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    width: 100%;
+    padding: 0.75rem 0.85rem;
+    border: none;
+    background: transparent;
+    color: #fff;
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    cursor: pointer;
+}
+
+.tvst-movies-filters-toggle:hover {
+    transform: none;
+    color: var(--tvst-accent);
+}
+
+.tvst-movies-filters-chevron {
+    transition: transform 0.2s ease;
+    color: #888;
+    flex-shrink: 0;
+}
+
+.tvst-movies-filters.is-open .tvst-movies-filters-chevron {
+    transform: rotate(180deg);
+    color: var(--tvst-accent);
+}
+
+.tvst-movies-filters-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    padding: 0 0.75rem 0.85rem;
+}
+
+.tvst-movies-filters-panel.hidden {
+    display: none;
+}
+
+.tvst-filter-row {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    min-width: 0;
+}
+
+.tvst-filter-row-label {
+    font-size: 0.6rem;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--tvst-muted);
+}
+
+.tvst-filter-chips {
+    display: flex;
+    flex-wrap: nowrap;
+    gap: 0.4rem;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    padding-bottom: 0.15rem;
+}
+
+.tvst-filter-chips::-webkit-scrollbar {
+    display: none;
+}
+
+@media (min-width: 768px) {
+    .tvst-filter-chips {
+        flex-wrap: wrap;
+        overflow-x: visible;
+    }
+}
+
+.tvst-filter-chip {
+    flex: 0 0 auto;
+    border: 1px solid var(--tvst-border);
+    background: #111;
+    color: #ccc;
+    font-size: 0.7rem;
+    font-weight: 600;
+    padding: 0.35rem 0.7rem;
+    border-radius: 9999px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.tvst-filter-chip.is-active {
+    border-color: var(--tvst-accent);
+    background: rgba(250, 204, 21, 0.12);
+    color: var(--tvst-accent);
+}
+
+.tvst-filter-chip:hover {
+    transform: none;
+    color: #fff;
+}
+
+.tvst-filter-runtime {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+}
+
+.tvst-filter-runtime-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 0.75rem;
+}
+
+.tvst-filter-runtime-value {
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--tvst-accent);
+}
+
+.tvst-filter-runtime-range {
+    width: 100%;
+    accent-color: var(--tvst-accent);
+    cursor: pointer;
+}
+
+.tvst-filter-runtime-ends {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.6rem;
+    color: #666;
+    letter-spacing: 0.04em;
+}
+
+/* ── Critica ── */
+.tvst-critica-section {
+    margin-top: -0.35rem;
+}
+
+.tvst-critica-input {
+    width: 100%;
+    box-sizing: border-box;
+    min-height: 7rem;
+    padding: 0.75rem 0.85rem;
+    border: 1px solid var(--tvst-border);
+    border-radius: 0.5rem;
+    background: #111;
+    color: #fff;
+    font-size: 0.875rem;
+    line-height: 1.5;
+    resize: vertical;
+    margin-bottom: 0.65rem;
+}
+
+.tvst-critica-input:focus {
+    outline: 1px solid var(--tvst-accent);
+    border-color: var(--tvst-accent);
+}
+
+.tvst-critica-text {
+    font-size: 0.875rem;
+    color: #ccc;
+    line-height: 1.55;
+    white-space: pre-wrap;
+    margin: 0 0 0.75rem;
+}
+
+.tvst-critica-add,
+.tvst-critica-edit,
+.tvst-critica-save {
+    border: 1px solid var(--tvst-border);
+    background: #111;
+    color: #fff;
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 0.55rem 0.9rem;
+    border-radius: 0.4rem;
+    cursor: pointer;
+}
+
+.tvst-critica-save {
+    border-color: var(--tvst-accent);
+    background: var(--tvst-accent);
+    color: #000;
+}
+
+.tvst-critica-add:hover,
+.tvst-critica-edit:hover {
+    transform: none;
+    border-color: #555;
+}
+
+.tvst-critica-save:hover {
+    transform: none;
+    filter: brightness(0.95);
+}
+
 .tvst-hero-fade {
     position: absolute;
     inset: 0;
@@ -1379,9 +1598,57 @@ html, body {
 }
 
 .tvst-hero-meta {
-    margin: 0.35rem 0 0;
+    margin: 0;
     font-size: 0.8rem;
     color: #ddd;
+    flex: 1;
+    min-width: 0;
+}
+
+.tvst-hero-meta-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    margin-top: 0.45rem;
+}
+
+.tvst-hero-status-badge {
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    padding: 0.2rem 0.55rem;
+    border-radius: 0.35rem;
+    font-size: 0.65rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    line-height: 1.2;
+}
+
+.tvst-hero-status-badge.is-pending {
+    background: #333;
+    color: #ccc;
+}
+
+.tvst-hero-status-badge.is-watching {
+    background: rgba(34, 197, 94, 0.25);
+    color: #4ade80;
+}
+
+.tvst-hero-status-badge.is-completed {
+    background: rgba(168, 85, 247, 0.28);
+    color: #c084fc;
+}
+
+.tvst-hero-status-badge.is-dropped {
+    background: rgba(239, 68, 68, 0.28);
+    color: #f87171;
+}
+
+.tvst-hero-status-badge.is-standby {
+    background: rgba(245, 158, 11, 0.25);
+    color: #fbbf24;
 }
 
 .tvst-hero-pct {
@@ -2383,12 +2650,14 @@ html, body {
 
 .tvst-favorites-header {
     position: sticky;
-    top: 2.85rem;
-    z-index: 18;
+    top: calc(var(--tvst-profile-tabs-h) - 2px);
+    z-index: 40;
     background: #000;
     padding: 0.55rem 0 0.5rem;
     margin-bottom: 0.65rem;
+    border-top: none;
     border-bottom: 1px solid var(--tvst-border);
+    box-shadow: 0 -2px 0 #000;
 }
 
 .tvst-favorites-rail {
@@ -2611,13 +2880,14 @@ html, body {
 .tvst-sw-banner {
     position: fixed;
     left: 50%;
-    bottom: 5.5rem;
+    bottom: calc(var(--tvst-bottom-nav-h) + var(--tvst-safe-bottom) + 0.75rem);
     transform: translateX(-50%);
-    z-index: 80;
+    z-index: 90;
     display: flex;
     align-items: center;
     gap: 0.75rem;
     max-width: calc(100vw - 1.5rem);
+    width: max-content;
     padding: 0.75rem 1rem;
     border-radius: 0.75rem;
     background: #1c1c1e;
@@ -2638,8 +2908,5 @@ html, body {
     font-weight: 800;
     font-size: 0.8rem;
     cursor: pointer;
-}
-@media (min-width: 768px) {
-    .tvst-sw-banner { bottom: 1.5rem; }
 }
 

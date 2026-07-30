@@ -30,6 +30,11 @@ const AppState = {
     profileExpanded: { series: false, movies: false, favoritesSeries: false, favoritesMovies: false },
     listSortMode: 'added',
     detailRecsExpanded: false,
+    detailCriticaEditing: false,
+    moviesPendingGenreFilter: 'all',
+    moviesPendingPlatformFilter: 'all',
+    moviesPendingMaxRuntime: null,
+    moviesPendingFiltersOpen: false,
     lastSearchResults: [],
     selectedItem: null,
     selectedEpisode: null,
@@ -481,6 +486,7 @@ function normalizeStoredMovie(movie) {
     normalized.favorito = Boolean(normalized.favorito);
     const score = Number(normalized.puntuacion);
     normalized.puntuacion = Number.isFinite(score) && score > 0 ? Math.min(10, score) : 0;
+    normalized.critica = typeof normalized.critica === 'string' ? normalized.critica : '';
     normalized.updatedAt = normalized.updatedAt || normalized.lastModified || nowIso();
     return normalized;
 }
@@ -504,6 +510,8 @@ function normalizeStoredShow(show) {
     normalized.favorito = Boolean(normalized.favorito);
     const score = Number(normalized.puntuacion);
     normalized.puntuacion = Number.isFinite(score) && score > 0 ? Math.min(10, score) : 0;
+    normalized.critica = typeof normalized.critica === 'string' ? normalized.critica : '';
+    normalized.continueBoostAt = typeof normalized.continueBoostAt === 'string' ? normalized.continueBoostAt : '';
     if (normalized.metaCheckedAt) {
         normalized.metaCheckedAt = String(normalized.metaCheckedAt);
     }
@@ -1157,11 +1165,12 @@ let pendingAnchorScrollGeneration = 0;
 
 function syncMobileChromeHeights() {
     const root = document.documentElement;
-    const isMobile = window.matchMedia('(max-width: 767px)').matches;
     const measure = (el, fallbackPx) => {
         if (!el) return fallbackPx;
         const hidden = el.classList.contains('hidden') || el.classList.contains('is-hidden');
-        if (hidden) return 0;
+        if (hidden) return fallbackPx;
+        const parentHidden = el.closest('.tab-content.hidden, .hidden');
+        if (parentHidden) return fallbackPx;
         const rect = el.getBoundingClientRect();
         return Math.round(rect.height) || el.offsetHeight || fallbackPx;
     };
@@ -1174,15 +1183,10 @@ function syncMobileChromeHeights() {
     const profileTabs = document.querySelector('.tvst-profile-tabs');
     const bottomNav = document.querySelector('.tvst-bottom-nav');
 
-    if (isMobile) {
-        root.style.setProperty('--tvst-subnav-h', `${measure(activeSubnav, 48)}px`);
-        root.style.setProperty('--tvst-profile-tabs-h', `${measure(profileTabs, 46)}px`);
-        root.style.setProperty('--tvst-bottom-nav-h', `${measure(bottomNav, 56)}px`);
-    } else {
-        root.style.setProperty('--tvst-subnav-h', '3rem');
-        root.style.setProperty('--tvst-profile-tabs-h', '2.85rem');
-        root.style.setProperty('--tvst-bottom-nav-h', '3.5rem');
-    }
+    // Medir siempre (también en desktop) para evitar huecos sticky
+    root.style.setProperty('--tvst-subnav-h', `${measure(activeSubnav, 48)}px`);
+    root.style.setProperty('--tvst-profile-tabs-h', `${measure(profileTabs, 46)}px`);
+    root.style.setProperty('--tvst-bottom-nav-h', `${measure(bottomNav, 56)}px`);
 }
 
 function scheduleSyncMobileChromeHeights() {
@@ -1423,17 +1427,390 @@ async function renderMoviesView() {
     }
 }
 
+function getMoviesPendingBaseList() {
+    return AppState.movies
+        .filter(movie => normalizeStatus(movie.estado) !== 'completed')
+        .filter(movie => isMovieReleased(movie))
+        .sort((a, b) => (a.titulo || '').localeCompare(b.titulo || '', 'es', { sensitivity: 'base' }));
+}
+
+const FEATURED_PROVIDERS = [
+    'Netflix',
+    'Prime Video',
+    'Disney+',
+    'Max',
+    'Movistar Plus+',
+    'Apple TV',
+    'SkyShowtime',
+    'RTVE',
+    'Atresplayer',
+    'Filmin',
+    'Rakuten',
+];
+const PROVIDER_OTHER = 'Otros';
+
+function normalizeProviderName(raw) {
+    const name = String(raw || '').trim();
+    if (!name) return '';
+    const lower = name.toLowerCase();
+
+    if (/amazon|prime\s*video/.test(lower)) return 'Prime Video';
+    if (/netflix/.test(lower)) return 'Netflix';
+    if (/disney/.test(lower)) return 'Disney+';
+    if (/\bhbo\b|hbo max|\bmax\b/.test(lower)) return 'Max';
+    if (/movistar/.test(lower)) return 'Movistar Plus+';
+    if (/apple\s*tv/.test(lower)) return 'Apple TV';
+    if (/skyshowtime|sky showtime/.test(lower)) return 'SkyShowtime';
+    if (/rtve/.test(lower)) return 'RTVE';
+    if (/atresplayer|atresmedia|atres media/.test(lower)) return 'Atresplayer';
+    if (/filmin/.test(lower)) return 'Filmin';
+    if (/rakuten/.test(lower)) return 'Rakuten';
+
+    return name;
+}
+
+function isFeaturedProvider(name) {
+    return FEATURED_PROVIDERS.includes(name);
+}
+
+function getMovieProviderNames(movie) {
+    return [...new Set((movie.watch_providers || [])
+        .map(p => normalizeProviderName(p.provider_name))
+        .filter(Boolean))];
+}
+
+function itemHasOtherProviders(item) {
+    return getMovieProviderNames(item).some(name => !isFeaturedProvider(name));
+}
+
+function orderFilterChipValues(values, active) {
+    const unique = [...new Set(values.filter(Boolean))];
+    const rest = unique
+        .filter(v => v !== active)
+        .sort((a, b) => a.localeCompare(b, 'es', { sensitivity: 'base' }));
+    if (active && active !== 'all' && unique.includes(active)) {
+        return [active, ...rest];
+    }
+    return rest;
+}
+
+function getPendingPlatformChipValues(pending) {
+    const all = new Set(pending.flatMap(getMovieProviderNames));
+    const featured = FEATURED_PROVIDERS.filter(name => all.has(name));
+    const hasOtros = [...all].some(name => !isFeaturedProvider(name));
+    const values = [...featured];
+    if (hasOtros) values.push(PROVIDER_OTHER);
+    return values;
+}
+
+function movieMatchesPendingFilters(movie) {
+    const genre = AppState.moviesPendingGenreFilter;
+    if (genre && genre !== 'all') {
+        const genres = movie.generos || [];
+        if (!genres.includes(genre)) return false;
+    }
+
+    const platform = AppState.moviesPendingPlatformFilter;
+    if (platform && platform !== 'all') {
+        if (platform === PROVIDER_OTHER) {
+            if (!itemHasOtherProviders(movie)) return false;
+        } else if (!getMovieProviderNames(movie).includes(platform)) {
+            return false;
+        }
+    }
+
+    const maxRuntime = AppState.moviesPendingMaxRuntime;
+    if (maxRuntime != null) {
+        const runtime = Number(movie.runtime);
+        if (!(runtime > 0) || runtime > maxRuntime) return false;
+    }
+
+    return true;
+}
+
+function getMoviesPendingRuntimeBounds(pending) {
+    const runtimes = pending.map(m => Number(m.runtime)).filter(n => n > 0);
+    const dataMax = runtimes.length ? Math.max(...runtimes) : 180;
+    const sliderMin = 60;
+    const sliderMax = Math.max(sliderMin + 30, Math.ceil(dataMax / 15) * 15, 180);
+    return { sliderMin, sliderMax };
+}
+
+function renderMoviesPendingFilters(pending) {
+    const filtersEl = document.getElementById('movies-pending-filters');
+    if (!filtersEl) return;
+
+    // Migrar selección antigua (p.ej. "Amazon Prime Video") al canónico
+    const rawPlatform = AppState.moviesPendingPlatformFilter || 'all';
+    if (rawPlatform !== 'all' && rawPlatform !== PROVIDER_OTHER) {
+        const normalized = normalizeProviderName(rawPlatform);
+        AppState.moviesPendingPlatformFilter = isFeaturedProvider(normalized)
+            ? normalized
+            : (normalized ? PROVIDER_OTHER : 'all');
+    }
+
+    const genres = orderFilterChipValues(
+        [...new Set(pending.flatMap(m => m.generos || []))].filter(Boolean),
+        AppState.moviesPendingGenreFilter || 'all',
+    );
+    const platforms = orderFilterChipValues(
+        getPendingPlatformChipValues(pending),
+        AppState.moviesPendingPlatformFilter || 'all',
+    );
+
+    const { sliderMin, sliderMax } = getMoviesPendingRuntimeBounds(pending);
+    const maxRuntime = AppState.moviesPendingMaxRuntime;
+    const sliderValue = maxRuntime == null ? sliderMax : Math.min(sliderMax, Math.max(sliderMin, maxRuntime));
+    const runtimeLabel = maxRuntime == null ? 'Sin límite' : `Hasta ${maxRuntime} min`;
+
+    const genreActive = AppState.moviesPendingGenreFilter || 'all';
+    const platformActive = AppState.moviesPendingPlatformFilter || 'all';
+    const open = Boolean(AppState.moviesPendingFiltersOpen);
+    const activeCount = [
+        genreActive !== 'all',
+        platformActive !== 'all',
+        maxRuntime != null,
+    ].filter(Boolean).length;
+
+    const chip = (label, active, filterKey, value) => `
+        <button type="button"
+            class="tvst-filter-chip${active ? ' is-active' : ''}"
+            data-filter-key="${escapeHtml(filterKey)}"
+            data-filter-value="${escapeHtml(value)}">
+            ${escapeHtml(label)}
+        </button>
+    `;
+
+    filtersEl.className = `tvst-movies-filters${open ? ' is-open' : ''}`;
+    filtersEl.innerHTML = `
+        <button type="button" class="tvst-movies-filters-toggle" data-filter-toggle="1" aria-expanded="${open}">
+            <span>Filtros${activeCount ? ` · ${activeCount}` : ''}</span>
+            <svg class="tvst-movies-filters-chevron" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
+        </button>
+        <div class="tvst-movies-filters-panel${open ? '' : ' hidden'}" data-filter-panel="1">
+            <div class="tvst-filter-row" aria-label="Género">
+                <span class="tvst-filter-row-label">Género</span>
+                <div class="tvst-filter-chips" data-filter-group="genre">
+                    ${chip('Todas', genreActive === 'all', 'genre', 'all')}
+                    ${genres.map(g => chip(g, genreActive === g, 'genre', g)).join('')}
+                </div>
+            </div>
+            <div class="tvst-filter-row" aria-label="Plataforma">
+                <span class="tvst-filter-row-label">Plataforma</span>
+                <div class="tvst-filter-chips" data-filter-group="platform">
+                    ${chip('Todas', platformActive === 'all', 'platform', 'all')}
+                    ${platforms.map(p => chip(p, platformActive === p, 'platform', p)).join('')}
+                </div>
+            </div>
+            <div class="tvst-filter-runtime">
+                <div class="tvst-filter-runtime-head">
+                    <span class="tvst-filter-row-label">Duración máx.</span>
+                    <span class="tvst-filter-runtime-value" id="movies-pending-runtime-label">${escapeHtml(runtimeLabel)}</span>
+                </div>
+                <input
+                    type="range"
+                    class="tvst-filter-runtime-range"
+                    id="movies-pending-runtime-range"
+                    min="${sliderMin}"
+                    max="${sliderMax}"
+                    step="5"
+                    value="${sliderValue}"
+                    aria-label="Duración máxima en minutos"
+                >
+                <div class="tvst-filter-runtime-ends">
+                    <span>${sliderMin} min</span>
+                    <span>Sin límite</span>
+                </div>
+            </div>
+        </div>
+    `;
+
+    const rangeEl = document.getElementById('movies-pending-runtime-range');
+    if (rangeEl) {
+        rangeEl.addEventListener('input', () => {
+            setMoviesPendingMaxRuntime(rangeEl.value, { live: true });
+        });
+    }
+
+    if (!filtersEl.dataset.chipBound) {
+        filtersEl.dataset.chipBound = '1';
+        filtersEl.addEventListener('click', (event) => {
+            const toggle = event.target.closest('[data-filter-toggle]');
+            if (toggle && filtersEl.contains(toggle)) {
+                event.preventDefault();
+                toggleMoviesPendingFilters();
+                return;
+            }
+            const btn = event.target.closest('.tvst-filter-chip');
+            if (!btn || !filtersEl.contains(btn)) return;
+            const key = btn.dataset.filterKey;
+            const value = btn.dataset.filterValue;
+            if (key === 'genre') setMoviesPendingGenreFilter(value);
+            else if (key === 'platform') setMoviesPendingPlatformFilter(value);
+        });
+    }
+}
+
+function toggleMoviesPendingFilters() {
+    AppState.moviesPendingFiltersOpen = !AppState.moviesPendingFiltersOpen;
+    const filtersEl = document.getElementById('movies-pending-filters');
+    const panel = filtersEl?.querySelector('[data-filter-panel]');
+    const toggle = filtersEl?.querySelector('[data-filter-toggle]');
+    if (filtersEl && panel && toggle) {
+        filtersEl.classList.toggle('is-open', AppState.moviesPendingFiltersOpen);
+        panel.classList.toggle('hidden', !AppState.moviesPendingFiltersOpen);
+        toggle.setAttribute('aria-expanded', String(AppState.moviesPendingFiltersOpen));
+        return;
+    }
+    renderMoviesPendingList();
+}
+
+function setMoviesPendingGenreFilter(genre) {
+    AppState.moviesPendingGenreFilter = genre || 'all';
+    renderMoviesPendingList();
+}
+
+function setMoviesPendingPlatformFilter(platform) {
+    AppState.moviesPendingPlatformFilter = platform || 'all';
+    renderMoviesPendingList();
+}
+
+function setMoviesPendingMaxRuntime(rawValue, options = {}) {
+    const pending = getMoviesPendingBaseList();
+    const { sliderMin, sliderMax } = getMoviesPendingRuntimeBounds(pending);
+    const value = Number(rawValue);
+    if (!Number.isFinite(value) || value >= sliderMax) {
+        AppState.moviesPendingMaxRuntime = null;
+    } else {
+        AppState.moviesPendingMaxRuntime = Math.max(sliderMin, Math.round(value));
+    }
+
+    const labelEl = document.getElementById('movies-pending-runtime-label');
+    if (labelEl) {
+        labelEl.textContent = AppState.moviesPendingMaxRuntime == null
+            ? 'Sin límite'
+            : `Hasta ${AppState.moviesPendingMaxRuntime} min`;
+    }
+
+    // Actualizar contador del toggle sin recrear el slider
+    const toggle = document.querySelector('#movies-pending-filters [data-filter-toggle] span');
+    if (toggle) {
+        const activeCount = [
+            (AppState.moviesPendingGenreFilter || 'all') !== 'all',
+            (AppState.moviesPendingPlatformFilter || 'all') !== 'all',
+            AppState.moviesPendingMaxRuntime != null,
+        ].filter(Boolean).length;
+        toggle.textContent = activeCount ? `Filtros · ${activeCount}` : 'Filtros';
+    }
+
+    if (options.live) {
+        applyMoviesPendingFilters();
+        return;
+    }
+    renderMoviesPendingList();
+}
+
+function applyMoviesPendingFilters() {
+    const container = document.getElementById('movies-pending-list-container');
+    if (!container) return;
+
+    const pending = getMoviesPendingBaseList();
+    const filtered = pending.filter(movieMatchesPendingFilters);
+
+    container.className = 'tvst-poster-grid';
+    if (!pending.length) {
+        container.innerHTML = emptyState(
+            'film',
+            'No hay películas pendientes',
+            {
+                subtitle: 'Añade películas desde Explorar.',
+                actionLabel: 'Explorar',
+                actionOnClick: "switchTab('explore')",
+            },
+        );
+    } else if (!filtered.length) {
+        container.innerHTML = emptyState('film', 'Ninguna película con estos filtros', {
+            subtitle: 'Prueba a relajar género, plataforma o duración.',
+        });
+    } else {
+        container.innerHTML = renderMoviePosterGrid(filtered, { showWatchToggle: true });
+    }
+}
+
+async function ensureMovieFilterMeta(pending) {
+    const missing = pending.filter(m => !Array.isArray(m.generos) || !m.generos.length || !(Number(m.runtime) > 0));
+    if (!missing.length || typeof getMovieDetails !== 'function') return false;
+
+    let changed = false;
+    const batch = missing.slice(0, 12);
+    await Promise.all(batch.map(async (movie) => {
+        try {
+            const details = await getMovieDetails(movie.id_tmdb);
+            if (Array.isArray(details?.generos) && details.generos.length && !movie.generos?.length) {
+                movie.generos = details.generos;
+                changed = true;
+            }
+            if (Number(details?.runtime) > 0 && !(Number(movie.runtime) > 0)) {
+                movie.runtime = Number(details.runtime);
+                changed = true;
+            }
+            if (!Array.isArray(movie.generos)) movie.generos = [];
+        } catch (error) {
+            console.warn('[App] Meta filtro película:', movie.titulo, error);
+            if (!Array.isArray(movie.generos)) movie.generos = [];
+        }
+    }));
+    if (changed) saveLocalData();
+    return changed;
+}
+
 function renderMoviesPendingList() {
     const container = document.getElementById('movies-pending-list-container');
     if (!container) return;
 
-    const pending = AppState.movies
-        .filter(movie => normalizeStatus(movie.estado) !== 'completed')
-        .filter(movie => isMovieReleased(movie))
-        .sort((a, b) => (a.titulo || '').localeCompare(b.titulo || '', 'es', { sensitivity: 'base' }));
+    const pending = getMoviesPendingBaseList();
+    renderMoviesPendingFilters(pending);
+    applyMoviesPendingFilters();
 
-    container.className = 'tvst-poster-grid';
-    container.innerHTML = renderMoviePosterGrid(pending, { showWatchToggle: true });
+    // Hidratar géneros/runtime y plataformas en background
+    if (!window.__seenitMoviesFilterMetaHydrating) {
+        const needsMeta = pending.some(m => !Array.isArray(m.generos) || !m.generos.length || !(Number(m.runtime) > 0));
+        const needsProviders = pending.some(m => !Array.isArray(m.watch_providers));
+        if (needsMeta || needsProviders) {
+            window.__seenitMoviesFilterMetaHydrating = true;
+            void (async () => {
+                try {
+                    let shouldRerender = false;
+                    if (needsMeta) {
+                        shouldRerender = (await ensureMovieFilterMeta(pending)) || shouldRerender;
+                    }
+                    if (needsProviders) {
+                        let guard = 0;
+                        while (guard < 10 && AppState.movies.some(m => !Array.isArray(m.watch_providers))) {
+                            const before = AppState.movies.filter(m => !Array.isArray(m.watch_providers)).length;
+                            await ensureProvidersForLibrary('movie');
+                            const after = AppState.movies.filter(m => !Array.isArray(m.watch_providers)).length;
+                            shouldRerender = true;
+                            if (after >= before) {
+                                AppState.movies.forEach(m => {
+                                    if (!Array.isArray(m.watch_providers)) m.watch_providers = [];
+                                });
+                                break;
+                            }
+                            guard += 1;
+                        }
+                    }
+                    if (shouldRerender
+                        && AppState.currentTab === 'movies'
+                        && AppState.currentMoviesSubTab === 'pending-list') {
+                        renderMoviesPendingList();
+                    }
+                } finally {
+                    window.__seenitMoviesFilterMetaHydrating = false;
+                }
+            })();
+        }
+    }
 }
 
 function renderMoviesUpcomingList() {
@@ -1591,8 +1968,11 @@ function getDaysSinceWatchActivity(isoDate) {
     return Math.round((today - watched) / 86400000);
 }
 
-/** Serie en «continuar» si avanzó capítulos en los últimos 14 días; si no, «Sin ver por un tiempo». */
+/** Serie en «continuar» si avanzó capítulos o tuvo boost (p.ej. temporada nueva) en los últimos 14 días. */
 function isShowInContinueSection(show) {
+    if (show?.continueBoostAt && getDaysSinceWatchActivity(show.continueBoostAt) <= 14) {
+        return true;
+    }
     const lastActivity = getShowLastWatchActivity(show);
     if (!lastActivity) {
         const watched = show?.capitulos_vistos?.length || 0;
@@ -3213,18 +3593,25 @@ function matchesProfileSearch(item, query) {
 
 function matchesProfilePlatform(item, platform) {
     if (!platform || platform === 'all') return true;
-    const providers = item?.watch_providers || [];
-    return providers.some(p => p?.provider_name === platform);
+    const names = getMovieProviderNames(item);
+    if (platform === PROVIDER_OTHER) {
+        return names.some(name => !isFeaturedProvider(name));
+    }
+    return names.includes(platform);
 }
 
 function collectUniqueProviders(items) {
-    const names = new Set();
+    const present = new Set();
+    let hasOtros = false;
     for (const item of items || []) {
-        for (const p of item.watch_providers || []) {
-            if (p?.provider_name) names.add(p.provider_name);
+        for (const name of getMovieProviderNames(item)) {
+            if (isFeaturedProvider(name)) present.add(name);
+            else hasOtros = true;
         }
     }
-    return [...names].sort((a, b) => a.localeCompare(b, 'es', { sensitivity: 'base' }));
+    const list = FEATURED_PROVIDERS.filter(name => present.has(name));
+    if (hasOtros) list.push(PROVIDER_OTHER);
+    return list;
 }
 
 function populatePlatformSelect(selectId, items, selected) {
@@ -3240,6 +3627,15 @@ function populatePlatformSelect(selectId, items, selected) {
 }
 
 function populatePlatformFilters() {
+    // Migrar valores antiguos del perfil a canónicos
+    if (AppState.profileSeriesPlatform && AppState.profileSeriesPlatform !== 'all' && AppState.profileSeriesPlatform !== PROVIDER_OTHER) {
+        const n = normalizeProviderName(AppState.profileSeriesPlatform);
+        AppState.profileSeriesPlatform = isFeaturedProvider(n) ? n : PROVIDER_OTHER;
+    }
+    if (AppState.profileMoviesPlatform && AppState.profileMoviesPlatform !== 'all' && AppState.profileMoviesPlatform !== PROVIDER_OTHER) {
+        const n = normalizeProviderName(AppState.profileMoviesPlatform);
+        AppState.profileMoviesPlatform = isFeaturedProvider(n) ? n : PROVIDER_OTHER;
+    }
     populatePlatformSelect('profile-series-platform', AppState.shows, AppState.profileSeriesPlatform);
     populatePlatformSelect('profile-movies-platform', AppState.movies, AppState.profileMoviesPlatform);
     AppState.profileSeriesPlatform = document.getElementById('profile-series-platform')?.value || 'all';
@@ -3248,20 +3644,17 @@ function populatePlatformFilters() {
 
 async function ensureProvidersForLibrary(tipo) {
     const items = tipo === 'movie' ? AppState.movies : AppState.shows;
-    const missing = items.filter(item => !item.watch_providers || item.watch_providers.length === 0);
+    const missing = items.filter(item => !Array.isArray(item.watch_providers));
     if (!missing.length || typeof getWatchProviders !== 'function') return;
 
     const batch = missing.slice(0, 20);
     await Promise.all(batch.map(async (item) => {
         try {
             const providers = await getWatchProviders(tipo === 'movie' ? 'movie' : 'tv', item.id_tmdb);
-            if (providers?.length) {
-                item.watch_providers = providers;
-            } else {
-                item.watch_providers = item.watch_providers || [];
-            }
+            item.watch_providers = providers?.length ? providers : [];
         } catch (error) {
             console.warn('[App] No se pudieron cargar providers:', item.titulo, error);
+            item.watch_providers = [];
         }
     }));
     saveLocalData();
@@ -3379,6 +3772,7 @@ function renderDetailInfo(item) {
             ${ratingControl}
             <p class="tvst-info-overview tvst-nota-tmdb">TMDB: ${escapeHtml(String(voteAverage))}/10</p>
         </div>
+        ${renderCriticaSection(item, inLibrary)}
         <div class="tvst-info-section">
             <h3>Descripción</h3>
             <p class="tvst-info-overview">${escapeHtml(overview)}</p>
@@ -3440,6 +3834,86 @@ function renderDetailInfo(item) {
 function toggleDetailRecsExpanded() {
     AppState.detailRecsExpanded = !AppState.detailRecsExpanded;
     renderDetailInfo(AppState.selectedItem);
+}
+
+function renderCriticaSection(item, inLibrary) {
+    if (!inLibrary) return '';
+
+    const text = typeof item?.critica === 'string' ? item.critica : '';
+    const trimmed = text.trim();
+    const editing = Boolean(AppState.detailCriticaEditing);
+
+    if (editing) {
+        return `
+            <div class="tvst-info-section tvst-critica-section">
+                <h3>Crítica</h3>
+                <textarea id="detail-critica-input" class="tvst-critica-input" rows="5" placeholder="Escribe tu crítica…">${escapeHtml(text)}</textarea>
+                <button type="button" class="tvst-critica-save" onclick="saveItemCritica()">Guardar</button>
+            </div>
+        `;
+    }
+
+    if (trimmed) {
+        return `
+            <div class="tvst-info-section tvst-critica-section">
+                <h3>Crítica</h3>
+                <p class="tvst-critica-text">${escapeHtml(trimmed)}</p>
+                <button type="button" class="tvst-critica-edit" onclick="startEditCritica()">Modificar crítica</button>
+            </div>
+        `;
+    }
+
+    return `
+        <div class="tvst-info-section tvst-critica-section">
+            <button type="button" class="tvst-critica-add" onclick="startEditCritica()">Añadir crítica</button>
+        </div>
+    `;
+}
+
+function startEditCritica() {
+    const item = AppState.selectedItem;
+    if (!item || !isItemAlreadyAdded(item.tipo, item.id_tmdb)) {
+        showToast('Añádela a tu lista para escribir una crítica', 'info');
+        return;
+    }
+    AppState.detailCriticaEditing = true;
+    renderDetailInfo(AppState.selectedItem);
+    requestAnimationFrame(() => {
+        document.getElementById('detail-critica-input')?.focus();
+    });
+}
+
+function updateCritica(type, id_tmdb, text) {
+    const value = typeof text === 'string' ? text : '';
+    if (type === 'movie') {
+        const movie = AppState.movies.find(m => m.id_tmdb === id_tmdb);
+        if (!movie) return;
+        movie.critica = value;
+        touchUpdatedAt(movie);
+    } else {
+        const show = AppState.shows.find(s => s.id_tmdb === id_tmdb);
+        if (!show) return;
+        show.critica = value;
+        touchUpdatedAt(show);
+    }
+    saveLocalData();
+    syncToDrive();
+}
+
+function saveItemCritica() {
+    const item = AppState.selectedItem;
+    if (!item) return;
+    if (!isItemAlreadyAdded(item.tipo, item.id_tmdb)) {
+        showToast('Añádela a tu lista para escribir una crítica', 'info');
+        return;
+    }
+    const input = document.getElementById('detail-critica-input');
+    const value = input ? input.value : '';
+    updateCritica(item.tipo, item.id_tmdb, value);
+    AppState.selectedItem = { ...item, critica: value };
+    AppState.detailCriticaEditing = false;
+    renderDetailInfo(AppState.selectedItem);
+    showToast(value.trim() ? 'Crítica guardada' : 'Crítica eliminada', value.trim() ? 'success' : 'info');
 }
 
 function setPersonalRating(rating) {
@@ -3635,6 +4109,7 @@ async function refreshCompletedShowsForNewSeasons() {
 
         const afterEstado = normalizeStatus(show.estado);
         if (beforeEstado === 'completed' && afterEstado === 'watching') {
+            show.continueBoostAt = nowIso();
             touchUpdatedAt(show);
             reopened.push(show);
             changed = true;
@@ -4274,6 +4749,7 @@ function mergeDetailItem(existingItem, freshDetails) {
             ...freshDetails,
             puntuacion: Number(freshDetails?.puntuacion) > 0 ? Number(freshDetails.puntuacion) : 0,
             favorito: Boolean(freshDetails?.favorito),
+            critica: typeof freshDetails?.critica === 'string' ? freshDetails.critica : '',
         };
     }
     const existingScore = Number(existingItem.puntuacion) || 0;
@@ -4285,6 +4761,7 @@ function mergeDetailItem(existingItem, freshDetails) {
         estado: existingItem.estado || freshDetails.estado || 'pending',
         puntuacion: Math.max(existingScore, freshScore),
         favorito: Boolean(existingItem.favorito || freshDetails?.favorito),
+        critica: typeof existingItem.critica === 'string' ? existingItem.critica : '',
         capitulos_vistos: existingItem.capitulos_vistos || freshDetails.capitulos_vistos || [],
         capitulos_vistos_fecha: existingItem.capitulos_vistos_fecha || freshDetails.capitulos_vistos_fecha || {},
         credits: {
@@ -4481,10 +4958,43 @@ function getHeroProgressStyle(item) {
     return { progress: prog.progress, heroClass: 'is-yellow' };
 }
 
+function getHeroStatusInfo(item) {
+    if (!item || !isItemAlreadyAdded(item.tipo, item.id_tmdb)) return null;
+    const st = normalizeStatus(item.estado);
+    const isMovie = item.tipo === 'movie';
+    const labels = isMovie
+        ? {
+            pending: 'Pendiente',
+            watching: 'Viendo',
+            completed: 'Vista',
+            dropped: 'Abandonada',
+            standby: 'En espera',
+        }
+        : {
+            pending: 'Pendiente',
+            watching: 'Viendo',
+            completed: 'Completada',
+            dropped: 'Abandonada',
+            standby: 'En espera',
+        };
+    const classMap = {
+        pending: 'is-pending',
+        watching: 'is-watching',
+        completed: 'is-completed',
+        dropped: 'is-dropped',
+        standby: 'is-standby',
+    };
+    return {
+        label: labels[st] || labels.pending,
+        className: classMap[st] || classMap.pending,
+    };
+}
+
 function updateDetailHero(item) {
     const hero = document.getElementById('modal-hero');
     const titleEl = document.getElementById('modal-title');
     const metaEl = document.getElementById('modal-hero-meta');
+    const statusEl = document.getElementById('modal-hero-status');
     const pctEl = document.getElementById('modal-hero-progress-label');
     const fillEl = document.getElementById('modal-hero-progress');
     const trackEl = document.querySelector('.tvst-hero-progress-track');
@@ -4509,9 +5019,23 @@ function updateDetailHero(item) {
         if (metaEl) metaEl.textContent = parts.join(' • ');
     } else {
         const year = item.fecha_estreno ? new Date(item.fecha_estreno).getFullYear() : null;
+        const provider = item.watch_providers?.[0]?.provider_name;
         const parts = ['Película'];
         if (year) parts.push(String(year));
+        if (provider) parts.push(provider);
         if (metaEl) metaEl.textContent = parts.join(' • ');
+    }
+
+    if (statusEl) {
+        const statusInfo = getHeroStatusInfo(item);
+        if (statusInfo) {
+            statusEl.textContent = statusInfo.label;
+            statusEl.className = `tvst-hero-status-badge ${statusInfo.className}`;
+            statusEl.classList.remove('hidden');
+        } else {
+            statusEl.textContent = '';
+            statusEl.className = 'tvst-hero-status-badge hidden';
+        }
     }
 
     if (pctEl) {
@@ -4700,6 +5224,7 @@ async function openDetail(type, id_tmdb) {
     modal.classList.remove('hidden');
     document.getElementById('modal-actions')?.classList.add('hidden');
     AppState.detailRecsExpanded = false;
+    AppState.detailCriticaEditing = false;
 
     showLoading(true);
 
@@ -4769,6 +5294,7 @@ function closeModal() {
     document.getElementById('modal-add-bar')?.classList.add('hidden');
     document.querySelector('.tvst-modal-scroll')?.classList.remove('has-add-bar');
     closeDetailMenu();
+    AppState.detailCriticaEditing = false;
     AppState.selectedItem = null;
 }
 
@@ -5389,6 +5915,12 @@ window.removeContent = removeContent;
 window.setRating = setRating;
 window.setStatus = setStatus;
 window.setPersonalRating = setPersonalRating;
+window.setMoviesPendingGenreFilter = setMoviesPendingGenreFilter;
+window.setMoviesPendingPlatformFilter = setMoviesPendingPlatformFilter;
+window.setMoviesPendingMaxRuntime = setMoviesPendingMaxRuntime;
+window.toggleMoviesPendingFilters = toggleMoviesPendingFilters;
+window.startEditCritica = startEditCritica;
+window.saveItemCritica = saveItemCritica;
 window.handleEpisodeRowKeydown = handleEpisodeRowKeydown;
 window.toggleDetailMenu = toggleDetailMenu;
 window.runDetailMenuAction = runDetailMenuAction;
