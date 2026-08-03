@@ -38,6 +38,7 @@ const AppState = {
     lastSearchResults: [],
     selectedItem: null,
     selectedEpisode: null,
+    selectedPerson: null,
     selectedListId: null,
     listCoverPickMode: false,
     isDriveConnected: false,
@@ -1206,6 +1207,9 @@ function switchTab(tab) {
     }
     if (!document.getElementById('episode-modal')?.classList.contains('hidden')) {
         closeEpisodeModal();
+    }
+    if (!document.getElementById('person-modal')?.classList.contains('hidden')) {
+        closePersonModal();
     }
 
     AppState.currentTab = tab;
@@ -3794,8 +3798,14 @@ function renderDetailInfo(item) {
         <div class="tvst-info-section">
             <h3>Reparto</h3>
             <div class="tvst-cast-rail">
-                ${cast.length ? cast.map(person => `
-                    <article class="tvst-cast-card">
+                ${cast.length ? cast.map(person => {
+                    const pid = Number(person.id);
+                    const clickable = Number.isFinite(pid) && pid > 0;
+                    const attrs = clickable
+                        ? `role="button" tabindex="0" onclick="openPersonDetail(${pid})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openPersonDetail(${pid})}"`
+                        : '';
+                    return `
+                    <article class="tvst-cast-card${clickable ? ' is-clickable' : ''}" ${attrs}>
                         ${person.profile_path
                             ? `<img src="${person.profile_path}" alt="${escapeHtml(person.name || '')}" onerror="this.onerror=null;this.outerHTML='<div class=\\'tvst-cast-fallback\\'>🎭</div>'">`
                             : '<div class="tvst-cast-fallback">🎭</div>'}
@@ -3803,8 +3813,8 @@ function renderDetailInfo(item) {
                             <p class="text-sm font-semibold truncate">${escapeHtml(person.name || '')}</p>
                             <p class="text-xs text-gray-500 truncate">${escapeHtml(person.character || 'Actor')}</p>
                         </div>
-                    </article>
-                `).join('') : '<p class="text-sm text-gray-500">No hay reparto disponible.</p>'}
+                    </article>`;
+                }).join('') : '<p class="text-sm text-gray-500">No hay reparto disponible.</p>'}
             </div>
         </div>
         <div class="tvst-info-section">
@@ -5142,52 +5152,20 @@ async function openEpisodeDetail(id_tmdb, episodeId) {
             return;
         }
 
-        AppState.selectedEpisode = { showId: id_tmdb, episodeId, episode, show };
+        const seasonEpisodes = episodes
+            .filter(ep => ep.seasonNumber === episode.seasonNumber)
+            .sort((a, b) => a.episodeNumber - b.episodeNumber);
 
-        const modal = document.getElementById('episode-modal');
-        const stillEl = document.getElementById('episode-still');
-        const pill = document.getElementById('episode-show-pill');
-        const codeEl = document.getElementById('episode-code');
-        const titleEl = document.getElementById('episode-title');
-        const airEl = document.getElementById('episode-air-date');
-        const overviewEl = document.getElementById('episode-overview');
-        const watchBtn = document.getElementById('episode-watch-btn');
+        AppState.selectedEpisode = {
+            showId: id_tmdb,
+            episodeId,
+            episode,
+            show,
+            seasonEpisodes,
+        };
 
-        const stillUrl = episode.still_path
-            ? (String(episode.still_path).startsWith('http') ? episode.still_path : getImageUrl(episode.still_path, 'w780'))
-            : (show.backdrop || show.portada);
-
-        if (stillEl) {
-            stillEl.innerHTML = stillUrl
-                ? `<img src="${stillUrl}" alt="">`
-                : '<div class="tvst-episode-still-fallback">📺</div>';
-        }
-
-        if (pill) {
-            pill.textContent = `${show.titulo} ›`;
-            pill.onclick = (e) => {
-                e.preventDefault();
-                closeEpisodeModal();
-                openDetail('tv', id_tmdb);
-            };
-        }
-
-        if (codeEl) codeEl.textContent = formatEpisodeLabel(episode.seasonNumber, episode.episodeNumber);
-        if (titleEl) titleEl.textContent = episode.name || 'Episodio';
-        if (airEl) {
-            airEl.textContent = episode.air_date
-                ? `Emisión: ${formatAirDateShort(episode.air_date)}`
-                : 'Fecha de emisión desconocida';
-        }
-        if (overviewEl) overviewEl.textContent = episode.overview || 'Sin descripción';
-
-        const watched = show.capitulos_vistos?.includes(episodeId);
-        if (watchBtn) {
-            watchBtn.classList.toggle('is-watched', Boolean(watched));
-            watchBtn.setAttribute('aria-label', watched ? 'Desmarcar visto' : 'Marcar visto');
-        }
-
-        modal?.classList.remove('hidden');
+        paintEpisodeModal();
+        document.getElementById('episode-modal')?.classList.remove('hidden');
     } catch (error) {
         console.error('[App] Error abriendo episodio:', error);
         showToast('Error al cargar el episodio', 'error');
@@ -5196,20 +5174,87 @@ async function openEpisodeDetail(id_tmdb, episodeId) {
     }
 }
 
+function paintEpisodeModal() {
+    const ctx = AppState.selectedEpisode;
+    if (!ctx?.episode || !ctx.show) return;
+
+    const { show, episode, episodeId, seasonEpisodes = [] } = ctx;
+    const stillEl = document.getElementById('episode-still');
+    const pill = document.getElementById('episode-show-pill');
+    const codeEl = document.getElementById('episode-code');
+    const titleEl = document.getElementById('episode-title');
+    const airEl = document.getElementById('episode-air-date');
+    const overviewEl = document.getElementById('episode-overview');
+    const watchBtn = document.getElementById('episode-watch-btn');
+    const prevBtn = document.getElementById('episode-nav-prev');
+    const nextBtn = document.getElementById('episode-nav-next');
+
+    const stillUrl = episode.still_path
+        ? (String(episode.still_path).startsWith('http') ? episode.still_path : getImageUrl(episode.still_path, 'w780'))
+        : (show.backdrop || show.portada);
+
+    if (stillEl) {
+        stillEl.innerHTML = stillUrl
+            ? `<img src="${stillUrl}" alt="">`
+            : '<div class="tvst-episode-still-fallback">📺</div>';
+    }
+
+    if (pill) {
+        pill.textContent = `${show.titulo} ›`;
+        pill.onclick = (e) => {
+            e.preventDefault();
+            closeEpisodeModal();
+            openDetail('tv', ctx.showId);
+        };
+    }
+
+    if (codeEl) codeEl.textContent = formatEpisodeLabel(episode.seasonNumber, episode.episodeNumber);
+    if (titleEl) titleEl.textContent = episode.name || 'Episodio';
+    if (airEl) {
+        airEl.textContent = episode.air_date
+            ? `Emisión: ${formatAirDateShort(episode.air_date)}`
+            : 'Fecha de emisión desconocida';
+    }
+    if (overviewEl) overviewEl.textContent = episode.overview || 'Sin descripción';
+
+    const liveShow = AppState.shows.find(s => s.id_tmdb === ctx.showId) || show;
+    const watched = liveShow.capitulos_vistos?.includes(episodeId);
+    if (watchBtn) {
+        watchBtn.classList.toggle('is-watched', Boolean(watched));
+        watchBtn.setAttribute('aria-label', watched ? 'Desmarcar visto' : 'Marcar visto');
+    }
+
+    const idx = seasonEpisodes.findIndex(ep => ep.id === episodeId);
+    if (prevBtn) prevBtn.disabled = idx <= 0;
+    if (nextBtn) nextBtn.disabled = idx < 0 || idx >= seasonEpisodes.length - 1;
+}
+
+function navigateEpisode(delta) {
+    const ctx = AppState.selectedEpisode;
+    if (!ctx?.seasonEpisodes?.length) return;
+    const idx = ctx.seasonEpisodes.findIndex(ep => ep.id === ctx.episodeId);
+    const nextIdx = idx + Number(delta);
+    if (idx < 0 || nextIdx < 0 || nextIdx >= ctx.seasonEpisodes.length) return;
+
+    const episode = ctx.seasonEpisodes[nextIdx];
+    AppState.selectedEpisode = {
+        ...ctx,
+        episodeId: episode.id,
+        episode,
+    };
+    paintEpisodeModal();
+
+    const scroll = document.querySelector('#episode-modal .tvst-modal-scroll');
+    if (scroll) scroll.scrollTop = 0;
+}
+
 function closeEpisodeModal() {
     document.getElementById('episode-modal')?.classList.add('hidden');
     AppState.selectedEpisode = null;
 }
 
 function refreshEpisodeModalWatchState() {
-    const ctx = AppState.selectedEpisode;
-    if (!ctx) return;
-    const show = AppState.shows.find(s => s.id_tmdb === ctx.showId);
-    const watchBtn = document.getElementById('episode-watch-btn');
-    if (!show || !watchBtn) return;
-    const watched = show.capitulos_vistos?.includes(ctx.episodeId);
-    watchBtn.classList.toggle('is-watched', Boolean(watched));
-    watchBtn.setAttribute('aria-label', watched ? 'Desmarcar visto' : 'Marcar visto');
+    paintEpisodeModal();
 }
 
 async function toggleEpisodeFromDetail() {
@@ -5217,6 +5262,91 @@ async function toggleEpisodeFromDetail() {
     if (!ctx) return;
     await toggleEpisode(ctx.showId, ctx.episodeId);
     refreshEpisodeModalWatchState();
+}
+
+async function openPersonDetail(personId) {
+    const id = Number(personId);
+    if (!Number.isFinite(id) || id <= 0) return;
+    if (typeof getPersonDetails !== 'function') {
+        showToast('TMDB no disponible', 'error');
+        return;
+    }
+
+    showLoading(true);
+    try {
+        const [details, credits] = await Promise.all([
+            getPersonDetails(id),
+            typeof getPersonCredits === 'function' ? getPersonCredits(id) : Promise.resolve([]),
+        ]);
+
+        AppState.selectedPerson = { ...details, credits };
+
+        const modal = document.getElementById('person-modal');
+        const photoEl = document.getElementById('person-photo');
+        const nameEl = document.getElementById('person-name');
+        const metaEl = document.getElementById('person-meta');
+        const bioEl = document.getElementById('person-bio');
+        const linkEl = document.getElementById('person-tmdb-link');
+        const creditsEl = document.getElementById('person-credits');
+
+        if (photoEl) {
+            photoEl.innerHTML = details.profile_path
+                ? `<img src="${details.profile_path}" alt="">`
+                : '<div class="tvst-person-photo-fallback">🎭</div>';
+        }
+        if (nameEl) nameEl.textContent = details.name || 'Sin nombre';
+        if (metaEl) {
+            const bits = [
+                details.known_for_department,
+                details.birthday ? `Nac. ${details.birthday}` : '',
+                details.place_of_birth,
+            ].filter(Boolean);
+            metaEl.textContent = bits.join(' · ');
+        }
+        if (bioEl) {
+            const bio = String(details.biography || '').trim();
+            bioEl.textContent = bio || 'Sin biografía disponible.';
+        }
+        if (linkEl) {
+            linkEl.href = `https://www.themoviedb.org/person/${id}`;
+        }
+        if (creditsEl) {
+            if (!credits.length) {
+                creditsEl.innerHTML = '<p class="text-sm text-gray-500">No hay filmografía disponible.</p>';
+            } else {
+                creditsEl.innerHTML = credits.map(item => `
+                    <article class="tvst-person-credit-card" onclick="openDetailFromPerson('${item.tipo}', ${item.id_tmdb})">
+                        ${item.portada
+                            ? `<img src="${item.portada}" alt="">`
+                            : '<div class="tvst-person-credit-fallback">🎬</div>'}
+                        <div class="tvst-person-credit-meta">
+                            <p class="tvst-person-credit-title">${escapeHtml(item.titulo || '')}</p>
+                            <p class="tvst-person-credit-sub">${escapeHtml([item.year, item.tipo === 'tv' ? 'Serie' : 'Película', item.character].filter(Boolean).join(' · '))}</p>
+                        </div>
+                    </article>
+                `).join('');
+            }
+        }
+
+        modal?.classList.remove('hidden');
+        const scroll = modal?.querySelector('.tvst-modal-scroll');
+        if (scroll) scroll.scrollTop = 0;
+    } catch (error) {
+        console.error('[App] Error abriendo persona:', error);
+        showToast('Error al cargar el actor', 'error');
+    } finally {
+        showLoading(false);
+    }
+}
+
+function closePersonModal() {
+    document.getElementById('person-modal')?.classList.add('hidden');
+    AppState.selectedPerson = null;
+}
+
+function openDetailFromPerson(tipo, id_tmdb) {
+    closePersonModal();
+    openDetail(tipo, id_tmdb);
 }
 
 async function openDetail(type, id_tmdb) {
@@ -5233,7 +5363,10 @@ async function openDetail(type, id_tmdb) {
             ? AppState.movies.find(m => m.id_tmdb === id_tmdb)
             : AppState.shows.find(s => s.id_tmdb === id_tmdb);
 
-        const needsFreshDetails = !item?.overview || !item?.credits?.cast?.length || !item?.recommendations?.length || !item?.backdrop;
+        const castMissingIds = Array.isArray(item?.credits?.cast)
+            && item.credits.cast.length > 0
+            && !item.credits.cast.some(p => Number(p.id) > 0);
+        const needsFreshDetails = !item?.overview || !item?.credits?.cast?.length || castMissingIds || !item?.recommendations?.length || !item?.backdrop;
 
         if (needsFreshDetails) {
             item = type === 'movie'
@@ -5908,7 +6041,11 @@ window.switchDetailTab = switchDetailTab;
 window.openDetail = openDetail;
 window.openEpisodeDetail = openEpisodeDetail;
 window.closeEpisodeModal = closeEpisodeModal;
+window.navigateEpisode = navigateEpisode;
 window.toggleEpisodeFromDetail = toggleEpisodeFromDetail;
+window.openPersonDetail = openPersonDetail;
+window.closePersonModal = closePersonModal;
+window.openDetailFromPerson = openDetailFromPerson;
 window.closeModal = closeModal;
 window.saveContent = saveContent;
 window.removeContent = removeContent;

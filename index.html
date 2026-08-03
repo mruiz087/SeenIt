@@ -76,7 +76,7 @@
 
             <!-- EXPLORAR -->
             <div id="content-explore" class="tab-content hidden">
-                <div class="py-4">
+                <div class="tvst-explore-search-bar">
                     <div class="relative">
                         <input type="text" id="search-input" placeholder="Buscar series o películas..." class="tvst-search" onkeyup="handleSearch(event)">
                         <span class="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none">
@@ -328,12 +328,52 @@
                     <div id="episode-still" class="tvst-episode-still"></div>
                 </header>
                 <div class="tvst-episode-detail-body">
-                    <a href="#" id="episode-show-pill" class="tvst-show-pill" onclick="return false;">Serie ›</a>
-                    <p id="episode-code" class="tvst-episode-detail-code">T01 | E01</p>
+                    <div class="tvst-episode-nav">
+                        <button type="button" id="episode-nav-prev" class="tvst-episode-nav-btn" onclick="navigateEpisode(-1)" aria-label="Capítulo anterior" disabled>
+                            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6"/></svg>
+                        </button>
+                        <div class="tvst-episode-nav-center">
+                            <a href="#" id="episode-show-pill" class="tvst-show-pill" onclick="return false;">Serie ›</a>
+                            <p id="episode-code" class="tvst-episode-detail-code">T01 | E01</p>
+                        </div>
+                        <button type="button" id="episode-nav-next" class="tvst-episode-nav-btn" onclick="navigateEpisode(1)" aria-label="Capítulo siguiente" disabled>
+                            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>
+                        </button>
+                    </div>
                     <h2 id="episode-title" class="tvst-episode-detail-title">Título</h2>
                     <p id="episode-air-date" class="tvst-episode-detail-meta"></p>
                     <p id="episode-overview" class="tvst-episode-detail-overview">Sin descripción</p>
                     <button type="button" id="episode-watch-btn" class="tvst-check-btn tvst-episode-watch-btn" onclick="toggleEpisodeFromDetail()" aria-label="Marcar visto">✓</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal ficha de actor -->
+    <div id="person-modal" class="tvst-modal tvst-modal-elevated hidden">
+        <div class="tvst-modal-backdrop" onclick="closePersonModal()"></div>
+        <div class="tvst-modal-sheet tvst-person-sheet">
+            <div class="tvst-modal-scroll">
+                <header class="tvst-person-header">
+                    <button type="button" class="tvst-hero-close" onclick="closePersonModal()" aria-label="Cerrar">
+                        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+                    </button>
+                    <div id="person-photo" class="tvst-person-photo"></div>
+                    <div class="tvst-person-header-text">
+                        <h2 id="person-name" class="tvst-person-name">Actor</h2>
+                        <p id="person-meta" class="tvst-person-meta"></p>
+                        <a id="person-tmdb-link" class="tvst-person-tmdb-link" href="#" target="_blank" rel="noopener noreferrer">Ver en TMDB ↗</a>
+                    </div>
+                </header>
+                <div class="tvst-person-body">
+                    <section class="tvst-info-section">
+                        <h3>Biografía</h3>
+                        <p id="person-bio" class="tvst-info-overview">Sin biografía.</p>
+                    </section>
+                    <section class="tvst-info-section">
+                        <h3>Filmografía</h3>
+                        <div id="person-credits" class="tvst-person-credits-grid"></div>
+                    </section>
                 </div>
             </div>
         </div>

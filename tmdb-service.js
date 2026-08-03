@@ -433,6 +433,7 @@ function normalizeMovieData(data) {
         runtime: data.runtime,
         credits: {
             cast: (data.credits?.cast || []).slice(0, 8).map(person => ({
+                id: person.id,
                 name: person.name,
                 character: person.character,
                 profile_path: getImageUrl(person.profile_path, 'w185'),
@@ -474,6 +475,7 @@ function normalizeTVData(data) {
             : (data.episode_run_time?.[0] || 45),
         credits: {
             cast: (data.credits?.cast || []).slice(0, 8).map(person => ({
+                id: person.id,
                 name: person.name,
                 character: person.character,
                 profile_path: getImageUrl(person.profile_path, 'w185'),
@@ -564,6 +566,72 @@ async function getWatchProviders(type, id) {
     }
 }
 
+/**
+ * Detalles de una persona (actor / crew)
+ * @param {number} id - ID TMDB de persona
+ */
+async function getPersonDetails(id) {
+    try {
+        const data = await fetchTMDB(`/person/${id}`);
+        return {
+            id: data.id,
+            name: data.name || '',
+            biography: data.biography || '',
+            birthday: data.birthday || '',
+            place_of_birth: data.place_of_birth || '',
+            known_for_department: data.known_for_department || '',
+            profile_path: getImageUrl(data.profile_path, 'w500'),
+        };
+    } catch (error) {
+        console.error('[TMDB] Error obteniendo persona:', error);
+        throw error;
+    }
+}
+
+/**
+ * Filmografía combinada (cast) de una persona
+ * @param {number} id - ID TMDB de persona
+ * @returns {Promise<Array>}
+ */
+async function getPersonCredits(id) {
+    try {
+        const data = await fetchTMDB(`/person/${id}/combined_credits`);
+        const cast = Array.isArray(data.cast) ? data.cast : [];
+        const seen = new Set();
+        const items = [];
+
+        for (const credit of cast) {
+            const mediaType = credit.media_type === 'tv' ? 'tv' : (credit.media_type === 'movie' ? 'movie' : null);
+            if (!mediaType || !credit.id) continue;
+            const key = `${mediaType}:${credit.id}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+
+            const date = credit.release_date || credit.first_air_date || '';
+            items.push({
+                id_tmdb: credit.id,
+                titulo: credit.title || credit.name || 'Sin título',
+                portada: getImageUrl(credit.poster_path, 'w342'),
+                tipo: mediaType,
+                character: credit.character || '',
+                year: date ? String(date).slice(0, 4) : '',
+                popularity: Number(credit.popularity) || 0,
+                date,
+            });
+        }
+
+        items.sort((a, b) => {
+            if (b.popularity !== a.popularity) return b.popularity - a.popularity;
+            return String(b.date).localeCompare(String(a.date));
+        });
+
+        return items.slice(0, 40).map(({ popularity, date, ...rest }) => rest);
+    } catch (error) {
+        console.error('[TMDB] Error obteniendo credits de persona:', error);
+        return [];
+    }
+}
+
 // ============================================
 // BÚSQUEDA CON DEBOUNCE
 // ============================================
@@ -618,6 +686,8 @@ window.TMDBService = {
     normalizeTVData,
     normalizeSearchResult,
     getWatchProviders,
+    getPersonDetails,
+    getPersonCredits,
     searchWithDebounce,
 };
 
@@ -638,6 +708,8 @@ window.normalizeMovieData = normalizeMovieData;
 window.normalizeTVData = normalizeTVData;
 window.normalizeSearchResult = normalizeSearchResult;
 window.getWatchProviders = getWatchProviders;
+window.getPersonDetails = getPersonDetails;
+window.getPersonCredits = getPersonCredits;
 window.searchWithDebounce = searchWithDebounce;
 
 console.log('[TMDB] tmdb-service.js cargado');
