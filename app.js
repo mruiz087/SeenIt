@@ -60,8 +60,10 @@ const AppState = {
 const orderedEpisodesCache = new Map();
 const orderedEpisodesInflight = new Map();
 const TIMELINE_FETCH_CONCURRENCY = 8;
+const UPCOMING_FETCH_CONCURRENCY = 12;
 const TIMELINE_CACHE_FRESH_MS = 3 * 60 * 1000;
 const SHOW_META_TTL_MS = 12 * 60 * 60 * 1000;
+const CONTINUE_BOOST_DAYS = 14;
 const DRIVE_USER_STORAGE_KEY = 'seenit_drive_user';
 const LEGACY_DATA_KEY = 'seenit_data';
 
@@ -1972,9 +1974,30 @@ function getDaysSinceWatchActivity(isoDate) {
     return Math.round((today - watched) / 86400000);
 }
 
-/** Serie en «continuar» si avanzó capítulos o tuvo boost (p.ej. temporada nueva) en los últimos 14 días. */
-function isShowInContinueSection(show) {
-    if (show?.continueBoostAt && getDaysSinceWatchActivity(show.continueBoostAt) <= 14) {
+/** Serie en «continuar» si avanzó capítulos, tuvo boost, o el siguiente episodio se emitió hace ≤14 días. */
+function isContinueBoostFresh(show) {
+    return Boolean(show?.continueBoostAt && getDaysSinceWatchActivity(show.continueBoostAt) <= CONTINUE_BOOST_DAYS);
+}
+
+function isRecentlyAiredEpisode(episode) {
+    if (!episode?.air_date) return false;
+    const days = getDaysSinceAir(episode.air_date);
+    return Number.isFinite(days) && days >= 0 && days <= CONTINUE_BOOST_DAYS;
+}
+
+function applyContinueBoost(show, reason = '') {
+    if (!show || isContinueBoostFresh(show)) return false;
+    show.continueBoostAt = nowIso();
+    touchUpdatedAt(show);
+    if (reason) console.log('[App] continueBoost:', show.titulo || show.id_tmdb, reason);
+    return true;
+}
+
+function isShowInContinueSection(show, nextEpisode = null) {
+    if (isContinueBoostFresh(show)) {
+        return true;
+    }
+    if (isRecentlyAiredEpisode(nextEpisode)) {
         return true;
     }
     const lastActivity = getShowLastWatchActivity(show);
@@ -1982,7 +2005,7 @@ function isShowInContinueSection(show) {
         const watched = show?.capitulos_vistos?.length || 0;
         return watched === 0;
     }
-    return getDaysSinceWatchActivity(lastActivity) <= 14;
+    return getDaysSinceWatchActivity(lastActivity) <= CONTINUE_BOOST_DAYS;
 }
 
 function bumpPendingHistoryAfterWatch() {
@@ -2458,13 +2481,27 @@ function paintPendingTimeline(options = {}) {
 }
 
 async function buildWatchingPendingEntries(watchingShows) {
-    await mapPool(watchingShows, TIMELINE_FETCH_CONCURRENCY, ensureShowSeasonMeta);
+    await mapPool(watchingShows, TIMELINE_FETCH_CONCURRENCY, async (show) => {
+        // Boost / reopen: forzar meta e invalidar caché de temporadas (puede estar vacía/vieja)
+        if (isContinueBoostFresh(show)) {
+            await ensureShowSeasonMeta(show, { force: true });
+            invalidateOrderedEpisodesCache(show.id_tmdb);
+            return;
+        }
+        await ensureShowSeasonMeta(show);
+    });
 
     const results = await mapPool(watchingShows, TIMELINE_FETCH_CONCURRENCY, async (show) => {
-        // Preferir cache completa si ya existe; si no, temporadas recientes + vistas
         const watchedSeasons = getWatchedSeasonNumbers(show);
         const upcomingSeasons = getUpcomingSeasonNumbers(show);
-        const seasonHint = [...new Set([...watchedSeasons.slice(-2), ...upcomingSeasons, 1])];
+        const latestSeason = getLatestRegularSeasonNumber(show);
+        const seasonHint = [...new Set([
+            ...watchedSeasons.slice(-2),
+            ...upcomingSeasons,
+            ...(latestSeason != null ? [latestSeason] : []),
+            1,
+        ])];
+
         let episodes = await getOrderedEpisodes(show, {
             includeSpecials: false,
             seasonNumbers: seasonHint,
@@ -2479,16 +2516,43 @@ async function buildWatchingPendingEntries(watchingShows) {
             nextEpisode = airedEpisodes.find(ep => !show.capitulos_vistos?.includes(ep.id));
         }
 
+        // Sin pendiente: forzar meta + invalidar caché TMDB y reintentar (caso Futurama / season nueva)
+        if (!nextEpisode) {
+            await ensureShowSeasonMeta(show, { force: true });
+            invalidateOrderedEpisodesCache(show.id_tmdb);
+            const latest = getLatestRegularSeasonNumber(show);
+            const retryHint = [...new Set([
+                ...watchedSeasons.slice(-2),
+                ...getUpcomingSeasonNumbers(show),
+                ...(latest != null ? [latest] : []),
+            ])];
+            episodes = await getOrderedEpisodes(show, {
+                includeSpecials: false,
+                seasonNumbers: retryHint.length ? retryHint : undefined,
+            });
+            airedEpisodes = episodes.filter(isEpisodeAired);
+            nextEpisode = airedEpisodes.find(ep => !show.capitulos_vistos?.includes(ep.id));
+            if (!nextEpisode) {
+                episodes = await getOrderedEpisodes(show, { includeSpecials: false });
+                airedEpisodes = episodes.filter(isEpisodeAired);
+                nextEpisode = airedEpisodes.find(ep => !show.capitulos_vistos?.includes(ep.id));
+            }
+        }
+
         if (!nextEpisode) return null;
 
-        // Contador +N sobre la lista completa (el hint puede quedarse corto)
         let allAiredForCount = airedEpisodes;
         if (seasonHint.length) {
             const allEpisodes = await getOrderedEpisodes(show, { includeSpecials: false });
             allAiredForCount = allEpisodes.filter(isEpisodeAired);
         }
         const remainingCount = Math.max(0, allAiredForCount.filter(ep => !show.capitulos_vistos?.includes(ep.id)).length - 1);
-        return { show, episode: nextEpisode, airedEpisodes: allAiredForCount, remainingCount };
+        return {
+            show,
+            episode: nextEpisode,
+            airedEpisodes: allAiredForCount,
+            remainingCount,
+        };
     });
 
     return results.filter(Boolean);
@@ -2522,7 +2586,7 @@ async function renderPendingList(options = {}) {
     const container = document.getElementById('pending-list-container');
     if (!container) return;
 
-    // Solo re-pintar desde cache (p.ej. al cargar más historial)
+    // No reutilizar caché de pendiente: hay que reclasificar continue/stale y reopen completed
     if (options.preserveAnchor && AppState.timelinePendingCache?.continueWatching) {
         paintPendingTimeline(options);
         return;
@@ -2544,36 +2608,47 @@ async function renderPendingList(options = {}) {
         return;
     }
 
-    const cacheFresh = !options.forceRefresh
-        && AppState.timelinePendingCache?.builtAt
-        && (Date.now() - AppState.timelinePendingCache.builtAt) < TIMELINE_CACHE_FRESH_MS
-        && (
-            (AppState.timelinePendingCache.continueWatching || []).length > 0
-            || (AppState.timelinePendingCache.staleWatching || []).length > 0
-            || watchingShows.length === 0
-        );
-
-    if (cacheFresh) {
-        AppState.timelineHistoryVisible['pending-list'] = 0;
-        paintPendingTimeline({ skipAnchor: true });
-        resetPendingListScroll();
-        // Refresco suave en background
-        refreshPendingListInBackground(allTvShows, watchingShows);
-        return;
-    }
-
     container.innerHTML = emptyState('episodes', 'Cargando episodios...', { loading: true });
 
     await rebuildPendingTimeline(allTvShows, watchingShows, { showLoading: false });
 }
 
 async function rebuildPendingTimeline(allTvShows, watchingShows, options = {}) {
-    const pendingEpisodes = await buildWatchingPendingEntries(watchingShows);
+    // Antes de pintar: reabrir completed→watching en la biblioteca real (no solo en fichas)
+    try {
+        const reopen = await refreshCompletedShowsForNewSeasons();
+        if (reopen?.changed) {
+            saveLocalData();
+            syncToDrive();
+            for (const show of reopen.reopened || []) {
+                showToast(`Nueva temporada: ${show.titulo || 'Serie'}`, 'info');
+            }
+            if (reopen.reopened?.length) {
+                invalidateTimelineCaches();
+            }
+        }
+    } catch (error) {
+        console.warn('[App] Refresco completed antes de pendiente:', error);
+    }
+
+    const watchingNow = AppState.shows.filter(s => normalizeStatus(s.estado) === 'watching');
+    const pendingEpisodes = await buildWatchingPendingEntries(watchingNow);
+    let boostDirty = false;
+    for (const entry of pendingEpisodes) {
+        if (isRecentlyAiredEpisode(entry.episode) && applyContinueBoost(entry.show, 'episodio reciente')) {
+            boostDirty = true;
+        }
+    }
+    if (boostDirty) {
+        saveLocalData();
+        syncToDrive();
+    }
+
     const continueWatching = pendingEpisodes
-        .filter(({ show }) => isShowInContinueSection(show))
+        .filter(({ show, episode }) => isShowInContinueSection(show, episode))
         .sort(sortPendingEntries);
     const staleWatching = pendingEpisodes
-        .filter(({ show }) => !isShowInContinueSection(show))
+        .filter(({ show, episode }) => !isShowInContinueSection(show, episode))
         .sort(sortPendingEntries);
 
     AppState.timelinePendingCache = {
@@ -2597,7 +2672,7 @@ async function rebuildPendingTimeline(allTvShows, watchingShows, options = {}) {
     }
 
     // Historial en segundo plano (no bloquea la vista)
-    void buildHistoryEntries(allTvShows).then((historyEpisodes) => {
+    void buildHistoryEntries(AppState.shows).then((historyEpisodes) => {
         AppState.timelineHistoryCache['pending-list'] = historyEpisodes.sort(sortHistoryEntries);
         if (AppState.currentTab === 'series' && AppState.currentSubTab === 'pending-list') {
             const anchorEl = document.querySelector('[data-timeline-anchor="pending-list"]');
@@ -2611,30 +2686,9 @@ async function rebuildPendingTimeline(allTvShows, watchingShows, options = {}) {
         console.warn('[App] Historial pendiente en background:', error);
     });
 
-    mapPool(watchingShows, 3, refreshShowStatus).then(() => {
+    mapPool(watchingNow, 3, refreshShowStatus).then(() => {
         saveLocalData();
     }).catch(() => {});
-
-    // Detectar temporadas nuevas en series completadas → Viendo
-    void refreshCompletedShowsForNewSeasons().then((result) => {
-        if (!result?.changed) return;
-        saveLocalData();
-        syncToDrive();
-        for (const show of result.reopened || []) {
-            const title = show.titulo || 'Serie';
-            showToast(`Nueva temporada: ${title}`, 'info');
-        }
-        if (result.reopened?.length
-            && AppState.currentTab === 'series'
-            && AppState.currentSubTab === 'pending-list') {
-            const watchingNow = AppState.shows.filter(s => normalizeStatus(s.estado) === 'watching');
-            invalidateTimelineCaches();
-            return rebuildPendingTimeline(AppState.shows, watchingNow);
-        }
-        return undefined;
-    }).catch((error) => {
-        console.warn('[App] Refresco de series completadas:', error);
-    });
 }
 
 async function refreshPendingListInBackground(allTvShows, watchingShows) {
@@ -2652,22 +2706,27 @@ async function renderUpcomingList(options = {}) {
     const container = document.getElementById('upcoming-list-container');
     if (!container) return;
 
-    // Reabrir completed→watching si hay temporada nueva antes de listar
-    try {
-        const result = await refreshCompletedShowsForNewSeasons();
-        if (result.changed) {
-            saveLocalData();
-            syncToDrive();
-            for (const show of result.reopened || []) {
-                showToast(`Nueva temporada: ${show.titulo || 'Serie'}`, 'info');
-            }
-            if (result.reopened?.length) {
-                invalidateTimelineCaches();
-            }
+    const applyReopenResult = (result) => {
+        if (!result?.changed) return false;
+        saveLocalData();
+        syncToDrive();
+        for (const show of result.reopened || []) {
+            showToast(`Nueva temporada: ${show.titulo || 'Serie'}`, 'info');
         }
-    } catch (error) {
-        console.warn('[App] Refresco completed en próximos:', error);
-    }
+        if (result.reopened?.length) {
+            invalidateTimelineCaches();
+            return true;
+        }
+        return false;
+    };
+
+    // Reopen en background: no bloquea el paint de Próximamente
+    const reopenPromise = refreshCompletedShowsForNewSeasons()
+        .then(applyReopenResult)
+        .catch((error) => {
+            console.warn('[App] Refresco completed en próximos:', error);
+            return false;
+        });
 
     const upcomingShows = AppState.shows.filter(show => normalizeStatus(show.estado) !== 'dropped');
 
@@ -2681,6 +2740,7 @@ async function renderUpcomingList(options = {}) {
                 actionOnClick: "switchTab('explore')",
             },
         );
+        void reopenPromise;
         return;
     }
 
@@ -2693,19 +2753,29 @@ async function renderUpcomingList(options = {}) {
         container.className = 'tvst-episode-list';
         container.innerHTML = AppState.timelineUpcomingCache.html;
         requestAnimationFrame(() => setScrollTop(0, 'auto'));
-        void rebuildUpcomingTimeline(upcomingShows, container).catch(() => {});
+        void (async () => {
+            await reopenPromise;
+            const shows = AppState.shows.filter(show => normalizeStatus(show.estado) !== 'dropped');
+            await rebuildUpcomingTimeline(shows, container);
+        })().catch(() => {});
         return;
     }
 
     container.innerHTML = emptyState('calendar', 'Cargando próximos...', { loading: true });
     await rebuildUpcomingTimeline(upcomingShows, container);
+    const didReopen = await reopenPromise;
+    if (didReopen) {
+        const shows = AppState.shows.filter(show => normalizeStatus(show.estado) !== 'dropped');
+        await rebuildUpcomingTimeline(shows, container);
+    }
 }
 
 async function rebuildUpcomingTimeline(upcomingShows, container) {
-    await mapPool(upcomingShows, TIMELINE_FETCH_CONCURRENCY, ensureShowSeasonMeta);
+    await mapPool(upcomingShows, UPCOMING_FETCH_CONCURRENCY, ensureShowSeasonMeta);
 
-    const chunks = await mapPool(upcomingShows, TIMELINE_FETCH_CONCURRENCY, async (show) => {
+    const chunks = await mapPool(upcomingShows, UPCOMING_FETCH_CONCURRENCY, async (show) => {
         const seasonNumbers = getUpcomingSeasonNumbers(show);
+        const regularCount = countRegularSeasons(show);
         let episodes = await getOrderedEpisodes(show, {
             includeSpecials: false,
             seasonNumbers: seasonNumbers.length ? seasonNumbers : undefined,
@@ -2716,7 +2786,8 @@ async function rebuildUpcomingTimeline(upcomingShows, container) {
             return daysUntil != null && daysUntil >= 0;
         });
 
-        if (!future.length && seasonNumbers.length) {
+        // Solo re-escanear toda la serie si es corta; series largas confían en las 2 últimas
+        if (!future.length && seasonNumbers.length && regularCount > 0 && regularCount <= 3) {
             episodes = await getOrderedEpisodes(show, { includeSpecials: false });
             future = episodes.filter(episode => {
                 if (!episode.air_date) return false;
@@ -4016,11 +4087,13 @@ function formatEpisodeLabel(seasonNumber, episodeNumber) {
 }
 
 function isEpisodeAired(episode) {
+    // Sin fecha de emisión no cuenta como emitido (evita TBA en Lista pendiente)
     if (!episode?.air_date) {
-        return true;
+        return false;
     }
 
     const releaseDate = new Date(`${episode.air_date}T00:00:00`);
+    if (Number.isNaN(releaseDate.getTime())) return false;
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
@@ -4107,7 +4180,8 @@ async function refreshCompletedShowsForNewSeasons() {
         const beforeMeta = show.metaCheckedAt || '';
         const beforeSeasons = countRegularSeasons(show);
 
-        await ensureShowSeasonMeta(show);
+        await ensureShowSeasonMeta(show, { force: true });
+        invalidateOrderedEpisodesCache(show.id_tmdb);
         await refreshShowStatus(show);
 
         const afterSeasons = countRegularSeasons(show);
@@ -4119,8 +4193,8 @@ async function refreshCompletedShowsForNewSeasons() {
 
         const afterEstado = normalizeStatus(show.estado);
         if (beforeEstado === 'completed' && afterEstado === 'watching') {
-            show.continueBoostAt = nowIso();
-            touchUpdatedAt(show);
+            applyContinueBoost(show, 'reopen completed');
+            invalidateOrderedEpisodesCache(show.id_tmdb);
             reopened.push(show);
             changed = true;
         }
@@ -4149,6 +4223,15 @@ function getWatchedSeasonNumbers(show) {
         if (parts) seasons.add(parts.season);
     }
     return [...seasons].sort((a, b) => a - b);
+}
+
+function getLatestRegularSeasonNumber(show) {
+    const regular = (show?.temporadas || [])
+        .filter(season => !season.especial && season.numero !== 0)
+        .map(season => Number(season.numero))
+        .filter(n => Number.isFinite(n) && n > 0)
+        .sort((a, b) => a - b);
+    return regular.length ? regular[regular.length - 1] : null;
 }
 
 function getUpcomingSeasonNumbers(show) {
@@ -4264,6 +4347,11 @@ async function refreshShowStatus(show) {
     const episodes = await getOrderedEpisodes(show, { includeSpecials: false });
     const airedEpisodes = episodes.filter(isEpisodeAired);
     const watchedEpisodes = airedEpisodes.filter(ep => show.capitulos_vistos?.includes(ep.id));
+    const hasFutureEpisodes = episodes.some(ep => {
+        if (!ep.air_date) return false;
+        const daysUntil = getDaysUntilAir(ep.air_date);
+        return daysUntil != null && daysUntil >= 0;
+    });
 
     show.episodios_emitidos = airedEpisodes.length;
     show.episodios_vistos_count = watchedEpisodes.length;
@@ -4274,6 +4362,29 @@ async function refreshShowStatus(show) {
     }
 
     if (airedEpisodes.length > 0 && watchedEpisodes.length === airedEpisodes.length) {
+        // No marcar completed si hay boost, estrenos pendientes o temporada nueva aún abierta
+        if (isContinueBoostFresh(show) || hasFutureEpisodes) {
+            show.estado = previousState === 'standby' ? 'standby' : 'watching';
+            return show;
+        }
+        const latestSeason = getLatestRegularSeasonNumber(show);
+        if (latestSeason != null) {
+            const latestMeta = regularSeasons.find(s => Number(s.numero) === latestSeason);
+            const airedInLatest = airedEpisodes.filter(ep => ep.seasonNumber === latestSeason).length;
+            const expected = Number(latestMeta?.episodio_count) || 0;
+            if (expected > 0 && airedInLatest < expected) {
+                show.estado = previousState === 'standby' ? 'standby' : 'watching';
+                return show;
+            }
+            const watchedInLatest = (show.capitulos_vistos || []).filter(id => {
+                const parts = parseEpisodeIdParts(id);
+                return parts && parts.season === latestSeason;
+            }).length;
+            if (expected > 0 && watchedInLatest < expected) {
+                show.estado = previousState === 'standby' ? 'standby' : 'watching';
+                return show;
+            }
+        }
         show.estado = 'completed';
         return show;
     }
@@ -4285,6 +4396,9 @@ async function refreshShowStatus(show) {
 
     if (watchedEpisodes.length > 0) {
         show.estado = 'watching';
+        if (previousState === 'completed') {
+            applyContinueBoost(show, 'nuevos episodios emitidos');
+        }
     } else if (previousState === 'watching' || previousState === 'pending') {
         show.estado = previousState;
     } else {
@@ -5359,9 +5473,10 @@ async function openDetail(type, id_tmdb) {
     showLoading(true);
 
     try {
-        let item = type === 'movie'
+        const libraryItem = type === 'movie'
             ? AppState.movies.find(m => m.id_tmdb === id_tmdb)
             : AppState.shows.find(s => s.id_tmdb === id_tmdb);
+        let item = libraryItem;
 
         const castMissingIds = Array.isArray(item?.credits?.cast)
             && item.credits.cast.length > 0
@@ -5369,19 +5484,43 @@ async function openDetail(type, id_tmdb) {
         const needsFreshDetails = !item?.overview || !item?.credits?.cast?.length || castMissingIds || !item?.recommendations?.length || !item?.backdrop;
 
         if (needsFreshDetails) {
-            item = type === 'movie'
-                ? mergeDetailItem(item, await getMovieDetails(id_tmdb))
-                : mergeDetailItem(item, await getTVDetails(id_tmdb));
+            const fresh = type === 'movie'
+                ? await getMovieDetails(id_tmdb)
+                : await getTVDetails(id_tmdb);
+            const merged = mergeDetailItem(libraryItem, fresh);
+            if (libraryItem) {
+                // Importante: mutar la entrada de biblioteca (no una copia suelta)
+                Object.assign(libraryItem, merged);
+                item = libraryItem;
+            } else {
+                item = merged;
+            }
         }
 
-        if (type === 'tv' && isItemAlreadyAdded('tv', id_tmdb)) {
-            await refreshShowStatus(item);
+        if (type === 'tv' && libraryItem) {
+            const beforeEstado = normalizeStatus(libraryItem.estado);
+            await refreshShowStatus(libraryItem);
+            const afterEstado = normalizeStatus(libraryItem.estado);
+            if (beforeEstado === 'completed' && afterEstado === 'watching') {
+                applyContinueBoost(libraryItem, 'detalle reopen');
+                invalidateOrderedEpisodesCache(libraryItem.id_tmdb);
+                invalidateTimelineCaches();
+                saveLocalData();
+                syncToDrive();
+                showToast(`Nueva temporada: ${libraryItem.titulo || 'Serie'}`, 'info');
+            } else if (beforeEstado !== afterEstado) {
+                touchUpdatedAt(libraryItem);
+                saveLocalData();
+                syncToDrive();
+            }
+            item = libraryItem;
         }
 
         if (!item.watch_providers || item.watch_providers.length === 0) {
             const watchProviders = await window.getWatchProviders?.(type === 'movie' ? 'movie' : 'tv', item.id_tmdb);
             if (watchProviders?.length) {
                 item.watch_providers = watchProviders;
+                if (libraryItem) libraryItem.watch_providers = watchProviders;
             }
         }
 

@@ -400,11 +400,13 @@ function clearSeasonDetailsCache(tvId = null) {
         return;
     }
     const prefix = `${tvId}:`;
-    for (const key of seasonDetailsCache.keys()) {
+    for (const key of [...seasonDetailsCache.keys()]) {
         if (key.startsWith(prefix)) seasonDetailsCache.delete(key);
     }
     tvMetaCache.delete(String(tvId));
-    schedulePersistSeasonCache();
+    // Persistir al momento para no rehidratar temporadas viejas en la próxima carga
+    if (seasonCachePersistTimer) clearTimeout(seasonCachePersistTimer);
+    persistSeasonCacheToStorage();
 }
 
 // ============================================
