@@ -343,7 +343,10 @@
                     <h2 id="episode-title" class="tvst-episode-detail-title">Título</h2>
                     <p id="episode-air-date" class="tvst-episode-detail-meta"></p>
                     <p id="episode-overview" class="tvst-episode-detail-overview">Sin descripción</p>
-                    <button type="button" id="episode-watch-btn" class="tvst-check-btn tvst-episode-watch-btn" onclick="toggleEpisodeFromDetail()" aria-label="Marcar visto">✓</button>
+                    <div class="tvst-episode-actions">
+                        <button type="button" id="episode-skip-btn" class="tvst-skip-btn tvst-episode-skip-btn" onclick="toggleEpisodeSkippedFromDetail()" aria-label="Saltar episodio">↷ Saltar</button>
+                        <button type="button" id="episode-watch-btn" class="tvst-check-btn tvst-episode-watch-btn" onclick="toggleEpisodeFromDetail()" aria-label="Marcar visto">✓</button>
+                    </div>
                 </div>
             </div>
         </div>

@@ -2116,6 +2116,64 @@ html, body {
     cursor: not-allowed;
 }
 
+.tvst-skip-btn {
+    flex-shrink: 0;
+    width: 2rem;
+    height: 2rem;
+    box-sizing: border-box;
+    border-radius: 50%;
+    border: 2px solid rgba(255, 255, 255, 0.28);
+    background: #111;
+    color: rgba(255, 255, 255, 0.45);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    font-size: 0.85rem;
+    font-weight: 700;
+    padding: 0;
+    line-height: 1;
+}
+
+.tvst-skip-btn.is-skipped {
+    background: #78716c;
+    border-color: #a8a29e;
+    color: #fff;
+}
+
+.tvst-skip-btn:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+}
+
+.tvst-ep-row.is-skipped {
+    opacity: 0.72;
+}
+
+.tvst-ep-row.is-skipped .tvst-ep-name {
+    color: #a8a29e;
+}
+
+.tvst-episode-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-top: 1rem;
+}
+
+.tvst-episode-skip-btn {
+    width: auto;
+    min-height: 2.25rem;
+    padding: 0 0.85rem;
+    border-radius: 999px;
+    font-size: 0.8rem;
+    gap: 0.35rem;
+}
+
+.tvst-episode-actions .tvst-episode-watch-btn {
+    margin-top: 0;
+}
+
 .tvst-drive-gate {
     position: fixed;
     inset: 0;

@@ -499,6 +499,7 @@ function normalizeStoredShow(show) {
     normalized.tipo = 'tv';
     normalized.estado = normalizeStatus(normalized.estado);
     normalized.capitulos_vistos = Array.isArray(normalized.capitulos_vistos) ? normalized.capitulos_vistos : [];
+    normalized.capitulos_saltados = Array.isArray(normalized.capitulos_saltados) ? normalized.capitulos_saltados : [];
     normalized.capitulos_vistos_fecha = normalized.capitulos_vistos_fecha && typeof normalized.capitulos_vistos_fecha === 'object'
         ? normalized.capitulos_vistos_fecha
         : {};
@@ -953,12 +954,52 @@ function compareEpisodeOrder(a, b) {
     return a.episodeNumber - b.episodeNumber;
 }
 
+function ensureSkippedList(show) {
+    if (!Array.isArray(show.capitulos_saltados)) show.capitulos_saltados = [];
+    return show.capitulos_saltados;
+}
+
+function isEpisodeSkipped(show, episodeId) {
+    return Boolean(show?.capitulos_saltados?.includes(episodeId));
+}
+
+function isEpisodeWatched(show, episodeId) {
+    return Boolean(show?.capitulos_vistos?.includes(episodeId));
+}
+
+/** Visto o saltado: ya no pendiente. */
+function isEpisodeConsumed(show, episodeId) {
+    return isEpisodeWatched(show, episodeId) || isEpisodeSkipped(show, episodeId);
+}
+
+function clearEpisodeSkipped(show, episodeId) {
+    const list = ensureSkippedList(show);
+    const idx = list.indexOf(episodeId);
+    if (idx > -1) list.splice(idx, 1);
+}
+
+function markEpisodeSkipped(show, episodeId) {
+    if (!show || !episodeId) return;
+    if (!show.capitulos_vistos) show.capitulos_vistos = [];
+    const wIdx = show.capitulos_vistos.indexOf(episodeId);
+    if (wIdx > -1) {
+        show.capitulos_vistos.splice(wIdx, 1);
+        clearEpisodeWatchedRecord(show, episodeId);
+    }
+    const list = ensureSkippedList(show);
+    if (!list.includes(episodeId)) list.push(episodeId);
+}
+
+function clearEpisodeFromSkippedWhenWatched(show, episodeId) {
+    clearEpisodeSkipped(show, episodeId);
+}
+
 function shouldAskToMarkPreviousEpisodes(show, episodes, episodeId) {
     const targetEpisode = episodes.find(ep => ep.id === episodeId);
     if (!targetEpisode || !isEpisodeAired(targetEpisode)) return false;
     const airedEpisodes = episodes.filter(isEpisodeAired);
     const previousEpisodes = airedEpisodes.filter(ep => compareEpisodeOrder(ep, targetEpisode) < 0);
-    return previousEpisodes.length > 0 && previousEpisodes.some(ep => !show.capitulos_vistos?.includes(ep.id));
+    return previousEpisodes.length > 0 && previousEpisodes.some(ep => !isEpisodeConsumed(show, ep.id));
 }
 
 async function toggleEpisode(id_tmdb, episode) {
@@ -976,6 +1017,7 @@ async function toggleEpisode(id_tmdb, episode) {
     if (!show.capitulos_vistos) {
         show.capitulos_vistos = [];
     }
+    ensureSkippedList(show);
 
     const wasStandby = normalizeStatus(show.estado) === 'standby';
     const wasDropped = normalizeStatus(show.estado) === 'dropped';
@@ -987,17 +1029,19 @@ async function toggleEpisode(id_tmdb, episode) {
         show.capitulos_vistos.splice(index, 1);
         clearEpisodeWatchedRecord(show, episode);
     } else {
-        const previousEpisodes = episodes.filter(isEpisodeAired).filter(ep => compareEpisodeOrder(ep, targetEpisode) < 0 && !show.capitulos_vistos?.includes(ep.id));
+        const previousEpisodes = episodes.filter(isEpisodeAired).filter(ep => compareEpisodeOrder(ep, targetEpisode) < 0 && !isEpisodeConsumed(show, ep.id));
         if (shouldAskToMarkPreviousEpisodes(show, episodes, episode) && confirm('¿Quieres marcar también los episodios anteriores como vistos?')) {
             previousEpisodes.forEach(ep => {
                 if (!show.capitulos_vistos.includes(ep.id)) {
                     show.capitulos_vistos.push(ep.id);
                     newlyWatchedIds.push(ep.id);
                 }
+                clearEpisodeSkipped(show, ep.id);
             });
         }
         show.capitulos_vistos.push(episode);
         newlyWatchedIds.push(episode);
+        clearEpisodeSkipped(show, episode);
         markedWatched = true;
         recordEpisodesWatched(show, newlyWatchedIds);
         bumpPendingHistoryAfterWatch();
@@ -2017,7 +2061,7 @@ function bumpPendingHistoryAfterWatch() {
 
 function getEpisodeBadges(show, episode, allAiredEpisodes) {
     const badges = [];
-    const isUnwatched = !show.capitulos_vistos?.includes(episode.id);
+    const isUnwatched = !isEpisodeConsumed(show, episode.id);
     const orderedAired = [...(allAiredEpisodes || [])].sort((a, b) => {
         if (a.seasonNumber !== b.seasonNumber) return a.seasonNumber - b.seasonNumber;
         return a.episodeNumber - b.episodeNumber;
@@ -2507,13 +2551,13 @@ async function buildWatchingPendingEntries(watchingShows) {
             seasonNumbers: seasonHint,
         });
         let airedEpisodes = episodes.filter(isEpisodeAired);
-        let nextEpisode = airedEpisodes.find(ep => !show.capitulos_vistos?.includes(ep.id));
+        let nextEpisode = airedEpisodes.find(ep => !isEpisodeConsumed(show, ep.id));
 
         // Si no hay siguiente en el recorte, cargar todas las temporadas
         if (!nextEpisode) {
             episodes = await getOrderedEpisodes(show, { includeSpecials: false });
             airedEpisodes = episodes.filter(isEpisodeAired);
-            nextEpisode = airedEpisodes.find(ep => !show.capitulos_vistos?.includes(ep.id));
+            nextEpisode = airedEpisodes.find(ep => !isEpisodeConsumed(show, ep.id));
         }
 
         // Sin pendiente: forzar meta + invalidar caché TMDB y reintentar (caso Futurama / season nueva)
@@ -2531,11 +2575,11 @@ async function buildWatchingPendingEntries(watchingShows) {
                 seasonNumbers: retryHint.length ? retryHint : undefined,
             });
             airedEpisodes = episodes.filter(isEpisodeAired);
-            nextEpisode = airedEpisodes.find(ep => !show.capitulos_vistos?.includes(ep.id));
+            nextEpisode = airedEpisodes.find(ep => !isEpisodeConsumed(show, ep.id));
             if (!nextEpisode) {
                 episodes = await getOrderedEpisodes(show, { includeSpecials: false });
                 airedEpisodes = episodes.filter(isEpisodeAired);
-                nextEpisode = airedEpisodes.find(ep => !show.capitulos_vistos?.includes(ep.id));
+                nextEpisode = airedEpisodes.find(ep => !isEpisodeConsumed(show, ep.id));
             }
         }
 
@@ -2546,7 +2590,7 @@ async function buildWatchingPendingEntries(watchingShows) {
             const allEpisodes = await getOrderedEpisodes(show, { includeSpecials: false });
             allAiredForCount = allEpisodes.filter(isEpisodeAired);
         }
-        const remainingCount = Math.max(0, allAiredForCount.filter(ep => !show.capitulos_vistos?.includes(ep.id)).length - 1);
+        const remainingCount = Math.max(0, allAiredForCount.filter(ep => !isEpisodeConsumed(show, ep.id)).length - 1);
         return {
             show,
             episode: nextEpisode,
@@ -3534,7 +3578,11 @@ function getOfficialStatus(show) {
 function getShowProgressInfo(show) {
     const watchedCount = Number(show.episodios_vistos_count || 0);
     const airedCount = Number(show.episodios_emitidos || 0);
-    const progress = airedCount > 0 ? Math.min(100, Math.round((watchedCount / airedCount) * 100)) : 0;
+    const consumedCount = Number(show.episodios_consumidos_count);
+    const progressBase = Number.isFinite(consumedCount) && consumedCount >= 0 && show.episodios_consumidos_count != null
+        ? consumedCount
+        : watchedCount;
+    const progress = airedCount > 0 ? Math.min(100, Math.round((progressBase / airedCount) * 100)) : 0;
     const normalizedStatus = normalizeStatus(show.estado);
     const officialStatus = getOfficialStatus(show);
     const isOfficialEnded = officialStatus === 'ended' || officialStatus === 'canceled';
@@ -3569,13 +3617,17 @@ async function refreshShowAiredCounts(show) {
     await ensureShowSeasonMeta(show);
     const episodes = await getOrderedEpisodes(show, { includeSpecials: false });
     const airedEpisodes = episodes.filter(isEpisodeAired);
-    const watchedEpisodes = airedEpisodes.filter(ep => show.capitulos_vistos?.includes(ep.id));
+    const watchedEpisodes = airedEpisodes.filter(ep => isEpisodeWatched(show, ep.id));
+    const consumedEpisodes = airedEpisodes.filter(ep => isEpisodeConsumed(show, ep.id));
     const nextAired = airedEpisodes.length;
     const nextWatched = watchedEpisodes.length;
+    const nextConsumed = consumedEpisodes.length;
     const changed = Number(show.episodios_emitidos || 0) !== nextAired
-        || Number(show.episodios_vistos_count || 0) !== nextWatched;
+        || Number(show.episodios_vistos_count || 0) !== nextWatched
+        || Number(show.episodios_consumidos_count || 0) !== nextConsumed;
     show.episodios_emitidos = nextAired;
     show.episodios_vistos_count = nextWatched;
+    show.episodios_consumidos_count = nextConsumed;
     return changed;
 }
 
@@ -4346,7 +4398,8 @@ async function refreshShowStatus(show) {
 
     const episodes = await getOrderedEpisodes(show, { includeSpecials: false });
     const airedEpisodes = episodes.filter(isEpisodeAired);
-    const watchedEpisodes = airedEpisodes.filter(ep => show.capitulos_vistos?.includes(ep.id));
+    const watchedEpisodes = airedEpisodes.filter(ep => isEpisodeWatched(show, ep.id));
+    const consumedEpisodes = airedEpisodes.filter(ep => isEpisodeConsumed(show, ep.id));
     const hasFutureEpisodes = episodes.some(ep => {
         if (!ep.air_date) return false;
         const daysUntil = getDaysUntilAir(ep.air_date);
@@ -4355,13 +4408,14 @@ async function refreshShowStatus(show) {
 
     show.episodios_emitidos = airedEpisodes.length;
     show.episodios_vistos_count = watchedEpisodes.length;
+    show.episodios_consumidos_count = consumedEpisodes.length;
 
     if (previousState === 'dropped') {
         show.estado = 'dropped';
         return show;
     }
 
-    if (airedEpisodes.length > 0 && watchedEpisodes.length === airedEpisodes.length) {
+    if (airedEpisodes.length > 0 && consumedEpisodes.length === airedEpisodes.length) {
         // No marcar completed si hay boost, estrenos pendientes o temporada nueva aún abierta
         if (isContinueBoostFresh(show) || hasFutureEpisodes) {
             show.estado = previousState === 'standby' ? 'standby' : 'watching';
@@ -4376,11 +4430,8 @@ async function refreshShowStatus(show) {
                 show.estado = previousState === 'standby' ? 'standby' : 'watching';
                 return show;
             }
-            const watchedInLatest = (show.capitulos_vistos || []).filter(id => {
-                const parts = parseEpisodeIdParts(id);
-                return parts && parts.season === latestSeason;
-            }).length;
-            if (expected > 0 && watchedInLatest < expected) {
+            const consumedInLatest = airedEpisodes.filter(ep => ep.seasonNumber === latestSeason && isEpisodeConsumed(show, ep.id)).length;
+            if (expected > 0 && consumedInLatest < expected) {
                 show.estado = previousState === 'standby' ? 'standby' : 'watching';
                 return show;
             }
@@ -4394,7 +4445,7 @@ async function refreshShowStatus(show) {
         return show;
     }
 
-    if (watchedEpisodes.length > 0) {
+    if (watchedEpisodes.length > 0 || (show.capitulos_saltados || []).length > 0) {
         show.estado = 'watching';
         if (previousState === 'completed') {
             applyContinueBoost(show, 'nuevos episodios emitidos');
@@ -4490,7 +4541,7 @@ async function renderEpisodes(show) {
     try {
         const ordered = await getOrderedEpisodes(show, { includeSpecials: false });
         const airedOrdered = ordered.filter(isEpisodeAired);
-        const nextUnwatched = airedOrdered.filter(ep => !show.capitulos_vistos?.includes(ep.id)).slice(0, 2);
+        const nextUnwatched = airedOrdered.filter(ep => !isEpisodeConsumed(show, ep.id)).slice(0, 2);
 
         let continueHTML = '';
         if (nextUnwatched.length) {
@@ -4499,7 +4550,7 @@ async function renderEpisodes(show) {
                 <div class="tvst-continue-cards">
                     ${nextUnwatched.map(ep => {
                         const still = ep.still_path ? getImageUrl(ep.still_path, 'w185') : null;
-                        const watched = show.capitulos_vistos?.includes(ep.id);
+                        const watched = isEpisodeWatched(show, ep.id);
                         return `
                         <div class="tvst-continue-card" onclick="openEpisodeDetail(${show.id_tmdb}, '${ep.id}')" role="button" tabindex="0">
                             ${still
@@ -4532,11 +4583,18 @@ async function renderEpisodes(show) {
             const seasonEpisodeIds = (seasonDetails.episodes || [])
                 .filter(isEpisodeAired)
                 .map(ep => `S${String(season.numero).padStart(2, '0')}E${String(ep.episode_number).padStart(2, '0')}`);
-            const watchedInSeason = seasonEpisodeIds.filter(id => show.capitulos_vistos?.includes(id)).length;
+            const watchedInSeason = seasonEpisodeIds.filter(id => isEpisodeWatched(show, id)).length;
+            const skippedInSeason = seasonEpisodeIds.filter(id => isEpisodeSkipped(show, id)).length;
+            const consumedInSeason = seasonEpisodeIds.filter(id => isEpisodeConsumed(show, id)).length;
             const totalInSeason = seasonEpisodeIds.length;
             const allWatchedInSeason = watchedInSeason === totalInSeason && totalInSeason > 0;
-            const pct = totalInSeason > 0 ? Math.round((watchedInSeason / totalInSeason) * 100) : 0;
+            const allSkippedInSeason = skippedInSeason === totalInSeason && totalInSeason > 0;
+            const allConsumedInSeason = consumedInSeason === totalInSeason && totalInSeason > 0;
+            const pct = totalInSeason > 0 ? Math.round((consumedInSeason / totalInSeason) * 100) : 0;
             const isExpanded = AppState.expandedSeasons[seasonKey];
+            const countLabel = skippedInSeason > 0
+                ? `${watchedInSeason}✓ ${skippedInSeason}↷ / ${totalInSeason}`
+                : `${watchedInSeason}/${totalInSeason}`;
 
             seasonsHTML += `
                 <div class="tvst-season-block">
@@ -4546,31 +4604,43 @@ async function renderEpisodes(show) {
                                 <p class="tvst-season-name">${seasonLabel}</p>
                                 <span class="tvst-season-chevron" id="chevron-${seasonId}">${isExpanded ? '▲' : '▼'}</span>
                             </div>
-                            <span class="tvst-season-count">${watchedInSeason}/${totalInSeason}</span>
+                            <span class="tvst-season-count">${countLabel}</span>
+                            <button type="button"
+                                class="tvst-skip-btn${allSkippedInSeason ? ' is-skipped' : ''}"
+                                onclick="event.stopPropagation(); toggleSeasonSkipped(${show.id_tmdb}, ${season.numero})"
+                                aria-label="${allSkippedInSeason ? 'Quitar salto de temporada' : 'Saltar temporada'}"
+                                title="${allSkippedInSeason ? 'Quitar salto' : 'Saltar temporada'}">↷</button>
                             <button type="button"
                                 class="tvst-circle-check${allWatchedInSeason ? ' is-watched' : ''}"
                                 onclick="event.stopPropagation(); toggleSeasonWatched(${show.id_tmdb}, ${season.numero})"
                                 aria-label="Marcar temporada">✓</button>
                         </div>
                         <div class="tvst-season-bar-track">
-                            <div class="tvst-season-bar-fill${allWatchedInSeason ? ' is-complete' : ''}" style="width:${Math.max(0, Math.min(100, pct))}%"></div>
+                            <div class="tvst-season-bar-fill${allConsumedInSeason ? ' is-complete' : ''}" style="width:${Math.max(0, Math.min(100, pct))}%"></div>
                         </div>
                     </div>
                     <div id="${seasonId}" class="${isExpanded ? '' : 'hidden'}">
                         ${(seasonDetails.episodes || []).map(episode => {
                             const episodeId = `S${String(season.numero).padStart(2, '0')}E${String(episode.episode_number).padStart(2, '0')}`;
-                            const isWatched = show.capitulos_vistos?.includes(episodeId);
+                            const isWatched = isEpisodeWatched(show, episodeId);
+                            const isSkipped = isEpisodeSkipped(show, episodeId);
                             const episodeImage = episode.still_path ? getImageUrl(episode.still_path, 'w185') : null;
                             const aired = isEpisodeAired(episode);
                             return `
-                            <div class="tvst-ep-row" onclick="openEpisodeDetail(${show.id_tmdb}, '${episodeId}')" role="button" tabindex="0">
+                            <div class="tvst-ep-row${isSkipped ? ' is-skipped' : ''}" onclick="openEpisodeDetail(${show.id_tmdb}, '${episodeId}')" role="button" tabindex="0">
                                 ${episodeImage
                                     ? `<img class="tvst-ep-still" src="${episodeImage}" alt="" onerror="this.style.visibility='hidden'">`
                                     : '<div class="tvst-ep-still"></div>'}
                                 <div class="tvst-ep-text">
                                     <div class="tvst-ep-code">${formatEpisodeLabel(season.numero, episode.episode_number)}</div>
-                                    <div class="tvst-ep-name">${episode.name || 'Episodio'}</div>
+                                    <div class="tvst-ep-name">${episode.name || 'Episodio'}${isSkipped ? ' · Saltado' : ''}</div>
                                 </div>
+                                <button type="button"
+                                    class="tvst-skip-btn${isSkipped ? ' is-skipped' : ''}"
+                                    ${aired ? '' : 'disabled'}
+                                    onclick="event.stopPropagation(); toggleEpisodeSkipped(${show.id_tmdb}, '${episodeId}')"
+                                    aria-label="${isSkipped ? 'Quitar salto' : 'Saltar episodio'}"
+                                    title="${isSkipped ? 'Quitar salto' : 'Saltar'}">↷</button>
                                 <button type="button"
                                     class="tvst-circle-check${isWatched ? ' is-watched' : ''}"
                                     ${aired ? '' : 'disabled'}
@@ -4632,6 +4702,7 @@ async function toggleEpisodeAndUpdateSeason(id_tmdb, episode, seasonNumber, seas
     if (!show.capitulos_vistos) {
         show.capitulos_vistos = [];
     }
+    ensureSkippedList(show);
 
     const wasStandby = normalizeStatus(show.estado) === 'standby';
     const wasDropped = normalizeStatus(show.estado) === 'dropped';
@@ -4643,17 +4714,19 @@ async function toggleEpisodeAndUpdateSeason(id_tmdb, episode, seasonNumber, seas
         show.capitulos_vistos.splice(index, 1);
         clearEpisodeWatchedRecord(show, episode);
     } else {
-        const previousEpisodes = episodes.filter(isEpisodeAired).filter(ep => compareEpisodeOrder(ep, targetEpisode) < 0 && !show.capitulos_vistos?.includes(ep.id));
+        const previousEpisodes = episodes.filter(isEpisodeAired).filter(ep => compareEpisodeOrder(ep, targetEpisode) < 0 && !isEpisodeConsumed(show, ep.id));
         if (shouldAskToMarkPreviousEpisodes(show, episodes, episode) && confirm('¿Quieres marcar también los episodios anteriores como vistos?')) {
             previousEpisodes.forEach(ep => {
                 if (!show.capitulos_vistos.includes(ep.id)) {
                     show.capitulos_vistos.push(ep.id);
                     newlyWatchedIds.push(ep.id);
                 }
+                clearEpisodeSkipped(show, ep.id);
             });
         }
         show.capitulos_vistos.push(episode);
         newlyWatchedIds.push(episode);
+        clearEpisodeSkipped(show, episode);
         markedWatched = true;
         recordEpisodesWatched(show, newlyWatchedIds);
         bumpPendingHistoryAfterWatch();
@@ -4803,6 +4876,7 @@ async function toggleSeasonWatched(id_tmdb, seasonNumber) {
     const wasDropped = normalizeStatus(show.estado) === 'dropped';
     const wasPending = normalizeStatus(show.estado) === 'pending';
     const touchedIds = [];
+    ensureSkippedList(show);
 
     episodeIds.forEach(episodeId => {
         const index = show.capitulos_vistos.indexOf(episodeId);
@@ -4811,6 +4885,7 @@ async function toggleSeasonWatched(id_tmdb, seasonNumber) {
                 show.capitulos_vistos.push(episodeId);
                 touchedIds.push(episodeId);
             }
+            clearEpisodeSkipped(show, episodeId);
         } else if (index > -1) {
             show.capitulos_vistos.splice(index, 1);
             clearEpisodeWatchedRecord(show, episodeId);
@@ -4838,6 +4913,81 @@ async function toggleSeasonWatched(id_tmdb, seasonNumber) {
         updateDetailHero(AppState.selectedItem);
     }
     await renderCurrentView();
+}
+
+async function persistShowEpisodeChange(show) {
+    await refreshShowStatus(show);
+    touchUpdatedAt(show);
+    invalidateTimelineCaches();
+    saveLocalData();
+    syncToDrive();
+    if (AppState.selectedItem?.tipo === 'tv' && AppState.selectedItem.id_tmdb === show.id_tmdb) {
+        AppState.selectedItem = { ...show, tipo: 'tv' };
+        await renderEpisodes(AppState.selectedItem);
+        updateDetailHero(AppState.selectedItem);
+    }
+    if (AppState.selectedEpisode?.showId === show.id_tmdb) {
+        paintEpisodeModal();
+    }
+    await renderCurrentView();
+}
+
+async function toggleEpisodeSkipped(id_tmdb, episodeId) {
+    const show = AppState.shows.find(s => s.id_tmdb === id_tmdb);
+    if (!show || !episodeId) return;
+
+    const episodes = await getOrderedEpisodes(show, { includeSpecials: false });
+    const target = episodes.find(ep => ep.id === episodeId);
+    if (target && !isEpisodeAired(target)) {
+        showToast('No puedes saltar episodios aún no emitidos', 'info');
+        return;
+    }
+
+    ensureSkippedList(show);
+    if (isEpisodeSkipped(show, episodeId)) {
+        clearEpisodeSkipped(show, episodeId);
+    } else {
+        markEpisodeSkipped(show, episodeId);
+        const wasStandby = normalizeStatus(show.estado) === 'standby';
+        const wasDropped = normalizeStatus(show.estado) === 'dropped';
+        const wasPending = normalizeStatus(show.estado) === 'pending';
+        if (wasStandby || wasDropped || wasPending) {
+            show.estado = 'watching';
+        }
+    }
+
+    await persistShowEpisodeChange(show);
+}
+
+async function toggleSeasonSkipped(id_tmdb, seasonNumber) {
+    const show = AppState.shows.find(s => s.id_tmdb === id_tmdb);
+    if (!show) return;
+
+    if (!show.capitulos_vistos) show.capitulos_vistos = [];
+    ensureSkippedList(show);
+
+    const seasonDetails = await getSeasonDetails(id_tmdb, seasonNumber);
+    const episodeIds = (seasonDetails.episodes || [])
+        .filter(isEpisodeAired)
+        .map(ep => `S${String(seasonNumber).padStart(2, '0')}E${String(ep.episode_number).padStart(2, '0')}`);
+
+    if (!episodeIds.length) {
+        showToast('No hay episodios emitidos para saltar en esta temporada', 'info');
+        return;
+    }
+
+    const allSkipped = episodeIds.every(id => isEpisodeSkipped(show, id));
+    if (allSkipped) {
+        episodeIds.forEach(id => clearEpisodeSkipped(show, id));
+    } else {
+        episodeIds.forEach(id => markEpisodeSkipped(show, id));
+        const st = normalizeStatus(show.estado);
+        if (st === 'standby' || st === 'dropped' || st === 'pending') {
+            show.estado = 'watching';
+        }
+    }
+
+    await persistShowEpisodeChange(show);
 }
 
 /**
@@ -4887,6 +5037,7 @@ function mergeDetailItem(existingItem, freshDetails) {
         favorito: Boolean(existingItem.favorito || freshDetails?.favorito),
         critica: typeof existingItem.critica === 'string' ? existingItem.critica : '',
         capitulos_vistos: existingItem.capitulos_vistos || freshDetails.capitulos_vistos || [],
+        capitulos_saltados: existingItem.capitulos_saltados || freshDetails.capitulos_saltados || [],
         capitulos_vistos_fecha: existingItem.capitulos_vistos_fecha || freshDetails.capitulos_vistos_fecha || {},
         credits: {
             ...(existingItem.credits || {}),
@@ -5332,10 +5483,19 @@ function paintEpisodeModal() {
     if (overviewEl) overviewEl.textContent = episode.overview || 'Sin descripción';
 
     const liveShow = AppState.shows.find(s => s.id_tmdb === ctx.showId) || show;
-    const watched = liveShow.capitulos_vistos?.includes(episodeId);
+    const watched = isEpisodeWatched(liveShow, episodeId);
+    const skipped = isEpisodeSkipped(liveShow, episodeId);
     if (watchBtn) {
         watchBtn.classList.toggle('is-watched', Boolean(watched));
         watchBtn.setAttribute('aria-label', watched ? 'Desmarcar visto' : 'Marcar visto');
+    }
+    const skipBtn = document.getElementById('episode-skip-btn');
+    if (skipBtn) {
+        skipBtn.classList.toggle('is-skipped', Boolean(skipped));
+        skipBtn.textContent = skipped ? '↷ Quitar salto' : '↷ Saltar';
+        skipBtn.setAttribute('aria-label', skipped ? 'Quitar salto' : 'Saltar episodio');
+        const aired = isEpisodeAired(episode);
+        skipBtn.disabled = !aired;
     }
 
     const idx = seasonEpisodes.findIndex(ep => ep.id === episodeId);
@@ -5375,7 +5535,13 @@ async function toggleEpisodeFromDetail() {
     const ctx = AppState.selectedEpisode;
     if (!ctx) return;
     await toggleEpisode(ctx.showId, ctx.episodeId);
-    refreshEpisodeModalWatchState();
+    paintEpisodeModal();
+}
+
+async function toggleEpisodeSkippedFromDetail() {
+    const ctx = AppState.selectedEpisode;
+    if (!ctx) return;
+    await toggleEpisodeSkipped(ctx.showId, ctx.episodeId);
 }
 
 async function openPersonDetail(personId) {
@@ -6182,6 +6348,7 @@ window.openEpisodeDetail = openEpisodeDetail;
 window.closeEpisodeModal = closeEpisodeModal;
 window.navigateEpisode = navigateEpisode;
 window.toggleEpisodeFromDetail = toggleEpisodeFromDetail;
+window.toggleEpisodeSkippedFromDetail = toggleEpisodeSkippedFromDetail;
 window.openPersonDetail = openPersonDetail;
 window.closePersonModal = closePersonModal;
 window.openDetailFromPerson = openDetailFromPerson;
@@ -6234,6 +6401,8 @@ window.closeListPicker = closeListPicker;
 window.toggleSelectedInList = toggleSelectedInList;
 window.createListFromPicker = createListFromPicker;
 window.toggleEpisode = toggleEpisode;
+window.toggleEpisodeSkipped = toggleEpisodeSkipped;
+window.toggleSeasonSkipped = toggleSeasonSkipped;
 window.toggleMovieWatched = toggleMovieWatched;
 window.toggleSeasonWatched = toggleSeasonWatched;
 window.toggleSeasonAccordion = toggleSeasonAccordion;
