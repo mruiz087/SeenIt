@@ -6,8 +6,8 @@
  * - APIs externas: red directa
  */
 
-const STATIC_CACHE = 'seenit-static-v58';
-const DYNAMIC_CACHE = 'seenit-dynamic-v58';
+const STATIC_CACHE = 'seenit-static-v59';
+const DYNAMIC_CACHE = 'seenit-dynamic-v59';
 
 const STATIC_FILES = [
     './',

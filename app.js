@@ -2659,20 +2659,22 @@ async function renderPendingList(options = {}) {
 
 async function rebuildPendingTimeline(allTvShows, watchingShows, options = {}) {
     // Antes de pintar: reabrir completed→watching en la biblioteca real (no solo en fichas)
-    try {
-        const reopen = await refreshCompletedShowsForNewSeasons();
-        if (reopen?.changed) {
-            saveLocalData();
-            syncToDrive();
-            for (const show of reopen.reopened || []) {
-                showToast(`Nueva temporada: ${show.titulo || 'Serie'}`, 'info');
+    if (!options.skipCompletedReopen) {
+        try {
+            const reopen = await refreshCompletedShowsForNewSeasons();
+            if (reopen?.changed) {
+                saveLocalData();
+                syncToDrive();
+                for (const show of reopen.reopened || []) {
+                    showToast(`Nueva temporada: ${show.titulo || 'Serie'}`, 'info');
+                }
+                if (reopen.reopened?.length) {
+                    invalidateTimelineCaches();
+                }
             }
-            if (reopen.reopened?.length) {
-                invalidateTimelineCaches();
-            }
+        } catch (error) {
+            console.warn('[App] Refresco completed antes de pendiente:', error);
         }
-    } catch (error) {
-        console.warn('[App] Refresco completed antes de pendiente:', error);
     }
 
     const watchingNow = AppState.shows.filter(s => normalizeStatus(s.estado) === 'watching');
@@ -2928,6 +2930,19 @@ async function prefetchTimelineSeasons() {
         }
         if (result.reopened?.length) {
             invalidateTimelineCaches();
+            // Si el usuario ya está en Lista pendiente, repintar con watching actualizado
+            // (sin volver a forzar el reopen de todas las completadas).
+            if (AppState.currentTab === 'series' && AppState.currentSubTab === 'pending-list') {
+                try {
+                    await rebuildPendingTimeline(
+                        AppState.shows,
+                        AppState.shows.filter(s => normalizeStatus(s.estado) === 'watching'),
+                        { resetScroll: false, skipCompletedReopen: true },
+                    );
+                } catch (error) {
+                    console.warn('[App] Repintado pendiente tras reopen:', error);
+                }
+            }
         }
     }
 }
@@ -4178,6 +4193,20 @@ function countRegularSeasons(show) {
     return (show?.temporadas || []).filter(season => !season.especial && season.numero !== 0).length;
 }
 
+/** episodio_count de la última temporada regular (0 si no hay meta). */
+function getLatestRegularSeasonEpisodeCount(show) {
+    const regular = (show?.temporadas || [])
+        .filter(season => !season.especial && season.numero !== 0)
+        .map(season => ({
+            numero: Number(season.numero),
+            episodio_count: Number(season.episodio_count) || 0,
+        }))
+        .filter(s => Number.isFinite(s.numero) && s.numero > 0)
+        .sort((a, b) => a.numero - b.numero);
+    if (!regular.length) return 0;
+    return regular[regular.length - 1].episodio_count;
+}
+
 async function ensureShowSeasonMeta(show, options = {}) {
     if (!show) return show;
 
@@ -4196,6 +4225,7 @@ async function ensureShowSeasonMeta(show, options = {}) {
 
     try {
         const prevSeasons = countRegularSeasons(show);
+        const prevLatestEpCount = getLatestRegularSeasonEpisodeCount(show);
         const fresh = typeof getTVShowMeta === 'function'
             ? await getTVShowMeta(show.id_tmdb, { force: force || stale })
             : await getTVDetails(show.id_tmdb);
@@ -4205,7 +4235,8 @@ async function ensureShowSeasonMeta(show, options = {}) {
         show.metaCheckedAt = new Date().toISOString();
 
         const nextSeasons = countRegularSeasons(show);
-        if (nextSeasons !== prevSeasons) {
+        const nextLatestEpCount = getLatestRegularSeasonEpisodeCount(show);
+        if (nextSeasons !== prevSeasons || nextLatestEpCount !== prevLatestEpCount) {
             invalidateOrderedEpisodesCache(show.id_tmdb);
         }
     } catch (error) {
@@ -4215,7 +4246,8 @@ async function ensureShowSeasonMeta(show, options = {}) {
 }
 
 /**
- * Refresca series completadas: si TMDB trae episodios nuevos emitidos → watching.
+ * Refresca series completadas: si TMDB trae temporada/episodios nuevos → watching.
+ * Independiente de abrir la ficha (meta force + caché de temporadas invalidada).
  * @returns {{ changed: boolean, reopened: Array }}
  */
 async function refreshCompletedShowsForNewSeasons() {
@@ -4228,34 +4260,46 @@ async function refreshCompletedShowsForNewSeasons() {
     let changed = false;
 
     await mapPool(completed, 3, async (show) => {
-        const beforeEstado = normalizeStatus(show.estado);
-        const beforeMeta = show.metaCheckedAt || '';
-        const beforeSeasons = countRegularSeasons(show);
+        try {
+            const beforeEstado = normalizeStatus(show.estado);
+            const beforeMeta = show.metaCheckedAt || '';
+            const beforeSeasons = countRegularSeasons(show);
+            const beforeLatestEpCount = getLatestRegularSeasonEpisodeCount(show);
 
-        await ensureShowSeasonMeta(show, { force: true });
-        invalidateOrderedEpisodesCache(show.id_tmdb);
-        await refreshShowStatus(show);
-
-        const afterSeasons = countRegularSeasons(show);
-        const seasonsGrew = afterSeasons > beforeSeasons;
-        // Temporada nueva anunciada (aunque aún no haya emitidos) → volver a Viendo
-        if (beforeEstado === 'completed' && seasonsGrew && normalizeStatus(show.estado) === 'completed') {
-            show.estado = 'watching';
-        }
-
-        const afterEstado = normalizeStatus(show.estado);
-        if (beforeEstado === 'completed' && afterEstado === 'watching') {
-            applyContinueBoost(show, 'reopen completed');
+            await ensureShowSeasonMeta(show, { force: true });
             invalidateOrderedEpisodesCache(show.id_tmdb);
-            reopened.push(show);
-            changed = true;
-        }
-        if (
-            (show.metaCheckedAt || '') !== beforeMeta
-            || afterSeasons !== beforeSeasons
-            || afterEstado !== beforeEstado
-        ) {
-            changed = true;
+            await refreshShowStatus(show);
+
+            const afterSeasons = countRegularSeasons(show);
+            const afterLatestEpCount = getLatestRegularSeasonEpisodeCount(show);
+            const seasonsGrew = afterSeasons > beforeSeasons;
+            const episodeCountGrew = afterLatestEpCount > beforeLatestEpCount;
+            // Temporada nueva o más episodios anunciados (aunque aún no haya emitidos) → Viendo
+            if (
+                beforeEstado === 'completed'
+                && (seasonsGrew || episodeCountGrew)
+                && normalizeStatus(show.estado) === 'completed'
+            ) {
+                show.estado = 'watching';
+            }
+
+            const afterEstado = normalizeStatus(show.estado);
+            if (beforeEstado === 'completed' && afterEstado === 'watching') {
+                applyContinueBoost(show, 'reopen completed');
+                invalidateOrderedEpisodesCache(show.id_tmdb);
+                reopened.push(show);
+                changed = true;
+            }
+            if (
+                (show.metaCheckedAt || '') !== beforeMeta
+                || afterSeasons !== beforeSeasons
+                || afterLatestEpCount !== beforeLatestEpCount
+                || afterEstado !== beforeEstado
+            ) {
+                changed = true;
+            }
+        } catch (error) {
+            console.warn('[App] Reopen completed falló:', show?.titulo || show?.id_tmdb, error);
         }
     });
 
