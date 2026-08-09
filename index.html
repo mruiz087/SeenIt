@@ -111,6 +111,10 @@
                             <select id="profile-series-platform" onchange="onProfilePlatformChange('series')" class="tvst-profile-filter">
                                 <option value="all">Todas las plataformas</option>
                             </select>
+                            <select id="profile-series-sort" onchange="renderProfileView()" class="tvst-profile-filter">
+                                <option value="name">Nombre</option>
+                                <option value="tmdb">Nota TMDB</option>
+                            </select>
                             <button type="button" id="profile-series-more" class="tvst-show-more-btn" onclick="toggleProfileExpanded('series')">Mostrar más</button>
                         </div>
                         <div id="profile-series-container" class="tvst-profile-rail"></div>
@@ -153,6 +157,10 @@
                             </select>
                             <select id="profile-movies-platform" onchange="onProfilePlatformChange('movies')" class="tvst-profile-filter">
                                 <option value="all">Todas las plataformas</option>
+                            </select>
+                            <select id="profile-movies-sort" onchange="renderProfileView()" class="tvst-profile-filter">
+                                <option value="name">Nombre</option>
+                                <option value="tmdb">Nota TMDB</option>
                             </select>
                             <button type="button" id="profile-movies-more" class="tvst-show-more-btn" onclick="toggleProfileExpanded('movies')">Mostrar más</button>
                         </div>

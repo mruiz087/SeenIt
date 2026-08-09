@@ -27,6 +27,8 @@ const AppState = {
     profileMoviesSearch: '',
     profileSeriesPlatform: 'all',
     profileMoviesPlatform: 'all',
+    profileSeriesSort: 'name',
+    profileMoviesSort: 'name',
     profileExpanded: { series: false, movies: false, favoritesSeries: false, favoritesMovies: false },
     listSortMode: 'added',
     detailRecsExpanded: false,
@@ -3044,6 +3046,8 @@ async function renderProfileView() {
     AppState.profileMoviesSearch = document.getElementById('profile-movies-search')?.value || '';
     AppState.profileSeriesPlatform = document.getElementById('profile-series-platform')?.value || AppState.profileSeriesPlatform;
     AppState.profileMoviesPlatform = document.getElementById('profile-movies-platform')?.value || AppState.profileMoviesPlatform;
+    AppState.profileSeriesSort = document.getElementById('profile-series-sort')?.value || AppState.profileSeriesSort || 'name';
+    AppState.profileMoviesSort = document.getElementById('profile-movies-sort')?.value || AppState.profileMoviesSort || 'name';
 
     const seriesContainer = document.getElementById('profile-series-container');
     const moviesContainer = document.getElementById('profile-movies-container');
@@ -3814,18 +3818,31 @@ function paintProfileLibrary() {
     const moviesContainer = document.getElementById('profile-movies-container');
     if (!seriesContainer || !moviesContainer) return;
 
+    const seriesSortEl = document.getElementById('profile-series-sort');
+    const moviesSortEl = document.getElementById('profile-movies-sort');
+    if (seriesSortEl && seriesSortEl.value !== AppState.profileSeriesSort) {
+        seriesSortEl.value = AppState.profileSeriesSort === 'tmdb' ? 'tmdb' : 'name';
+    }
+    if (moviesSortEl && moviesSortEl.value !== AppState.profileMoviesSort) {
+        moviesSortEl.value = AppState.profileMoviesSort === 'tmdb' ? 'tmdb' : 'name';
+    }
+
     const collapsedLimit = window.matchMedia('(min-width: 768px)').matches ? 6 : 3;
 
-    const filteredSeries = AppState.shows
-        .filter(show => filterProfileSeries(show))
-        .filter(show => matchesProfileSearch(show, AppState.profileSeriesSearch))
-        .filter(show => matchesProfilePlatform(show, AppState.profileSeriesPlatform))
-        .sort((a, b) => (a.titulo || '').localeCompare(b.titulo || '', 'es', { sensitivity: 'base' }));
-    const filteredMovies = AppState.movies
-        .filter(movie => filterProfileMovies(movie))
-        .filter(movie => matchesProfileSearch(movie, AppState.profileMoviesSearch))
-        .filter(movie => matchesProfilePlatform(movie, AppState.profileMoviesPlatform))
-        .sort((a, b) => (a.titulo || '').localeCompare(b.titulo || '', 'es', { sensitivity: 'base' }));
+    const filteredSeries = sortProfileLibraryItems(
+        AppState.shows
+            .filter(show => filterProfileSeries(show))
+            .filter(show => matchesProfileSearch(show, AppState.profileSeriesSearch))
+            .filter(show => matchesProfilePlatform(show, AppState.profileSeriesPlatform)),
+        AppState.profileSeriesSort,
+    );
+    const filteredMovies = sortProfileLibraryItems(
+        AppState.movies
+            .filter(movie => filterProfileMovies(movie))
+            .filter(movie => matchesProfileSearch(movie, AppState.profileMoviesSearch))
+            .filter(movie => matchesProfilePlatform(movie, AppState.profileMoviesPlatform)),
+        AppState.profileMoviesSort,
+    );
 
     const seriesExpanded = Boolean(AppState.profileExpanded.series);
     const moviesExpanded = Boolean(AppState.profileExpanded.movies);
@@ -3849,6 +3866,24 @@ function paintProfileLibrary() {
     renderProfileFavorites();
     renderProfileLists();
     renderWatchStats();
+}
+
+function sortProfileLibraryItems(items, mode) {
+    const list = [...(items || [])];
+    const byName = (a, b) => (a.titulo || '').localeCompare(b.titulo || '', 'es', { sensitivity: 'base' });
+    if (mode !== 'tmdb') {
+        return list.sort(byName);
+    }
+    return list.sort((a, b) => {
+        const aScore = Number(a.vote_average);
+        const bScore = Number(b.vote_average);
+        const aValid = Number.isFinite(aScore) && aScore > 0;
+        const bValid = Number.isFinite(bScore) && bScore > 0;
+        if (aValid && bValid && bScore !== aScore) return bScore - aScore;
+        if (aValid && !bValid) return -1;
+        if (!aValid && bValid) return 1;
+        return byName(a, b);
+    });
 }
 
 function filterProfileSeries(show) {
