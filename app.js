@@ -54,6 +54,7 @@ const AppState = {
     timelineHistoryCache: {},
     timelinePendingCache: { continueWatching: [], staleWatching: [], builtAt: 0 },
     timelineUpcomingCache: { html: '', builtAt: 0, items: [] },
+    lastCompletedReopenAt: 0,
 };
 
 /** Cache en memoria de episodios ordenados (sesión). */
@@ -63,6 +64,8 @@ const TIMELINE_FETCH_CONCURRENCY = 8;
 const UPCOMING_FETCH_CONCURRENCY = 12;
 const TIMELINE_CACHE_FRESH_MS = 3 * 60 * 1000;
 const SHOW_META_TTL_MS = 12 * 60 * 60 * 1000;
+const COMPLETED_REOPEN_THROTTLE_MS = 20 * 60 * 1000;
+const SAVE_LOCAL_DEBOUNCE_MS = 400;
 const CONTINUE_BOOST_DAYS = 14;
 const DRIVE_USER_STORAGE_KEY = 'seenit_drive_user';
 const LEGACY_DATA_KEY = 'seenit_data';
@@ -70,6 +73,8 @@ const LEGACY_DATA_KEY = 'seenit_data';
 let appInitialized = false;
 let syncToDriveTimeout = null;
 let syncFlushBound = false;
+let saveLocalDataTimeout = null;
+let saveLocalFlushBound = false;
 let tvTimeSeriesJson = null;
 let tvTimeMoviesJson = null;
 
@@ -207,7 +212,22 @@ async function enterAppAfterDrive() {
     AppState.driveLoadOk = false;
 
     const prevUserId = AppState.driveUserId;
-    const user = await resolveDriveUser();
+    // Pintar cuanto antes desde local conocido; Drive va en paralelo con resolve usuario
+    if (prevUserId) {
+        loadLocalData(prevUserId);
+    }
+
+    const localSnapshot = snapshotLibrary();
+    const [user, driveOutcome] = await Promise.all([
+        resolveDriveUser().catch((error) => {
+            console.warn('[App] No se pudo obtener usuario de Drive:', error);
+            return getStoredDriveUser();
+        }),
+        loadUserData()
+            .then((data) => ({ ok: true, data }))
+            .catch((error) => ({ ok: false, error })),
+    ]);
+
     const userId = user?.id || null;
     AppState.driveUserId = userId;
 
@@ -215,18 +235,31 @@ async function enterAppAfterDrive() {
         resetDriveDataFileCache();
     }
 
-    // Siempre cargar el local de la cuenta activa (evita mezclar A→B).
-    if (userId) {
+    let snapshotForMerge = localSnapshot;
+    if (userId !== prevUserId) {
+        if (userId) loadLocalData(userId);
+        else clearLibraryState();
+        snapshotForMerge = snapshotLibrary();
+        // Cuenta distinta: reset de caché de fichero + recarga Drive
+        try {
+            const data = await loadUserData();
+            driveOutcome.ok = true;
+            driveOutcome.data = data;
+            delete driveOutcome.error;
+        } catch (error) {
+            driveOutcome.ok = false;
+            driveOutcome.error = error;
+        }
+    } else if (!prevUserId && userId) {
         loadLocalData(userId);
-    } else if (prevUserId) {
-        clearLibraryState();
+        snapshotForMerge = snapshotLibrary();
     }
 
-    const localSnapshot = snapshotLibrary();
     try {
-        const data = await loadUserData();
-        const result = reconcileWithDriveData(data, localSnapshot);
-        saveLocalData();
+        if (!driveOutcome.ok) throw driveOutcome.error || new Error('Drive load failed');
+        const result = reconcileWithDriveData(driveOutcome.data, snapshotForMerge);
+        flushSaveLocalData();
+        saveLocalDataImmediate();
         AppState.driveLoadOk = true;
         updateDriveStatus(true);
         AppState.driveReady = true;
@@ -242,8 +275,8 @@ async function enterAppAfterDrive() {
         setDriveGateVisible(false);
     } catch (error) {
         console.warn('[App] Error cargando Drive al entrar:', error);
-        applyLibrary(localSnapshot);
-        saveLocalData();
+        applyLibrary(snapshotForMerge);
+        saveLocalDataImmediate();
         AppState.driveLoadOk = false;
         AppState.driveReady = true;
         updateDriveStatus(false);
@@ -539,9 +572,9 @@ function normalizeStoredList(list) {
 }
 
 /**
- * Guarda datos en localStorage
+ * Guarda datos en localStorage (debounce para no bloquear el hilo en builds).
  */
-function saveLocalData() {
+function saveLocalDataImmediate() {
     try {
         const data = {
             movies: AppState.movies,
@@ -555,6 +588,31 @@ function saveLocalData() {
     } catch (error) {
         console.error('[App] Error guardando datos locales:', error);
     }
+}
+
+function flushSaveLocalData() {
+    if (!saveLocalDataTimeout) return;
+    clearTimeout(saveLocalDataTimeout);
+    saveLocalDataTimeout = null;
+    saveLocalDataImmediate();
+}
+
+function bindSaveLocalFlushListeners() {
+    if (saveLocalFlushBound) return;
+    saveLocalFlushBound = true;
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') flushSaveLocalData();
+    });
+    window.addEventListener('pagehide', flushSaveLocalData);
+}
+
+function saveLocalData() {
+    bindSaveLocalFlushListeners();
+    clearTimeout(saveLocalDataTimeout);
+    saveLocalDataTimeout = setTimeout(() => {
+        saveLocalDataTimeout = null;
+        saveLocalDataImmediate();
+    }, SAVE_LOCAL_DEBOUNCE_MS);
 }
 
 function getStoredLastModified(userId = AppState.driveUserId) {
@@ -1067,7 +1125,7 @@ async function toggleEpisode(id_tmdb, episode) {
         await renderEpisodes(AppState.selectedItem);
         updateDetailHero(AppState.selectedItem);
     }
-    await renderCurrentView();
+    await refreshPendingAfterLocalChange();
 }
 
 
@@ -1116,6 +1174,8 @@ function bindSyncFlushListeners() {
 }
 
 async function syncToDriveNow() {
+    flushSaveLocalData();
+
     if (!AppState.driveLoadOk) {
         return;
     }
@@ -2525,17 +2585,15 @@ function paintPendingTimeline(options = {}) {
 }
 
 async function buildWatchingPendingEntries(watchingShows) {
-    await mapPool(watchingShows, TIMELINE_FETCH_CONCURRENCY, async (show) => {
+    const results = await mapPool(watchingShows, TIMELINE_FETCH_CONCURRENCY, async (show) => {
         // Boost / reopen: forzar meta e invalidar caché de temporadas (puede estar vacía/vieja)
         if (isContinueBoostFresh(show)) {
             await ensureShowSeasonMeta(show, { force: true });
             invalidateOrderedEpisodesCache(show.id_tmdb);
-            return;
+        } else {
+            await ensureShowSeasonMeta(show);
         }
-        await ensureShowSeasonMeta(show);
-    });
 
-    const results = await mapPool(watchingShows, TIMELINE_FETCH_CONCURRENCY, async (show) => {
         const watchedSeasons = getWatchedSeasonNumbers(show);
         const upcomingSeasons = getUpcomingSeasonNumbers(show);
         const latestSeason = getLatestRegularSeasonNumber(show);
@@ -2585,16 +2643,15 @@ async function buildWatchingPendingEntries(watchingShows) {
 
         if (!nextEpisode) return null;
 
-        let allAiredForCount = airedEpisodes;
-        if (seasonHint.length) {
-            const allEpisodes = await getOrderedEpisodes(show, { includeSpecials: false });
-            allAiredForCount = allEpisodes.filter(isEpisodeAired);
-        }
-        const remainingCount = Math.max(0, allAiredForCount.filter(ep => !isEpisodeConsumed(show, ep.id)).length - 1);
+        // remainingCount desde el set ya cargado (sin segundo full solo para el badge)
+        const remainingCount = Math.max(
+            0,
+            airedEpisodes.filter(ep => !isEpisodeConsumed(show, ep.id)).length - 1,
+        );
         return {
             show,
             episode: nextEpisode,
-            airedEpisodes: allAiredForCount,
+            airedEpisodes,
             remainingCount,
         };
     });
@@ -2652,31 +2709,28 @@ async function renderPendingList(options = {}) {
         return;
     }
 
-    container.innerHTML = emptyState('episodes', 'Cargando episodios...', { loading: true });
+    const softRefresh = Boolean(options.softRefresh);
+    // Soft: no vaciar la lista con spinner (marcar visto / saltar desde pendiente)
+    if (!softRefresh) {
+        container.innerHTML = emptyState('episodes', 'Cargando episodios...', { loading: true });
+    }
 
-    await rebuildPendingTimeline(allTvShows, watchingShows, { showLoading: false });
+    await rebuildPendingTimeline(allTvShows, watchingShows, softRefresh
+        ? { resetScroll: false, skipCompletedReopen: true }
+        : { showLoading: false });
+}
+
+/** Tras marcar/saltar episodio: refresco suave si ya estás en Lista pendiente. */
+async function refreshPendingAfterLocalChange() {
+    if (AppState.currentTab === 'series' && AppState.currentSubTab === 'pending-list') {
+        await renderPendingList({ softRefresh: true });
+        return;
+    }
+    await renderCurrentView();
 }
 
 async function rebuildPendingTimeline(allTvShows, watchingShows, options = {}) {
-    // Antes de pintar: reabrir completed→watching en la biblioteca real (no solo en fichas)
-    if (!options.skipCompletedReopen) {
-        try {
-            const reopen = await refreshCompletedShowsForNewSeasons();
-            if (reopen?.changed) {
-                saveLocalData();
-                syncToDrive();
-                for (const show of reopen.reopened || []) {
-                    showToast(`Nueva temporada: ${show.titulo || 'Serie'}`, 'info');
-                }
-                if (reopen.reopened?.length) {
-                    invalidateTimelineCaches();
-                }
-            }
-        } catch (error) {
-            console.warn('[App] Refresco completed antes de pendiente:', error);
-        }
-    }
-
+    // Pintar primero con watching actual; reopen completed va en background
     const watchingNow = AppState.shows.filter(s => normalizeStatus(s.estado) === 'watching');
     const pendingEpisodes = await buildWatchingPendingEntries(watchingNow);
     let boostDirty = false;
@@ -2732,9 +2786,44 @@ async function rebuildPendingTimeline(allTvShows, watchingShows, options = {}) {
         console.warn('[App] Historial pendiente en background:', error);
     });
 
-    mapPool(watchingNow, 3, refreshShowStatus).then(() => {
-        saveLocalData();
-    }).catch(() => {});
+    // Status post-paint solo para shows que lo necesitan (no toda la biblioteca watching)
+    const statusTargets = watchingNow.filter(show =>
+        isContinueBoostFresh(show)
+        || show.episodios_emitidos == null
+        || isShowMetaStale(show),
+    );
+    if (statusTargets.length) {
+        mapPool(statusTargets, TIMELINE_FETCH_CONCURRENCY, refreshShowStatus).then(() => {
+            saveLocalData();
+        }).catch(() => {});
+    }
+
+    if (!options.skipCompletedReopen) {
+        void (async () => {
+            try {
+                const reopen = await refreshCompletedShowsForNewSeasons();
+                if (reopen?.skipped) return;
+                if (!reopen?.changed) return;
+                saveLocalData();
+                syncToDrive();
+                for (const show of reopen.reopened || []) {
+                    showToast(`Nueva temporada: ${show.titulo || 'Serie'}`, 'info');
+                }
+                if (reopen.reopened?.length) {
+                    invalidateTimelineCaches();
+                    if (AppState.currentTab === 'series' && AppState.currentSubTab === 'pending-list') {
+                        await rebuildPendingTimeline(
+                            AppState.shows,
+                            AppState.shows.filter(s => normalizeStatus(s.estado) === 'watching'),
+                            { resetScroll: false, skipCompletedReopen: true },
+                        );
+                    }
+                }
+            } catch (error) {
+                console.warn('[App] Refresco completed en background (pendiente):', error);
+            }
+        })();
+    }
 }
 
 async function refreshPendingListInBackground(allTvShows, watchingShows) {
@@ -2753,6 +2842,7 @@ async function renderUpcomingList(options = {}) {
     if (!container) return;
 
     const applyReopenResult = (result) => {
+        if (result?.skipped) return false;
         if (!result?.changed) return false;
         saveLocalData();
         syncToDrive();
@@ -2817,9 +2907,8 @@ async function renderUpcomingList(options = {}) {
 }
 
 async function rebuildUpcomingTimeline(upcomingShows, container) {
-    await mapPool(upcomingShows, UPCOMING_FETCH_CONCURRENCY, ensureShowSeasonMeta);
-
     const chunks = await mapPool(upcomingShows, UPCOMING_FETCH_CONCURRENCY, async (show) => {
+        await ensureShowSeasonMeta(show);
         const seasonNumbers = getUpcomingSeasonNumbers(show);
         const regularCount = countRegularSeasons(show);
         let episodes = await getOrderedEpisodes(show, {
@@ -2920,28 +3009,26 @@ async function prefetchTimelineSeasons() {
         await getOrderedEpisodes(show, { includeSpecials: false, seasonNumbers: [...new Set(seasons)] });
     });
 
-    // Tras prefetch, reabrir completadas si hay episodios nuevos
+    // Tras prefetch, reabrir completadas si hay episodios nuevos (throttle compartido)
     const result = await refreshCompletedShowsForNewSeasons();
-    if (result.changed) {
-        saveLocalData();
-        syncToDrive();
-        for (const show of result.reopened || []) {
-            showToast(`Nueva temporada: ${show.titulo || 'Serie'}`, 'info');
-        }
-        if (result.reopened?.length) {
-            invalidateTimelineCaches();
-            // Si el usuario ya está en Lista pendiente, repintar con watching actualizado
-            // (sin volver a forzar el reopen de todas las completadas).
-            if (AppState.currentTab === 'series' && AppState.currentSubTab === 'pending-list') {
-                try {
-                    await rebuildPendingTimeline(
-                        AppState.shows,
-                        AppState.shows.filter(s => normalizeStatus(s.estado) === 'watching'),
-                        { resetScroll: false, skipCompletedReopen: true },
-                    );
-                } catch (error) {
-                    console.warn('[App] Repintado pendiente tras reopen:', error);
-                }
+    if (result.skipped || !result.changed) return;
+    saveLocalData();
+    syncToDrive();
+    for (const show of result.reopened || []) {
+        showToast(`Nueva temporada: ${show.titulo || 'Serie'}`, 'info');
+    }
+    if (result.reopened?.length) {
+        invalidateTimelineCaches();
+        // Si el usuario ya está en Lista pendiente, repintar con watching actualizado
+        if (AppState.currentTab === 'series' && AppState.currentSubTab === 'pending-list') {
+            try {
+                await rebuildPendingTimeline(
+                    AppState.shows,
+                    AppState.shows.filter(s => normalizeStatus(s.estado) === 'watching'),
+                    { resetScroll: false, skipCompletedReopen: true },
+                );
+            } catch (error) {
+                console.warn('[App] Repintado pendiente tras reopen:', error);
             }
         }
     }
@@ -3629,6 +3716,15 @@ function getShowProgressInfo(show) {
  */
 async function refreshShowAiredCounts(show) {
     if (!show || show.tipo === 'movie') return false;
+    // Skip si meta fresca y ya hay contadores (evita walk de todas las temporadas)
+    if (
+        !isShowMetaStale(show)
+        && show.episodios_emitidos != null
+        && Number(show.episodios_emitidos) >= 0
+        && show.episodios_vistos_count != null
+    ) {
+        return false;
+    }
     await ensureShowSeasonMeta(show);
     const episodes = await getOrderedEpisodes(show, { includeSpecials: false });
     const airedEpisodes = episodes.filter(isEpisodeAired);
@@ -3646,17 +3742,58 @@ async function refreshShowAiredCounts(show) {
     return changed;
 }
 
+/** Series con % coherente pero estado desfasado (p. ej. 100% y badge Pendiente). */
+function needsProfileStatusReconcile(show) {
+    if (!show || show.tipo === 'movie') return false;
+    const st = normalizeStatus(show.estado);
+    if (st === 'dropped' || st === 'standby') return false;
+
+    const watchedLen = Array.isArray(show.capitulos_vistos) ? show.capitulos_vistos.length : 0;
+    const skippedLen = Array.isArray(show.capitulos_saltados) ? show.capitulos_saltados.length : 0;
+    if (st === 'pending' && (watchedLen > 0 || skippedLen > 0)) return true;
+
+    const aired = Number(show.episodios_emitidos || 0);
+    const consumed = show.episodios_consumidos_count != null
+        ? Number(show.episodios_consumidos_count)
+        : Number(show.episodios_vistos_count || 0);
+    if (aired > 0 && consumed >= aired && st !== 'completed') return true;
+
+    return false;
+}
+
 let profileProgressRefreshToken = 0;
 
 async function refreshProfileProgressInBackground() {
     const token = ++profileProgressRefreshToken;
-    const shows = [...AppState.shows];
+    const shows = AppState.shows.filter(show =>
+        needsProfileStatusReconcile(show)
+        || isShowMetaStale(show)
+        || show.episodios_emitidos == null
+        || show.episodios_vistos_count == null,
+    );
     if (!shows.length) return;
 
     let changed = false;
     await mapPool(shows, 4, async (show) => {
         try {
-            if (await refreshShowAiredCounts(show)) changed = true;
+            if (needsProfileStatusReconcile(show)) {
+                const before = normalizeStatus(show.estado);
+                const beforeAired = Number(show.episodios_emitidos || 0);
+                const beforeWatched = Number(show.episodios_vistos_count || 0);
+                const beforeConsumed = Number(show.episodios_consumidos_count || 0);
+                await refreshShowStatus(show);
+                if (
+                    normalizeStatus(show.estado) !== before
+                    || Number(show.episodios_emitidos || 0) !== beforeAired
+                    || Number(show.episodios_vistos_count || 0) !== beforeWatched
+                    || Number(show.episodios_consumidos_count || 0) !== beforeConsumed
+                ) {
+                    changed = true;
+                    touchUpdatedAt(show);
+                }
+            } else if (await refreshShowAiredCounts(show)) {
+                changed = true;
+            }
         } catch (error) {
             console.warn('[App] Progress refresh falló para', show?.id_tmdb, error);
         }
@@ -4247,33 +4384,51 @@ async function ensureShowSeasonMeta(show, options = {}) {
 
 /**
  * Refresca series completadas: si TMDB trae temporada/episodios nuevos → watching.
- * Independiente de abrir la ficha (meta force + caché de temporadas invalidada).
- * @returns {{ changed: boolean, reopened: Array }}
+ * Respeta TTL de meta; throttle por sesión para no martillar TMDB.
+ * @returns {{ changed: boolean, reopened: Array, skipped?: boolean }}
  */
-async function refreshCompletedShowsForNewSeasons() {
+async function refreshCompletedShowsForNewSeasons(options = {}) {
+    const forceRun = Boolean(options.force);
+    const now = Date.now();
+    if (
+        !forceRun
+        && AppState.lastCompletedReopenAt
+        && (now - AppState.lastCompletedReopenAt) < COMPLETED_REOPEN_THROTTLE_MS
+    ) {
+        return { changed: false, reopened: [], skipped: true };
+    }
+
     const completed = AppState.shows.filter(show => normalizeStatus(show.estado) === 'completed');
     if (!completed.length) {
+        AppState.lastCompletedReopenAt = now;
         return { changed: false, reopened: [] };
     }
 
     const reopened = [];
     let changed = false;
 
-    await mapPool(completed, 3, async (show) => {
+    await mapPool(completed, TIMELINE_FETCH_CONCURRENCY, async (show) => {
         try {
             const beforeEstado = normalizeStatus(show.estado);
             const beforeMeta = show.metaCheckedAt || '';
             const beforeSeasons = countRegularSeasons(show);
             const beforeLatestEpCount = getLatestRegularSeasonEpisodeCount(show);
 
-            await ensureShowSeasonMeta(show, { force: true });
-            invalidateOrderedEpisodesCache(show.id_tmdb);
-            await refreshShowStatus(show);
+            // TTL 12h: sin force salvo meta ausente/stale (ensureShowSeasonMeta lo decide)
+            await ensureShowSeasonMeta(show);
 
             const afterSeasons = countRegularSeasons(show);
             const afterLatestEpCount = getLatestRegularSeasonEpisodeCount(show);
             const seasonsGrew = afterSeasons > beforeSeasons;
             const episodeCountGrew = afterLatestEpCount > beforeLatestEpCount;
+
+            // Invalidar episodios solo si la meta creció (no en cada visita)
+            if (seasonsGrew || episodeCountGrew) {
+                invalidateOrderedEpisodesCache(show.id_tmdb);
+            }
+
+            await refreshShowStatus(show);
+
             // Temporada nueva o más episodios anunciados (aunque aún no haya emitidos) → Viendo
             if (
                 beforeEstado === 'completed'
@@ -4303,6 +4458,7 @@ async function refreshCompletedShowsForNewSeasons() {
         }
     });
 
+    AppState.lastCompletedReopenAt = Date.now();
     return { changed, reopened };
 }
 
@@ -4587,6 +4743,13 @@ async function renderEpisodes(show) {
         const airedOrdered = ordered.filter(isEpisodeAired);
         const nextUnwatched = airedOrdered.filter(ep => !isEpisodeConsumed(show, ep.id)).slice(0, 2);
 
+        const episodesBySeason = new Map();
+        for (const ep of ordered) {
+            const key = Number(ep.seasonNumber);
+            if (!episodesBySeason.has(key)) episodesBySeason.set(key, []);
+            episodesBySeason.get(key).push(ep);
+        }
+
         let continueHTML = '';
         if (nextUnwatched.length) {
             continueHTML = `
@@ -4619,14 +4782,12 @@ async function renderEpisodes(show) {
         let seasonsHTML = '<div class="tvst-ep-section-title">Todos los episodios</div>';
 
         for (const season of sortedSeasons) {
-            const seasonDetails = await getSeasonDetails(show.id_tmdb, season.numero);
+            const seasonEpisodes = episodesBySeason.get(Number(season.numero)) || [];
             const seasonId = `season-${season.numero}`;
             const seasonKey = `${show.id_tmdb}-season-${season.numero}`;
             const seasonLabel = getSeasonLabel(season);
 
-            const seasonEpisodeIds = (seasonDetails.episodes || [])
-                .filter(isEpisodeAired)
-                .map(ep => `S${String(season.numero).padStart(2, '0')}E${String(ep.episode_number).padStart(2, '0')}`);
+            const seasonEpisodeIds = seasonEpisodes.filter(isEpisodeAired).map(ep => ep.id);
             const watchedInSeason = seasonEpisodeIds.filter(id => isEpisodeWatched(show, id)).length;
             const skippedInSeason = seasonEpisodeIds.filter(id => isEpisodeSkipped(show, id)).length;
             const consumedInSeason = seasonEpisodeIds.filter(id => isEpisodeConsumed(show, id)).length;
@@ -4664,8 +4825,8 @@ async function renderEpisodes(show) {
                         </div>
                     </div>
                     <div id="${seasonId}" class="${isExpanded ? '' : 'hidden'}">
-                        ${(seasonDetails.episodes || []).map(episode => {
-                            const episodeId = `S${String(season.numero).padStart(2, '0')}E${String(episode.episode_number).padStart(2, '0')}`;
+                        ${seasonEpisodes.map(episode => {
+                            const episodeId = episode.id;
                             const isWatched = isEpisodeWatched(show, episodeId);
                             const isSkipped = isEpisodeSkipped(show, episodeId);
                             const episodeImage = episode.still_path ? getImageUrl(episode.still_path, 'w185') : null;
@@ -4676,7 +4837,7 @@ async function renderEpisodes(show) {
                                     ? `<img class="tvst-ep-still" src="${episodeImage}" alt="" onerror="this.style.visibility='hidden'">`
                                     : '<div class="tvst-ep-still"></div>'}
                                 <div class="tvst-ep-text">
-                                    <div class="tvst-ep-code">${formatEpisodeLabel(season.numero, episode.episode_number)}</div>
+                                    <div class="tvst-ep-code">${formatEpisodeLabel(season.numero, episode.episodeNumber)}</div>
                                     <div class="tvst-ep-name">${episode.name || 'Episodio'}${isSkipped ? ' · Saltado' : ''}</div>
                                 </div>
                                 <button type="button"
@@ -4797,7 +4958,7 @@ async function toggleEpisodeAndUpdateSeason(id_tmdb, episode, seasonNumber, seas
         await renderEpisodes(AppState.selectedItem);
         updateDetailHero(AppState.selectedItem);
     }
-    await renderCurrentView();
+    await refreshPendingAfterLocalChange();
 }
 
 /**
@@ -4956,7 +5117,7 @@ async function toggleSeasonWatched(id_tmdb, seasonNumber) {
         await renderEpisodes(AppState.selectedItem);
         updateDetailHero(AppState.selectedItem);
     }
-    await renderCurrentView();
+    await refreshPendingAfterLocalChange();
 }
 
 async function persistShowEpisodeChange(show) {
@@ -4973,7 +5134,7 @@ async function persistShowEpisodeChange(show) {
     if (AppState.selectedEpisode?.showId === show.id_tmdb) {
         paintEpisodeModal();
     }
-    await renderCurrentView();
+    await refreshPendingAfterLocalChange();
 }
 
 async function toggleEpisodeSkipped(id_tmdb, episodeId) {
@@ -5692,19 +5853,30 @@ async function openDetail(type, id_tmdb) {
             && item.credits.cast.length > 0
             && !item.credits.cast.some(p => Number(p.id) > 0);
         const needsFreshDetails = !item?.overview || !item?.credits?.cast?.length || castMissingIds || !item?.recommendations?.length || !item?.backdrop;
+        const needsProviders = !item?.watch_providers?.length;
 
-        if (needsFreshDetails) {
-            const fresh = type === 'movie'
-                ? await getMovieDetails(id_tmdb)
-                : await getTVDetails(id_tmdb);
+        const [fresh, watchProviders] = await Promise.all([
+            needsFreshDetails
+                ? (type === 'movie' ? getMovieDetails(id_tmdb) : getTVDetails(id_tmdb))
+                : Promise.resolve(null),
+            needsProviders && typeof window.getWatchProviders === 'function'
+                ? window.getWatchProviders(type === 'movie' ? 'movie' : 'tv', id_tmdb)
+                : Promise.resolve(null),
+        ]);
+
+        if (fresh) {
             const merged = mergeDetailItem(libraryItem, fresh);
             if (libraryItem) {
-                // Importante: mutar la entrada de biblioteca (no una copia suelta)
                 Object.assign(libraryItem, merged);
                 item = libraryItem;
             } else {
                 item = merged;
             }
+        }
+
+        if (watchProviders?.length) {
+            item.watch_providers = watchProviders;
+            if (libraryItem) libraryItem.watch_providers = watchProviders;
         }
 
         if (type === 'tv' && libraryItem) {
@@ -5726,14 +5898,6 @@ async function openDetail(type, id_tmdb) {
             item = libraryItem;
         }
 
-        if (!item.watch_providers || item.watch_providers.length === 0) {
-            const watchProviders = await window.getWatchProviders?.(type === 'movie' ? 'movie' : 'tv', item.id_tmdb);
-            if (watchProviders?.length) {
-                item.watch_providers = watchProviders;
-                if (libraryItem) libraryItem.watch_providers = watchProviders;
-            }
-        }
-
         AppState.selectedItem = { ...item, tipo: type };
         closeDetailMenu();
 
@@ -5752,8 +5916,9 @@ async function openDetail(type, id_tmdb) {
         if (type === 'tv') {
             document.getElementById('detail-tabs').classList.remove('hidden');
             document.getElementById('detail-episodes-tab').classList.remove('hidden');
-            await renderEpisodes(AppState.selectedItem);
             switchDetailTab('info');
+            // Info visible ya; episodios en background sin bloquear el modal
+            void renderEpisodes(AppState.selectedItem);
         } else {
             document.getElementById('detail-tabs').classList.add('hidden');
             document.getElementById('detail-episodes-tab').classList.add('hidden');
