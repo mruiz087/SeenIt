@@ -543,10 +543,19 @@ html, body {
     position: sticky;
     top: 0;
     z-index: 50;
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
     background: #000;
     padding-top: 1rem;
     padding-bottom: 0.75rem;
     box-shadow: 0 1px 0 var(--tvst-border);
+}
+
+.tvst-explore-search-bar > .relative {
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
 }
 
 .tvst-search-row {
@@ -884,6 +893,8 @@ html, body {
 
 .tvst-search {
     width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
     padding: 0.75rem 1rem 0.75rem 2.75rem;
     background: #111;
     border: 1px solid var(--tvst-border);
