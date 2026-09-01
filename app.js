@@ -4444,7 +4444,7 @@ async function refreshCompletedShowsForNewSeasons(options = {}) {
             const beforeLatestEpCount = getLatestRegularSeasonEpisodeCount(show);
 
             // TTL 12h: sin force salvo meta ausente/stale (ensureShowSeasonMeta lo decide)
-            await ensureShowSeasonMeta(show);
+            await ensureShowSeasonMeta(show, { force: true });
 
             const afterSeasons = countRegularSeasons(show);
             const afterLatestEpCount = getLatestRegularSeasonEpisodeCount(show);
