@@ -2100,12 +2100,6 @@ function applyContinueBoost(show, reason = '') {
 }
 
 function isShowInContinueSection(show, nextEpisode = null) {
-    if (isContinueBoostFresh(show)) {
-        return true;
-    }
-    if (isRecentlyAiredEpisode(nextEpisode)) {
-        return true;
-    }
     const lastActivity = getShowLastWatchActivity(show);
     if (!lastActivity) {
         const watched = show?.capitulos_vistos?.length || 0;
