@@ -4644,6 +4644,14 @@ async function refreshShowStatus(show) {
         return show;
     }
 
+    const hasUnwatchedAiredEpisodes =
+        airedEpisodes.some(ep => !isEpisodeConsumed(show, ep.id));
+    
+    if (hasUnwatchedAiredEpisodes) {
+        show.estado = 'watching';
+        return show;
+    }
+
     if (airedEpisodes.length > 0 && consumedEpisodes.length === airedEpisodes.length) {
         // No marcar completed si hay boost, estrenos pendientes o temporada nueva aún abierta
         if (isContinueBoostFresh(show) || hasFutureEpisodes) {
