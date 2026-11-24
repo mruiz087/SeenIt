@@ -41,7 +41,7 @@ jobs:
       - name: Prepare site artifact
         run: |
           mkdir -p site/icons
-          cp index.html styles.css app.js drive-service.js tmdb-service.js tvtime-import.js \
+          cp index.html styles.css app.js drive-service.js tmdb-service.js \
              manifest.json sw.js config.js config.example.js site/
           cp icons/icon.svg icons/icon-192.png icons/icon-512.png \
              icons/icon-maskable-192.png icons/icon-maskable-512.png site/icons/
