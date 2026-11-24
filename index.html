@@ -5,7 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>SeenIt - Seguimiento de Series y Películas</title>
     <meta name="description" content="App privada para seguimiento de series y películas">
-    <meta name="theme-color" content="#000000">
+    <meta name="theme-color" content="#070709">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="manifest" href="manifest.json">
     <link rel="icon" type="image/svg+xml" href="./icons/icon.svg">
     <link rel="icon" type="image/png" sizes="192x192" href="./icons/icon-192.png">
@@ -21,12 +24,19 @@
 
     <div id="drive-gate" class="tvst-drive-gate hidden">
         <div class="tvst-drive-gate-card">
+            <div class="tvst-drive-gate-brand">
+                <img src="./icons/icon.svg" alt="" class="tvst-drive-gate-logo">
+            </div>
             <h1 class="tvst-drive-gate-title">SeenIt</h1>
-            <p id="drive-gate-text" class="tvst-drive-gate-text">Conecta tu cuenta de Google. Cada persona usa su propio Drive y su propia biblioteca — el enlace no comparte tus series con nadie.</p>
+            <p id="drive-gate-text" class="tvst-drive-gate-text">Tu biblioteca personal de series y películas, sincronizada directamente con tu Google Drive.</p>
             <p id="drive-gate-status" class="tvst-drive-gate-status hidden"></p>
             <p id="drive-gate-error" class="tvst-drive-gate-error hidden"></p>
             <p id="drive-gate-origin" class="tvst-drive-gate-origin"></p>
-            <button type="button" id="btn-drive-gate-connect" class="tvst-drive-gate-btn" onclick="connectDriveFromGate()">Conectar con Google</button>
+            <button type="button" id="btn-drive-gate-connect" class="tvst-drive-gate-btn" onclick="connectDriveFromGate()">
+                <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M21.8 12.2c0-.7-.1-1.4-.2-2H12v3.8h5.5c-.2 1.2-.9 2.3-2 3v2.5h3.2c1.9-1.7 3.1-4.3 3.1-7.3z"/><path fill="currentColor" opacity=".82" d="M12 22c2.7 0 5-.9 6.7-2.5l-3.2-2.5c-.9.6-2.1 1-3.5 1-2.7 0-5-1.8-5.8-4.3H2.9v2.6C4.6 19.7 8 22 12 22z"/><path fill="currentColor" opacity=".68" d="M6.2 13.7c-.2-.6-.3-1.2-.3-1.7s.1-1.1.3-1.7V7.7H2.9C2.3 9 2 10.5 2 12s.3 3 .9 4.3l3.3-2.6z"/><path fill="currentColor" opacity=".9" d="M12 6c1.5 0 2.8.5 3.9 1.5l2.9-2.9C17 2.9 14.7 2 12 2 8 2 4.6 4.3 2.9 7.7l3.3 2.6C7 7.8 9.3 6 12 6z"/></svg>
+                <span>Conectar con Google</span>
+            </button>
+            <a id="drive-gate-newtab" href="#" target="_blank" rel="noopener noreferrer" class="tvst-drive-gate-newtab hidden">Abrir en pestaña nueva ↗</a>
             <p class="tvst-drive-gate-hint">Se abrirá una ventana de Google. Si el navegador la bloquea, permite popups para este sitio.</p>
         </div>
     </div>
@@ -78,10 +88,13 @@
             <div id="content-explore" class="tab-content hidden">
                 <div class="tvst-explore-search-bar">
                     <div class="relative">
-                        <input type="text" id="search-input" placeholder="Buscar series o películas..." class="tvst-search" onkeyup="handleSearch(event)">
+                        <input type="text" id="search-input" inputmode="search" autocomplete="off" placeholder="Buscar series o películas..." class="tvst-search tvst-search-has-clear" oninput="handleSearch(event)">
                         <span class="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none">
                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
                         </span>
+                        <button type="button" id="explore-search-clear" class="tvst-search-clear hidden" onclick="clearExploreSearch()" aria-label="Limpiar búsqueda">
+                            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+                        </button>
                     </div>
                 </div>
                 <div id="search-results" class="tvst-search-list">
@@ -99,12 +112,18 @@
                 <div id="profile-series-content">
                     <div class="tvst-profile-library">
                         <div class="tvst-profile-toolbar">
-                            <input type="search" id="profile-series-search" class="tvst-profile-search" placeholder="Buscar en biblioteca…" oninput="renderProfileView()" autocomplete="off">
+                            <div class="tvst-profile-search-wrap">
+                                <svg class="tvst-profile-search-icon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+                                <input type="text" inputmode="search" id="profile-series-search" class="tvst-profile-search" placeholder="Buscar por título, género o año…" oninput="onProfileSearchInput('series')" autocomplete="off">
+                                <button type="button" id="profile-series-search-clear" class="tvst-search-clear hidden" onclick="clearProfileSearch('series')" aria-label="Limpiar búsqueda">
+                                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+                                </button>
+                            </div>
                             <select id="profile-series-filter" onchange="renderProfileView()" class="tvst-profile-filter">
                                 <option value="all">Todas</option>
                                 <option value="pending">Pendiente</option>
                                 <option value="watching">Viendo</option>
-                                <option value="standby">Ver en otro momento</option>
+                                <option value="standby">En espera</option>
                                 <option value="completed">Completada</option>
                                 <option value="dropped">Abandonada</option>
                             </select>
@@ -112,10 +131,15 @@
                                 <option value="all">Todas las plataformas</option>
                             </select>
                             <select id="profile-series-sort" onchange="renderProfileView()" class="tvst-profile-filter">
-                                <option value="name">Nombre</option>
+                                <option value="name">Nombre A–Z</option>
                                 <option value="tmdb">Nota TMDB</option>
+                                <option value="rating">Tu nota</option>
+                                <option value="progress">Progreso %</option>
+                                <option value="recent">Recientes</option>
+                                <option value="year">Año de estreno</option>
                             </select>
                             <button type="button" id="profile-series-more" class="tvst-show-more-btn" onclick="toggleProfileExpanded('series')">Mostrar más</button>
+                            <div id="profile-series-meta" class="tvst-profile-filter-meta hidden"></div>
                         </div>
                         <div id="profile-series-container" class="tvst-profile-rail"></div>
                     </div>
@@ -138,6 +162,16 @@
                             <h2 class="tvst-lists-title">Estadísticas</h2>
                         </div>
                         <div class="tvst-section-card tvst-stats-card">
+                            <div class="tvst-stats-grid">
+                                <div class="tvst-stats-kpi">
+                                    <span class="tvst-stats-kpi-label">Series</span>
+                                    <strong id="stats-series-count" class="tvst-stats-kpi-value">0</strong>
+                                </div>
+                                <div class="tvst-stats-kpi">
+                                    <span class="tvst-stats-kpi-label">Episodios vistos</span>
+                                    <strong id="stats-series-episodes" class="tvst-stats-kpi-value">0</strong>
+                                </div>
+                            </div>
                             <div class="tvst-stats-block">
                                 <h3 class="tvst-stats-label">Tiempo visto en series</h3>
                                 <p id="stats-series-time" class="tvst-stats-value">0 meses · 0 días · 0 h</p>
@@ -149,7 +183,13 @@
                 <div id="profile-movies-content" class="hidden">
                     <div class="tvst-profile-library">
                         <div class="tvst-profile-toolbar">
-                            <input type="search" id="profile-movies-search" class="tvst-profile-search" placeholder="Buscar en biblioteca…" oninput="renderProfileView()" autocomplete="off">
+                            <div class="tvst-profile-search-wrap">
+                                <svg class="tvst-profile-search-icon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+                                <input type="text" inputmode="search" id="profile-movies-search" class="tvst-profile-search" placeholder="Buscar por título, género o año…" oninput="onProfileSearchInput('movies')" autocomplete="off">
+                                <button type="button" id="profile-movies-search-clear" class="tvst-search-clear hidden" onclick="clearProfileSearch('movies')" aria-label="Limpiar búsqueda">
+                                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+                                </button>
+                            </div>
                             <select id="profile-movies-filter" onchange="renderProfileView()" class="tvst-profile-filter">
                                 <option value="all">Todas</option>
                                 <option value="pending">Pendiente</option>
@@ -159,10 +199,14 @@
                                 <option value="all">Todas las plataformas</option>
                             </select>
                             <select id="profile-movies-sort" onchange="renderProfileView()" class="tvst-profile-filter">
-                                <option value="name">Nombre</option>
+                                <option value="name">Nombre A–Z</option>
                                 <option value="tmdb">Nota TMDB</option>
+                                <option value="rating">Tu nota</option>
+                                <option value="recent">Recientes</option>
+                                <option value="year">Año de estreno</option>
                             </select>
                             <button type="button" id="profile-movies-more" class="tvst-show-more-btn" onclick="toggleProfileExpanded('movies')">Mostrar más</button>
+                            <div id="profile-movies-meta" class="tvst-profile-filter-meta hidden"></div>
                         </div>
                         <div id="profile-movies-container" class="tvst-profile-rail"></div>
                     </div>
@@ -185,6 +229,16 @@
                             <h2 class="tvst-lists-title">Estadísticas</h2>
                         </div>
                         <div class="tvst-section-card tvst-stats-card">
+                            <div class="tvst-stats-grid">
+                                <div class="tvst-stats-kpi">
+                                    <span class="tvst-stats-kpi-label">Películas vistas</span>
+                                    <strong id="stats-movies-watched" class="tvst-stats-kpi-value">0</strong>
+                                </div>
+                                <div class="tvst-stats-kpi">
+                                    <span class="tvst-stats-kpi-label">Pendientes</span>
+                                    <strong id="stats-movies-pending" class="tvst-stats-kpi-value">0</strong>
+                                </div>
+                            </div>
                             <div class="tvst-stats-block">
                                 <h3 class="tvst-stats-label">Tiempo visto en películas</h3>
                                 <p id="stats-movies-time" class="tvst-stats-value">0 meses · 0 días · 0 h</p>
@@ -193,53 +247,29 @@
                     </section>
                 </div>
 
-                <div id="profile-settings-section" class="mt-4 space-y-3 pb-8">
-                    <h2 class="text-xs font-bold uppercase tracking-wide text-gray-400 px-1">Ajustes</h2>
+                <div id="profile-settings-section" class="tvst-settings-section">
+                    <div class="tvst-lists-header">
+                        <h2 class="tvst-lists-title">Ajustes</h2>
+                    </div>
                     <div class="tvst-section-card">
-                        <h3 class="font-bold mb-2 text-sm">Google Drive</h3>
-                        <p id="drive-status" class="text-sm text-gray-400 mb-2">Cargando...</p>
-                        <p id="drive-origin-hint" class="text-xs text-gray-600 mb-4"></p>
-                        <div class="flex flex-wrap gap-2">
-                            <button type="button" id="btn-connect-drive" onclick="connectDrive()" class="px-4 py-2 bg-white text-black rounded-lg text-sm font-semibold">Conectar Drive</button>
-                            <button type="button" id="btn-disconnect-drive" onclick="disconnectDrive()" class="hidden px-4 py-2 bg-zinc-800 text-white rounded-lg text-sm font-semibold">Desconectar</button>
-                            <button type="button" id="btn-sync-drive" onclick="loadFromDrive()" class="hidden px-4 py-2 bg-zinc-800 text-white rounded-lg text-sm font-semibold">Sincronizar</button>
+                        <h3 class="tvst-settings-card-title">Google Drive</h3>
+                        <p id="drive-status" class="tvst-settings-status">Cargando...</p>
+                        <p id="drive-origin-hint" class="tvst-settings-origin"></p>
+                        <div class="tvst-settings-actions">
+                            <button type="button" id="btn-connect-drive" onclick="connectDrive()" class="tvst-settings-btn is-primary">Conectar Drive</button>
+                            <button type="button" id="btn-disconnect-drive" onclick="disconnectDrive()" class="hidden tvst-settings-btn">Desconectar</button>
+                            <button type="button" id="btn-sync-drive" onclick="loadFromDrive()" class="hidden tvst-settings-btn">Sincronizar</button>
                         </div>
                     </div>
                     <div class="tvst-section-card">
-                        <h3 class="font-bold mb-2 text-sm">Backup</h3>
-                        <div class="flex flex-wrap gap-2">
-                            <button type="button" onclick="exportData()" class="px-4 py-2 bg-zinc-800 text-white rounded-lg text-sm">Exportar</button>
-                            <button type="button" onclick="importData()" class="px-4 py-2 bg-zinc-800 text-white rounded-lg text-sm">Importar</button>
-                            <button type="button" onclick="clearAllData()" class="px-4 py-2 bg-red-900 text-red-100 rounded-lg text-sm">Borrar todo</button>
+                        <h3 class="tvst-settings-card-title">Copia de seguridad</h3>
+                        <p class="tvst-settings-desc">Exporta o restaura tu biblioteca local en formato JSON.</p>
+                        <div class="tvst-settings-actions">
+                            <button type="button" onclick="exportData()" class="tvst-settings-btn">Exportar</button>
+                            <button type="button" onclick="importData()" class="tvst-settings-btn">Importar</button>
+                            <button type="button" onclick="clearAllData()" class="tvst-settings-btn is-danger">Borrar todo</button>
                         </div>
                     </div>
-                    <details class="tvst-section-card tvst-collapsible">
-                        <summary>TV Show Time</summary>
-                        <div class="tvst-collapsible-body">
-                            <p class="text-xs text-gray-500 mb-3">Importa los JSON de series, películas y listas exportados de TV Show Time. Se resuelven a TMDB por IMDB/TVDB.</p>
-                            <div class="flex flex-wrap gap-2 mb-2">
-                                <label class="px-4 py-2 bg-zinc-800 text-white rounded-lg text-sm cursor-pointer">
-                                    Series JSON
-                                    <input type="file" id="tvtime-series-file" accept=".json,application/json" class="hidden" onchange="onTvTimeFileSelected()">
-                                </label>
-                                <label class="px-4 py-2 bg-zinc-800 text-white rounded-lg text-sm cursor-pointer">
-                                    Películas JSON
-                                    <input type="file" id="tvtime-movies-file" accept=".json,application/json" class="hidden" onchange="onTvTimeFileSelected()">
-                                </label>
-                                <label class="px-4 py-2 bg-zinc-800 text-white rounded-lg text-sm cursor-pointer">
-                                    Listas JSON
-                                    <input type="file" id="tvtime-lists-file" accept=".json,application/json" class="hidden" onchange="onTvTimeFileSelected()">
-                                </label>
-                            </div>
-                            <p id="tvtime-import-files" class="text-xs text-gray-500 mb-2">Ningún archivo seleccionado</p>
-                            <label class="flex items-center gap-2 text-xs text-gray-400 mb-3">
-                                <input type="checkbox" id="tvtime-replace-library"> Reemplazar biblioteca actual
-                            </label>
-                            <button type="button" id="btn-tvtime-import" onclick="startTvTimeImport()" class="px-4 py-2 bg-yellow-400 text-black rounded-lg text-sm font-semibold" disabled>Importar TV Show Time</button>
-                            <p id="tvtime-import-progress" class="text-xs text-gray-400 mt-2 hidden"></p>
-                            <pre id="tvtime-import-report" class="tvst-import-report hidden"></pre>
-                        </div>
-                    </details>
                 </div>
             </div>
         </main>
@@ -275,9 +305,13 @@
                     <button type="button" class="tvst-hero-close" onclick="closeModal()" aria-label="Cerrar">
                         <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
                     </button>
-                    <button type="button" id="modal-hero-fav" class="tvst-hero-fav" onclick="toggleFavoriteFromHero(event)" aria-label="Favorito" title="Favorito">★</button>
+                    <button type="button" id="modal-hero-fav" class="tvst-hero-fav" onclick="toggleFavoriteFromHero(event)" aria-label="Favorito" title="Favorito">
+                        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><path d="M12 2.5l2.9 5.9 6.5.9-4.7 4.6 1.1 6.5L12 17.3l-5.8 3.1 1.1-6.5L2.6 9.3l6.5-.9L12 2.5z"/></svg>
+                    </button>
                     <div id="modal-hero-actions" class="tvst-hero-actions" aria-label="Acciones"></div>
-                    <button type="button" class="tvst-hero-menu" onclick="toggleDetailMenu(event)" aria-label="Opciones">⋯</button>
+                    <button type="button" class="tvst-hero-menu" onclick="toggleDetailMenu(event)" aria-label="Opciones">
+                        <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.75"/><circle cx="12" cy="12" r="1.75"/><circle cx="19" cy="12" r="1.75"/></svg>
+                    </button>
                     <div id="detail-overflow-menu" class="tvst-overflow-menu hidden" role="menu"></div>
                     <div class="tvst-hero-fade"></div>
                     <div class="tvst-hero-footer">
@@ -307,15 +341,6 @@
                     <div id="modal-episodes" class="hidden">
                         <div id="episodes-list"></div>
                     </div>
-
-                    <!-- Hidden legacy nodes kept for JS compatibility -->
-                    <div id="modal-poster" class="hidden"></div>
-                    <div id="modal-meta" class="hidden"></div>
-                    <p id="modal-overview" class="hidden"></p>
-                    <div id="modal-watch-providers" class="hidden"></div>
-                    <div id="modal-rating" class="hidden"></div>
-                    <input type="hidden" id="modal-rating-input" value="0">
-                    <select id="modal-status" class="hidden"><option value="pending">Pendiente</option></select>
                 </div>
             </div>
         </div>
@@ -352,8 +377,13 @@
                     <p id="episode-air-date" class="tvst-episode-detail-meta"></p>
                     <p id="episode-overview" class="tvst-episode-detail-overview">Sin descripción</p>
                     <div class="tvst-episode-actions">
-                        <button type="button" id="episode-skip-btn" class="tvst-skip-btn tvst-episode-skip-btn" onclick="toggleEpisodeSkippedFromDetail()" aria-label="Saltar episodio">↷ Saltar</button>
-                        <button type="button" id="episode-watch-btn" class="tvst-check-btn tvst-episode-watch-btn" onclick="toggleEpisodeFromDetail()" aria-label="Marcar visto">✓</button>
+                        <button type="button" id="episode-skip-btn" class="tvst-skip-btn tvst-episode-skip-btn" onclick="toggleEpisodeSkippedFromDetail()" aria-label="Saltar episodio">
+                            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 6l8 6-8 6V6z"/><path d="M18 6v12"/></svg>
+                            <span>Saltar</span>
+                        </button>
+                        <button type="button" id="episode-watch-btn" class="tvst-check-btn tvst-episode-watch-btn" onclick="toggleEpisodeFromDetail()" aria-label="Marcar visto">
+                            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>
+                        </button>
                     </div>
                 </div>
             </div>
@@ -435,10 +465,10 @@
         </div>
     </div>
 
-    <div id="loading-overlay" class="fixed inset-0 z-[60] bg-black/60 flex items-center justify-center hidden">
-        <div class="bg-zinc-900 border border-zinc-700 rounded-xl p-6 flex flex-col items-center gap-3">
-            <div class="w-10 h-10 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-            <p class="text-sm text-gray-400">Cargando...</p>
+    <div id="loading-overlay" class="tvst-loading-overlay hidden" role="status" aria-live="polite">
+        <div class="tvst-loading-card">
+            <div class="tvst-loading-spinner"></div>
+            <p class="tvst-loading-label">Cargando...</p>
         </div>
     </div>
 
@@ -446,12 +476,25 @@
         <span id="toast-message">Mensaje</span>
     </div>
 
+    <!-- Diálogo de confirmación / entrada integrado -->
+    <div id="app-dialog-modal" class="tvst-dialog-modal hidden" role="dialog" aria-modal="true" aria-labelledby="app-dialog-title">
+        <div class="tvst-dialog-backdrop" onclick="resolveAppDialog(null)"></div>
+        <div class="tvst-dialog-card">
+            <h2 id="app-dialog-title" class="tvst-dialog-title">Confirmar</h2>
+            <p id="app-dialog-message" class="tvst-dialog-message"></p>
+            <input type="text" id="app-dialog-input" class="tvst-dialog-input hidden" autocomplete="off">
+            <div class="tvst-dialog-actions">
+                <button type="button" id="app-dialog-cancel" class="tvst-dialog-btn is-cancel">Cancelar</button>
+                <button type="button" id="app-dialog-confirm" class="tvst-dialog-btn is-confirm">Aceptar</button>
+            </div>
+        </div>
+    </div>
+
     <input type="file" id="import-file" accept=".json" class="hidden" onchange="handleImport(event)">
 
     <script src="config.js" onerror="console.warn('[Config] config.js no encontrado')"></script>
     <script src="tmdb-service.js"></script>
     <script src="drive-service.js"></script>
-    <script src="tvtime-import.js"></script>
     <script src="app.js"></script>
     <script>
         if (document.readyState === 'loading') {

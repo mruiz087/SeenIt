@@ -18,10 +18,16 @@ function hasGoogleConfig() {
 function formatDriveError(error) {
     if (error == null) return 'Error desconocido';
     if (typeof error === 'string') return error;
+    if (error.type) {
+        return error.message ? `${error.type}: ${error.message}` : String(error.type);
+    }
     if (error instanceof Error && error.message) return error.message;
 
     const nested = error?.result?.error || error?.error || error;
     if (typeof nested === 'string') return nested;
+    if (nested?.type) {
+        return nested.message ? `${nested.type}: ${nested.message}` : String(nested.type);
+    }
     if (nested?.message) {
         const code = nested.code ? ` (${nested.code})` : '';
         return `${nested.message}${code}`;
@@ -47,6 +53,23 @@ let tokenExpiresAt = 0;
 let dataFileId = null;
 let renewPromise = null;
 let gisLoadPromise = null;
+let pendingTokenResolve = null;
+let pendingTokenReject = null;
+let pendingTokenTimer = null;
+let findOrCreatePromise = null;
+
+function isDriveServiceReady() {
+    return Boolean(gisInited && tokenClient);
+}
+
+function clearPendingTokenRequest() {
+    if (pendingTokenTimer) {
+        clearTimeout(pendingTokenTimer);
+        pendingTokenTimer = null;
+    }
+    pendingTokenResolve = null;
+    pendingTokenReject = null;
+}
 
 async function initDriveService() {
     console.log('[Drive] Inicializando servicio...');
@@ -133,6 +156,26 @@ function loadGIS() {
             tokenClient = google.accounts.oauth2.initTokenClient({
                 client_id: getGoogleClientId(),
                 scope: SCOPES,
+                callback: (response) => {
+                    const resolveFn = pendingTokenResolve;
+                    const rejectFn = pendingTokenReject;
+                    clearPendingTokenRequest();
+                    if (response?.error) {
+                        console.error('[Drive] Error de autenticación:', response);
+                        rejectFn?.(response);
+                        return;
+                    }
+                    accessToken = response.access_token;
+                    persistDriveToken(accessToken, response.expires_in);
+                    console.log('[Drive] Token obtenido exitosamente');
+                    resolveFn?.(response);
+                },
+                error_callback: (err) => {
+                    const rejectFn = pendingTokenReject;
+                    clearPendingTokenRequest();
+                    console.error('[Drive] Error de popup/GIS:', err);
+                    rejectFn?.(err || new Error('popup_failed'));
+                },
             });
             gisInited = true;
             resolve();
@@ -188,24 +231,29 @@ function requestAccessToken(prompt) {
             return;
         }
 
-        tokenClient.callback = (response) => {
-            if (response.error) {
-                console.error('[Drive] Error de autenticación:', response);
-                reject(response);
-                return;
-            }
+        if (pendingTokenReject) {
+            const prevReject = pendingTokenReject;
+            clearPendingTokenRequest();
+            prevReject(new Error('superseded'));
+        }
 
-            accessToken = response.access_token;
-            persistDriveToken(accessToken, response.expires_in);
-            console.log('[Drive] Token obtenido exitosamente');
-            resolve(response);
-        };
+        pendingTokenResolve = resolve;
+        pendingTokenReject = reject;
+
+        const isSilent = prompt === 'none';
+        pendingTokenTimer = setTimeout(() => {
+            const rejectFn = pendingTokenReject;
+            clearPendingTokenRequest();
+            rejectFn?.(new Error(isSilent ? 'silent_timeout' : 'popup_timeout'));
+        }, isSilent ? 6000 : 120000);
 
         try {
-            tokenClient.requestAccessToken({ prompt: prompt || '' });
+            tokenClient.requestAccessToken({ prompt: prompt ?? '' });
         } catch (error) {
             console.error('[Drive] Error iniciando autenticación:', error);
-            reject(error);
+            const rejectFn = pendingTokenReject;
+            clearPendingTokenRequest();
+            rejectFn?.(error);
         }
     });
 }
@@ -217,18 +265,28 @@ async function ensureValidAccessToken(options = {}) {
         return { access_token: accessToken };
     }
 
+    if (interactive) {
+        // Cancelar cualquier intento silencioso colgado y lanzar el popup síncronamente
+        // para conservar el gesto de usuario (user activation).
+        renewPromise = null;
+        try {
+            return await requestAccessToken('');
+        } catch (err) {
+            const msg = formatDriveError(err).toLowerCase();
+            if (msg.includes('consent_required') || msg.includes('interaction_required')) {
+                return await requestAccessToken('consent');
+            }
+            throw err;
+        }
+    }
+
     if (renewPromise) {
         return renewPromise;
     }
 
     renewPromise = (async () => {
         try {
-            try {
-                return await requestAccessToken('');
-            } catch (silentError) {
-                if (!interactive) throw silentError;
-                return await requestAccessToken('consent');
-            }
+            return await requestAccessToken('none');
         } finally {
             renewPromise = null;
         }
@@ -254,11 +312,13 @@ function signOut() {
     }
     accessToken = null;
     dataFileId = null;
+    findOrCreatePromise = null;
     clearPersistedDriveToken();
 }
 
 function resetDriveDataFileCache() {
     dataFileId = null;
+    findOrCreatePromise = null;
 }
 
 function isAuthenticated() {
@@ -309,7 +369,11 @@ async function withDriveAuth(operation) {
 }
 
 async function findOrCreateDataFile() {
-    return withDriveAuth(async () => {
+    if (dataFileId) return dataFileId;
+    if (findOrCreatePromise) return findOrCreatePromise;
+
+    findOrCreatePromise = withDriveAuth(async () => {
+        if (dataFileId) return dataFileId;
         const q = encodeURIComponent(`name='${DATA_FILE_NAME}' and trashed=false`);
         const data = await driveFetch(
             `${DRIVE_API}/files?q=${q}&spaces=drive&fields=files(id,name)`,
@@ -323,7 +387,11 @@ async function findOrCreateDataFile() {
         }
 
         return createDataFile();
+    }).finally(() => {
+        findOrCreatePromise = null;
     });
+
+    return findOrCreatePromise;
 }
 
 async function createDataFile() {
@@ -369,7 +437,7 @@ async function loadUserData() {
     });
 }
 
-async function saveUserData(data) {
+async function saveUserData(data, options = {}) {
     return withDriveAuth(async () => {
         if (!data.movies || !data.shows) {
             throw new Error('Estructura de datos inválida. Debe contener movies y shows.');
@@ -382,14 +450,50 @@ async function saveUserData(data) {
             await findOrCreateDataFile();
         }
 
-        const metadata = {
+        const metadataJson = JSON.stringify({
             name: DATA_FILE_NAME,
             mimeType: 'application/json',
-        };
+        });
+        const payloadJson = JSON.stringify(data, null, 2);
+
+        if (options.keepalive) {
+            const boundary = `seenit_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+            const multipartBody = [
+                `--${boundary}`,
+                'Content-Type: application/json; charset=UTF-8',
+                '',
+                metadataJson,
+                `--${boundary}`,
+                'Content-Type: application/json; charset=UTF-8',
+                '',
+                payloadJson,
+                `--${boundary}--`,
+            ].join('\r\n');
+
+            if (new TextEncoder().encode(multipartBody).length <= 60 * 1024) {
+                const response = await fetch(
+                    `https://www.googleapis.com/upload/drive/v3/files/${dataFileId}?uploadType=multipart`,
+                    {
+                        method: 'PATCH',
+                        keepalive: true,
+                        headers: {
+                            Authorization: `Bearer ${accessToken}`,
+                            'Content-Type': `multipart/related; boundary=${boundary}`,
+                        },
+                        body: multipartBody,
+                    },
+                );
+                if (!response.ok) {
+                    throw new Error('Error guardando archivo en Drive');
+                }
+                console.log('[Drive] Datos guardados exitosamente');
+                return true;
+            }
+        }
 
         const form = new FormData();
-        form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
-        form.append('file', new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
+        form.append('metadata', new Blob([metadataJson], { type: 'application/json' }));
+        form.append('file', new Blob([payloadJson], { type: 'application/json' }));
 
         const response = await fetch(
             `https://www.googleapis.com/upload/drive/v3/files/${dataFileId}?uploadType=multipart`,
@@ -418,6 +522,7 @@ async function getUserInfo() {
 
 window.DriveService = {
     initDriveService,
+    isDriveServiceReady,
     authenticate,
     ensureValidAccessToken,
     signOut,
@@ -430,6 +535,7 @@ window.DriveService = {
 };
 
 window.initDriveService = initDriveService;
+window.isDriveServiceReady = isDriveServiceReady;
 window.authenticate = authenticate;
 window.ensureValidAccessToken = ensureValidAccessToken;
 window.signOut = signOut;

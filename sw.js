@@ -2,12 +2,12 @@
  * Service Worker - SeenIt PWA
  *
  * - Shell estático: Cache First (match exacto)
- * - config.js: Network First (nunca cache-first)
+ * - config.js y /api/*: siempre red directa sin persistir en caché
  * - APIs externas: red directa
  */
 
-const STATIC_CACHE = 'seenit-static-v67';
-const DYNAMIC_CACHE = 'seenit-dynamic-v67';
+const STATIC_CACHE = 'seenit-static-v79';
+const DYNAMIC_CACHE = 'seenit-dynamic-v79';
 
 const STATIC_FILES = [
     './',
@@ -17,7 +17,6 @@ const STATIC_FILES = [
     './app.js',
     './drive-service.js',
     './tmdb-service.js',
-    './tvtime-import.js',
     './icons/icon.svg',
     './icons/icon-192.png',
     './icons/icon-512.png',
@@ -25,7 +24,7 @@ const STATIC_FILES = [
     './icons/icon-maskable-512.png',
 ];
 
-const NETWORK_FIRST_FILES = new Set([
+const NETWORK_ONLY_FILES = new Set([
     'config.js',
 ]);
 
@@ -44,8 +43,9 @@ function isExactStaticFile(pathname) {
     });
 }
 
-function isNetworkFirstFile(pathname) {
-    return NETWORK_FIRST_FILES.has(normalizePathname(pathname));
+function isNetworkOnlyPath(pathname) {
+    const normalized = normalizePathname(pathname);
+    return NETWORK_ONLY_FILES.has(normalized) || normalized.startsWith('api/');
 }
 
 self.addEventListener('install', (event) => {
@@ -109,8 +109,15 @@ self.addEventListener('fetch', (event) => {
         return;
     }
 
-    if (isNetworkFirstFile(pathname)) {
-        event.respondWith(networkFirstStrategy(event.request, DYNAMIC_CACHE));
+    if (isNetworkOnlyPath(pathname)) {
+        event.respondWith(
+            fetch(event.request, { cache: 'no-store' }).catch(() => (
+                new Response(
+                    JSON.stringify({ error: 'Offline' }),
+                    { status: 503, statusText: 'Service Unavailable', headers: { 'Content-Type': 'application/json' } },
+                )
+            )),
+        );
         return;
     }
 
@@ -126,7 +133,7 @@ async function cacheFirstStrategy(request, cacheName) {
     try {
         const cachedResponse = await caches.match(request);
         if (cachedResponse) {
-            fetchAndCache(request, cacheName);
+            fetchAndCache(request, cacheName).catch(() => {});
             return cachedResponse;
         }
         return await fetchAndCache(request, cacheName);

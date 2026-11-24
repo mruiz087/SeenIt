@@ -14,6 +14,10 @@
 // CONFIGURACIÓN
 // ============================================
 
+function isTmdbProxyEnabled() {
+    return typeof CONFIG_TMDB_PROXY !== 'undefined' && Boolean(CONFIG_TMDB_PROXY);
+}
+
 function getTmdbApiKey() {
     const key = typeof CONFIG_TMDB_API_KEY !== 'undefined' ? String(CONFIG_TMDB_API_KEY).trim() : '';
     if (!key || key.includes('tu_api_key')) return '';
@@ -21,6 +25,9 @@ function getTmdbApiKey() {
 }
 
 function hasTmdbConfig() {
+    if (isTmdbProxyEnabled()) {
+        return typeof CONFIG_TMDB_CONFIGURED === 'undefined' ? true : Boolean(CONFIG_TMDB_CONFIGURED);
+    }
     return Boolean(getTmdbApiKey());
 }
 
@@ -28,17 +35,128 @@ const TMDB_BASE_URL = 'https://api.themoviedb.org/3';
 const TMDB_IMAGE_BASE_URL = 'https://image.tmdb.org/t/p';
 
 // ============================================
-// ESTADO GLOBAL
+// ESTADO GLOBAL Y CACHÉS
 // ============================================
 
 let searchTimeout = null;
+let currentSearchAbortController = null;
+
 const seasonDetailsCache = new Map();
+const seasonInflight = new Map();
 const findExternalCache = new Map();
 const tvMetaCache = new Map();
+const movieDetailsCache = new Map();
+const movieFilterMetaCache = new Map();
+const tvDetailsCache = new Map();
+const watchProvidersCache = new Map();
+const personDetailsCache = new Map();
+const personCreditsCache = new Map();
+const searchMultiCache = new Map();
+const trendingCache = new Map();
+const inflightTmdbFetch = new Map();
 
 const SEASON_CACHE_STORAGE_KEY = 'seenit_tmdb_seasons_v1';
 const SEASON_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
-let seasonCachePersistTimer = null;
+const SESSION_DETAIL_TTL_MS = 15 * 60 * 1000;
+const SESSION_SEARCH_TTL_MS = 3 * 60 * 1000;
+const SESSION_TRENDING_TTL_MS = 15 * 60 * 1000;
+const TMDB_IDB_NAME = 'seenit_tmdb_cache_db';
+const TMDB_IDB_LEGACY_STORE = 'seasons';
+const TMDB_IDB_ITEM_STORE = 'season_items';
+const TMDB_IDB_VERSION = 2;
+const TMDB_IDB_MAX_ITEMS = 1500;
+const TMDB_MAX_CONCURRENT_REQUESTS = 6;
+const TMDB_APPEND_SEASON_CHUNK_SIZE = 20;
+
+let tmdbIdbPromise = null;
+let seasonPruneScheduled = false;
+let activeTmdbRequests = 0;
+const tmdbRequestQueue = [];
+
+function getTimedCache(map, key, ttlMs) {
+    const entry = map.get(key);
+    if (!entry) return null;
+    if ((Date.now() - entry.savedAt) > ttlMs) {
+        map.delete(key);
+        return null;
+    }
+    return entry.value;
+}
+
+function setTimedCache(map, key, value, maxSize = 200) {
+    if (map.has(key)) map.delete(key);
+    map.set(key, { savedAt: Date.now(), value });
+    while (map.size > maxSize) {
+        const oldestKey = map.keys().next().value;
+        if (oldestKey === undefined) break;
+        map.delete(oldestKey);
+    }
+}
+
+function enqueueTmdbRequest(task) {
+    return new Promise((resolve, reject) => {
+        const run = async () => {
+            activeTmdbRequests += 1;
+            try {
+                resolve(await task());
+            } catch (err) {
+                reject(err);
+            } finally {
+                activeTmdbRequests -= 1;
+                const next = tmdbRequestQueue.shift();
+                if (next) next();
+            }
+        };
+
+        if (activeTmdbRequests < TMDB_MAX_CONCURRENT_REQUESTS) {
+            run();
+        } else {
+            tmdbRequestQueue.push(run);
+        }
+    });
+}
+
+function sleepMs(ms, signal = null) {
+    return new Promise((resolve, reject) => {
+        if (signal?.aborted) {
+            reject(new DOMException('Aborted', 'AbortError'));
+            return;
+        }
+        const onAbort = () => {
+            clearTimeout(timer);
+            reject(new DOMException('Aborted', 'AbortError'));
+        };
+        const timer = setTimeout(() => {
+            signal?.removeEventListener('abort', onAbort);
+            resolve();
+        }, ms);
+        signal?.addEventListener('abort', onAbort, { once: true });
+    });
+}
+
+function openTmdbIdb() {
+    if (tmdbIdbPromise) return tmdbIdbPromise;
+    if (typeof indexedDB === 'undefined') return Promise.resolve(null);
+    tmdbIdbPromise = new Promise((resolve) => {
+        try {
+            const req = indexedDB.open(TMDB_IDB_NAME, TMDB_IDB_VERSION);
+            req.onupgradeneeded = () => {
+                const db = req.result;
+                if (!db.objectStoreNames.contains(TMDB_IDB_LEGACY_STORE)) {
+                    db.createObjectStore(TMDB_IDB_LEGACY_STORE);
+                }
+                if (!db.objectStoreNames.contains(TMDB_IDB_ITEM_STORE)) {
+                    db.createObjectStore(TMDB_IDB_ITEM_STORE);
+                }
+            };
+            req.onsuccess = () => resolve(req.result);
+            req.onerror = () => resolve(null);
+        } catch (_) {
+            resolve(null);
+        }
+    });
+    return tmdbIdbPromise;
+}
 
 function slimSeasonPayload(details) {
     return {
@@ -52,65 +170,154 @@ function slimSeasonPayload(details) {
     };
 }
 
-function loadSeasonCacheFromStorage() {
-    try {
-        const raw = localStorage.getItem(SEASON_CACHE_STORAGE_KEY);
-        if (!raw) return;
-        const parsed = JSON.parse(raw);
-        if (!parsed?.savedAt || (Date.now() - Number(parsed.savedAt)) > SEASON_CACHE_TTL_MS) {
-            localStorage.removeItem(SEASON_CACHE_STORAGE_KEY);
-            return;
+function schedulePruneSeasonItemsIdb() {
+    if (seasonPruneScheduled) return;
+    seasonPruneScheduled = true;
+    setTimeout(async () => {
+        seasonPruneScheduled = false;
+        try {
+            const db = await openTmdbIdb();
+            if (!db || !db.objectStoreNames.contains(TMDB_IDB_ITEM_STORE)) return;
+            const records = await new Promise((resolve) => {
+                try {
+                    const tx = db.transaction(TMDB_IDB_ITEM_STORE, 'readonly');
+                    const store = tx.objectStore(TMDB_IDB_ITEM_STORE);
+                    const keysReq = store.getAllKeys();
+                    const valsReq = store.getAll();
+                    tx.oncomplete = () => {
+                        const keys = keysReq.result || [];
+                        const vals = valsReq.result || [];
+                        resolve(keys.map((key, idx) => ({ key, savedAt: Number(vals[idx]?.savedAt) || 0 })));
+                    };
+                    tx.onerror = () => resolve([]);
+                } catch (_) {
+                    resolve([]);
+                }
+            });
+            const now = Date.now();
+            const expiredKeys = records
+                .filter(r => !r.savedAt || (now - r.savedAt) > SEASON_CACHE_TTL_MS)
+                .map(r => r.key);
+            const fresh = records
+                .filter(r => r.savedAt && (now - r.savedAt) <= SEASON_CACHE_TTL_MS)
+                .sort((a, b) => a.savedAt - b.savedAt);
+            const overflowCount = Math.max(0, fresh.length - TMDB_IDB_MAX_ITEMS);
+            const keysToDelete = [
+                ...expiredKeys,
+                ...fresh.slice(0, overflowCount).map(r => r.key),
+            ];
+            if (!keysToDelete.length) return;
+            const tx = db.transaction(TMDB_IDB_ITEM_STORE, 'readwrite');
+            const store = tx.objectStore(TMDB_IDB_ITEM_STORE);
+            keysToDelete.forEach(k => store.delete(k));
+        } catch (_) {
+            /* ignore */
         }
-        const entries = parsed.entries || {};
-        for (const [key, value] of Object.entries(entries)) {
-            if (value && Array.isArray(value.episodes)) {
-                seasonDetailsCache.set(key, value);
+    }, 5000);
+}
+
+async function putSeasonsToIdb(entries) {
+    if (!entries.length) return;
+    try {
+        const db = await openTmdbIdb();
+        if (!db || !db.objectStoreNames.contains(TMDB_IDB_ITEM_STORE)) return;
+        const now = Date.now();
+        await new Promise((resolve) => {
+            try {
+                const tx = db.transaction(TMDB_IDB_ITEM_STORE, 'readwrite');
+                const store = tx.objectStore(TMDB_IDB_ITEM_STORE);
+                for (const { key, data } of entries) {
+                    if (data?.notFound) continue;
+                    store.put({ savedAt: now, data: slimSeasonPayload(data) }, key);
+                }
+                tx.oncomplete = () => resolve();
+                tx.onerror = () => resolve();
+            } catch (_) {
+                resolve();
+            }
+        });
+        schedulePruneSeasonItemsIdb();
+    } catch (error) {
+        console.warn('[TMDB] No se pudo guardar caché de temporadas:', error);
+    }
+}
+
+async function loadSeasonCacheFromStorage() {
+    // Liberar localStorage legado para evitar QuotaExceededError en la biblioteca del usuario
+    try {
+        localStorage.removeItem(SEASON_CACHE_STORAGE_KEY);
+    } catch (_) { /* ignore */ }
+
+    try {
+        const db = await openTmdbIdb();
+        if (!db) return;
+
+        const now = Date.now();
+        if (db.objectStoreNames.contains(TMDB_IDB_ITEM_STORE)) {
+            const loaded = await new Promise((resolve) => {
+                try {
+                    const tx = db.transaction(TMDB_IDB_ITEM_STORE, 'readonly');
+                    const store = tx.objectStore(TMDB_IDB_ITEM_STORE);
+                    const keysReq = store.getAllKeys();
+                    const valsReq = store.getAll();
+                    tx.oncomplete = () => resolve({ keys: keysReq.result || [], vals: valsReq.result || [] });
+                    tx.onerror = () => resolve({ keys: [], vals: [] });
+                } catch (_) {
+                    resolve({ keys: [], vals: [] });
+                }
+            });
+            for (let i = 0; i < loaded.keys.length; i += 1) {
+                const key = String(loaded.keys[i]);
+                const entry = loaded.vals[i];
+                if (entry?.savedAt && (now - Number(entry.savedAt)) <= SEASON_CACHE_TTL_MS && Array.isArray(entry.data?.episodes)) {
+                    if (!seasonDetailsCache.has(key)) {
+                        seasonDetailsCache.set(key, entry.data);
+                    }
+                }
             }
         }
-        console.log(`[TMDB] Caché de temporadas restaurada (${seasonDetailsCache.size})`);
+
+        // Migrar caché monolítica v1 si aún existe
+        if (db.objectStoreNames.contains(TMDB_IDB_LEGACY_STORE)) {
+            const legacy = await new Promise((resolve) => {
+                try {
+                    const tx = db.transaction(TMDB_IDB_LEGACY_STORE, 'readonly');
+                    const req = tx.objectStore(TMDB_IDB_LEGACY_STORE).get(SEASON_CACHE_STORAGE_KEY);
+                    req.onsuccess = () => resolve(req.result || null);
+                    req.onerror = () => resolve(null);
+                } catch (_) {
+                    resolve(null);
+                }
+            });
+            if (legacy?.savedAt && (now - Number(legacy.savedAt)) <= SEASON_CACHE_TTL_MS && legacy.entries) {
+                const toMigrate = [];
+                for (const [key, value] of Object.entries(legacy.entries)) {
+                    if (value && Array.isArray(value.episodes) && !seasonDetailsCache.has(key)) {
+                        seasonDetailsCache.set(key, value);
+                        toMigrate.push({ key, data: value });
+                    }
+                }
+                if (toMigrate.length) {
+                    void putSeasonsToIdb(toMigrate);
+                }
+            }
+            if (legacy) {
+                try {
+                    const tx = db.transaction(TMDB_IDB_LEGACY_STORE, 'readwrite');
+                    tx.objectStore(TMDB_IDB_LEGACY_STORE).delete(SEASON_CACHE_STORAGE_KEY);
+                } catch (_) { /* ignore */ }
+            }
+        }
+
+        if (seasonDetailsCache.size) {
+            console.log(`[TMDB] Caché de temporadas restaurada (${seasonDetailsCache.size})`);
+        }
     } catch (error) {
         console.warn('[TMDB] No se pudo leer caché de temporadas:', error);
     }
 }
 
-function persistSeasonCacheToStorage() {
-    try {
-        const entries = {};
-        let count = 0;
-        for (const [key, value] of seasonDetailsCache.entries()) {
-            entries[key] = slimSeasonPayload(value);
-            count += 1;
-            // Evitar saturar localStorage
-            if (count >= 400) break;
-        }
-        localStorage.setItem(SEASON_CACHE_STORAGE_KEY, JSON.stringify({
-            savedAt: Date.now(),
-            entries,
-        }));
-    } catch (error) {
-        console.warn('[TMDB] No se pudo guardar caché de temporadas:', error);
-        try {
-            // Si hay cuota, limpiar y reintentar con menos entradas
-            const trimmed = {};
-            let n = 0;
-            for (const [key, value] of seasonDetailsCache.entries()) {
-                trimmed[key] = slimSeasonPayload(value);
-                if (++n >= 120) break;
-            }
-            localStorage.setItem(SEASON_CACHE_STORAGE_KEY, JSON.stringify({
-                savedAt: Date.now(),
-                entries: trimmed,
-            }));
-        } catch (_) { /* ignore */ }
-    }
-}
-
-function schedulePersistSeasonCache() {
-    if (seasonCachePersistTimer) clearTimeout(seasonCachePersistTimer);
-    seasonCachePersistTimer = setTimeout(persistSeasonCacheToStorage, 400);
-}
-
-loadSeasonCacheFromStorage();
+const seasonCacheReadyPromise = loadSeasonCacheFromStorage();
 
 // ============================================
 // FUNCIONES AUXILIARES
@@ -128,37 +335,90 @@ function getImageUrl(path, size = 'w500') {
 }
 
 /**
- * Realiza una petición a la API de TMDB
+ * Realiza una petición a la API de TMDB con control de concurrencia,
+ * deduplicación en curso y reintento automático en 429/errores transitorios.
  * @param {string} endpoint - Endpoint de la API
  * @param {Object} params - Parámetros de la query
+ * @param {Object} [options] - Opciones ({ signal })
  * @returns {Promise<Object>} Respuesta de la API
  */
-async function fetchTMDB(endpoint, params = {}) {
+async function fetchTMDB(endpoint, params = {}, options = {}) {
     if (!hasTmdbConfig()) {
         throw new Error('CONFIG_TMDB_MISSING');
     }
-    try {
-        const url = new URL(`${TMDB_BASE_URL}${endpoint}`);
+
+    const useProxy = isTmdbProxyEnabled();
+    const url = useProxy
+        ? new URL(`/api/tmdb${endpoint}`, window.location.origin)
+        : new URL(`${TMDB_BASE_URL}${endpoint}`);
+
+    const cleanEntries = Object.entries(params)
+        .filter(([, value]) => value !== undefined && value !== null)
+        .sort(([a], [b]) => a.localeCompare(b));
+
+    if (!useProxy) {
         url.searchParams.append('api_key', getTmdbApiKey());
-        url.searchParams.append('language', 'es-ES');
-
-        Object.entries(params).forEach(([key, value]) => {
-            if (value !== undefined && value !== null) {
-                url.searchParams.append(key, value);
-            }
-        });
-
-        const response = await fetch(url);
-
-        if (!response.ok) {
-            throw new Error(`Error TMDB: ${response.status} ${response.statusText}`);
-        }
-
-        return await response.json();
-    } catch (error) {
-        console.error('[TMDB] Error en petición:', error);
-        throw error;
     }
+    url.searchParams.append('language', 'es-ES');
+    cleanEntries.forEach(([key, value]) => {
+        url.searchParams.append(key, value);
+    });
+
+    const signal = options?.signal || null;
+    const inflightKey = !signal ? `${endpoint}?${cleanEntries.map(([k, v]) => `${k}=${v}`).join('&')}` : null;
+    if (inflightKey && inflightTmdbFetch.has(inflightKey)) {
+        return inflightTmdbFetch.get(inflightKey);
+    }
+
+    const exec = async () => {
+        const maxAttempts = 3;
+        for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+            if (signal?.aborted) {
+                throw new DOMException('Aborted', 'AbortError');
+            }
+            const response = await enqueueTmdbRequest(() => fetch(url, signal ? { signal } : undefined));
+
+            if (response.ok) {
+                return await response.json();
+            }
+
+            const status = response.status;
+            const retryable = status === 429 || status === 502 || status === 503 || status === 504;
+            if (retryable && attempt < maxAttempts - 1) {
+                const retryHeader = Number(response.headers.get('retry-after'));
+                const backoffMs = Number.isFinite(retryHeader) && retryHeader > 0
+                    ? Math.min(4000, retryHeader * 1000)
+                    : Math.min(3000, 350 * (2 ** attempt));
+                await sleepMs(backoffMs, signal);
+                continue;
+            }
+
+            const err = new Error(`Error TMDB: ${status} ${response.statusText}`);
+            err.status = status;
+            throw err;
+        }
+    };
+
+    const promise = exec().catch((error) => {
+        if (error?.name === 'AbortError') {
+            throw error;
+        }
+        if (error?.status === 404) {
+            console.warn('[TMDB] Recurso no encontrado (404):', endpoint);
+        } else {
+            console.error('[TMDB] Error en petición:', error);
+        }
+        throw error;
+    }).finally(() => {
+        if (inflightKey) {
+            inflightTmdbFetch.delete(inflightKey);
+        }
+    });
+
+    if (inflightKey) {
+        inflightTmdbFetch.set(inflightKey, promise);
+    }
+    return promise;
 }
 
 /**
@@ -233,28 +493,37 @@ async function findTVByTitleYear(title, year) {
  * Busca películas y series
  * @param {string} query - Término de búsqueda
  * @param {number} page - Página de resultados (default: 1)
+ * @param {Object} [options] - Opciones ({ signal })
  * @returns {Promise<Object>} Resultados con películas y series
  */
-async function searchMulti(query, page = 1) {
+async function searchMulti(query, page = 1, options = {}) {
+    const cacheKey = `${String(query || '').trim().toLowerCase()}|p=${page}`;
+    const cached = getTimedCache(searchMultiCache, cacheKey, SESSION_SEARCH_TTL_MS);
+    if (cached) return cached;
+
     try {
         const response = await fetchTMDB('/search/multi', {
             query: query,
             page: page,
             include_adult: false,
-        });
-        
+        }, options);
+
         // Filtrar solo películas y series
-        const results = response.results.filter(item => 
-            item.media_type === 'movie' || item.media_type === 'tv'
+        const results = (response.results || []).filter(item =>
+            item.media_type === 'movie' || item.media_type === 'tv',
         );
-        
-        return {
+
+        const normalized = {
             ...response,
             results: results,
             total_results: results.length,
         };
+        setTimedCache(searchMultiCache, cacheKey, normalized, 100);
+        return normalized;
     } catch (error) {
-        console.error('[TMDB] Error en búsqueda:', error);
+        if (error?.name !== 'AbortError') {
+            console.error('[TMDB] Error en búsqueda:', error);
+        }
         throw error;
     }
 }
@@ -301,18 +570,60 @@ async function searchTV(query, page = 1) {
 // DETALLES
 // ============================================
 
+function extractWatchProvidersFromResponse(response) {
+    const countries = response?.results || {};
+    const countryKey = Object.keys(countries).find(key => key.toUpperCase() === 'ES') || Object.keys(countries)[0];
+    const countryData = countryKey ? countries[countryKey] : {};
+
+    const rawProviders = [
+        ...(countryData.flatrate || []),
+        ...(countryData.rent || []),
+        ...(countryData.buy || []),
+    ];
+
+    const seen = new Set();
+    const deduped = [];
+    for (const provider of rawProviders) {
+        const key = provider?.provider_id != null
+            ? `id:${provider.provider_id}`
+            : `name:${String(provider?.provider_name || '').trim().toLowerCase()}`;
+        if (!provider?.provider_name || seen.has(key)) continue;
+        seen.add(key);
+        deduped.push({
+            provider_id: provider.provider_id ?? null,
+            provider_name: provider.provider_name,
+            logo_path: provider.logo_path || null,
+        });
+    }
+    return deduped;
+}
+
 /**
- * Obtiene detalles de una película
+ * Obtiene detalles de una película (incluye créditos, recomendaciones y plataformas)
  * @param {number} id - ID de TMDB de la película
  * @returns {Promise<Object>} Detalles de la película
  */
 async function getMovieDetails(id) {
+    const cacheKey = String(id);
+    const cached = getTimedCache(movieDetailsCache, cacheKey, SESSION_DETAIL_TTL_MS);
+    if (cached) return cached;
+
     try {
         const response = await fetchTMDB(`/movie/${id}`, {
-            append_to_response: 'credits,recommendations',
+            append_to_response: 'credits,recommendations,watch/providers',
         });
-        
-        return normalizeMovieData(response);
+
+        const normalized = normalizeMovieData(response);
+        setTimedCache(movieDetailsCache, cacheKey, normalized, 150);
+        setTimedCache(movieFilterMetaCache, cacheKey, {
+            id_tmdb: normalized.id_tmdb,
+            generos: normalized.generos,
+            runtime: normalized.runtime,
+        }, 300);
+        if (Array.isArray(normalized.watch_providers)) {
+            setTimedCache(watchProvidersCache, `movie:${id}`, normalized.watch_providers, 300);
+        }
+        return normalized;
     } catch (error) {
         console.error('[TMDB] Error obteniendo detalles de película:', error);
         throw error;
@@ -320,17 +631,78 @@ async function getMovieDetails(id) {
 }
 
 /**
- * Obtiene detalles de una serie
+ * Meta ligera de película (solo géneros y runtime, sin créditos ni recomendaciones).
+ * @param {number} id - ID de TMDB de la película
+ * @returns {Promise<{id_tmdb:number, generos:string[], runtime:number|null}>}
+ */
+async function getMovieFilterMeta(id) {
+    const cacheKey = String(id);
+    const fromFull = getTimedCache(movieDetailsCache, cacheKey, SESSION_DETAIL_TTL_MS);
+    if (fromFull) {
+        return {
+            id_tmdb: fromFull.id_tmdb,
+            generos: fromFull.generos || [],
+            runtime: fromFull.runtime || null,
+        };
+    }
+    const cached = getTimedCache(movieFilterMetaCache, cacheKey, SESSION_DETAIL_TTL_MS);
+    if (cached) return cached;
+
+    try {
+        const response = await fetchTMDB(`/movie/${id}`);
+        const meta = {
+            id_tmdb: response.id,
+            generos: response.genres?.map(g => g.name) || [],
+            runtime: Number(response.runtime) || null,
+        };
+        setTimedCache(movieFilterMetaCache, cacheKey, meta, 300);
+        return meta;
+    } catch (error) {
+        console.error('[TMDB] Error obteniendo meta de película:', error);
+        throw error;
+    }
+}
+
+function slimNextEpisode(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const seasonNum = Number(raw.season_number);
+    const epNum = Number(raw.episode_number);
+    if (!Number.isFinite(seasonNum) || !Number.isFinite(epNum)) return null;
+    return {
+        season_number: seasonNum,
+        episode_number: epNum,
+        air_date: raw.air_date || null,
+        name: raw.name || '',
+    };
+}
+
+/**
+ * Obtiene detalles de una serie (incluye créditos, recomendaciones y plataformas)
  * @param {number} id - ID de TMDB de la serie
  * @returns {Promise<Object>} Detalles de la serie con temporadas y episodios
  */
 async function getTVDetails(id) {
+    const cacheKey = String(id);
+    const cached = getTimedCache(tvDetailsCache, cacheKey, SESSION_DETAIL_TTL_MS);
+    if (cached) return cached;
+
     try {
         const response = await fetchTMDB(`/tv/${id}`, {
-            append_to_response: 'credits,recommendations',
+            append_to_response: 'credits,recommendations,watch/providers',
         });
-        
-        return normalizeTVData(response);
+
+        const normalized = normalizeTVData(response);
+        setTimedCache(tvDetailsCache, cacheKey, normalized, 150);
+        tvMetaCache.set(cacheKey, {
+            id_tmdb: normalized.id_tmdb,
+            status: normalized.status,
+            temporadas: normalized.temporadas,
+            next_episode_to_air: normalized.next_episode_to_air ?? null,
+        });
+        if (Array.isArray(normalized.watch_providers)) {
+            setTimedCache(watchProvidersCache, `tv:${id}`, normalized.watch_providers, 300);
+        }
+        return normalized;
     } catch (error) {
         console.error('[TMDB] Error obteniendo detalles de serie:', error);
         throw error;
@@ -338,7 +710,7 @@ async function getTVDetails(id) {
 }
 
 /**
- * Meta ligera de serie (status + temporadas) sin credits/recomendaciones.
+ * Meta ligera de serie (status + temporadas + next_episode_to_air) sin credits/recomendaciones.
  * Usado por timelines para no pagar el coste del detalle completo.
  */
 async function getTVShowMeta(id, options = {}) {
@@ -352,6 +724,7 @@ async function getTVShowMeta(id, options = {}) {
         const meta = {
             id_tmdb: response.id,
             status: response.status || 'Unknown',
+            next_episode_to_air: slimNextEpisode(response.next_episode_to_air),
             temporadas: (response.seasons || []).map(s => ({
                 numero: s.season_number,
                 nombre: s.season_number === 0 ? 'Especiales' : (s.name || `Temporada ${s.season_number}`),
@@ -363,7 +736,31 @@ async function getTVShowMeta(id, options = {}) {
         tvMetaCache.set(cacheKey, meta);
         return meta;
     } catch (error) {
-        console.error('[TMDB] Error obteniendo meta de serie:', error);
+        if (error?.status === 404) {
+            console.warn('[TMDB] Serie no encontrada en TMDB (404):', id);
+        } else {
+            console.error('[TMDB] Error obteniendo meta de serie:', error);
+        }
+        throw error;
+    }
+}
+
+async function fetchSingleSeasonFromNetwork(tvId, seasonNumber) {
+    const cacheKey = `${tvId}:${seasonNumber}`;
+    try {
+        const details = await fetchTMDB(`/tv/${tvId}/season/${seasonNumber}`);
+        const slim = slimSeasonPayload(details);
+        seasonDetailsCache.set(cacheKey, slim);
+        void putSeasonsToIdb([{ key: cacheKey, data: slim }]);
+        return slim;
+    } catch (error) {
+        if (error?.status === 404) {
+            console.warn(`[TMDB] Temporada no disponible (404): ${tvId} T${seasonNumber}`);
+            const empty = { episodes: [], notFound: true };
+            seasonDetailsCache.set(cacheKey, empty);
+            return empty;
+        }
+        console.error('[TMDB] Error obteniendo detalles de temporada:', error);
         throw error;
     }
 }
@@ -375,38 +772,211 @@ async function getTVShowMeta(id, options = {}) {
  * @returns {Promise<Object>} Detalles de la temporada con episodios
  */
 async function getSeasonDetails(tvId, seasonNumber) {
+    await seasonCacheReadyPromise;
     const cacheKey = `${tvId}:${seasonNumber}`;
     if (seasonDetailsCache.has(cacheKey)) {
         return seasonDetailsCache.get(cacheKey);
     }
-
-    try {
-        const details = await fetchTMDB(`/tv/${tvId}/season/${seasonNumber}`);
-        const slim = slimSeasonPayload(details);
-        seasonDetailsCache.set(cacheKey, slim);
-        schedulePersistSeasonCache();
-        return slim;
-    } catch (error) {
-        console.error('[TMDB] Error obteniendo detalles de temporada:', error);
-        throw error;
+    if (seasonInflight.has(cacheKey)) {
+        return seasonInflight.get(cacheKey);
     }
+
+    const promise = fetchSingleSeasonFromNetwork(tvId, seasonNumber).finally(() => {
+        seasonInflight.delete(cacheKey);
+    });
+    seasonInflight.set(cacheKey, promise);
+    return promise;
+}
+
+/**
+ * Obtiene múltiples temporadas de una serie agrupándolas en lotes de hasta 20
+ * mediante append_to_response=season/X, reduciendo drásticamente el número de peticiones.
+ * @param {number} tvId - ID de TMDB de la serie
+ * @param {Array<number>} seasonNumbers - Números de temporada
+ * @returns {Promise<Map<number, Object>>} Mapa numeroTemporada -> { episodes }
+ */
+async function getSeasonsBatch(tvId, seasonNumbers = []) {
+    await seasonCacheReadyPromise;
+    const uniqueNums = [...new Set(
+        (seasonNumbers || []).map(Number).filter(n => Number.isFinite(n) && n >= 0),
+    )].sort((a, b) => a - b);
+
+    const results = new Map();
+    if (!uniqueNums.length) return results;
+
+    const toFetch = [];
+    const pendingInflight = [];
+
+    for (const num of uniqueNums) {
+        const cacheKey = `${tvId}:${num}`;
+        if (seasonDetailsCache.has(cacheKey)) {
+            results.set(num, seasonDetailsCache.get(cacheKey));
+        } else if (seasonInflight.has(cacheKey)) {
+            pendingInflight.push(
+                seasonInflight.get(cacheKey).then(data => results.set(num, data)),
+            );
+        } else {
+            toFetch.push(num);
+        }
+    }
+
+    const chunks = [];
+    for (let i = 0; i < toFetch.length; i += TMDB_APPEND_SEASON_CHUNK_SIZE) {
+        chunks.push(toFetch.slice(i, i + TMDB_APPEND_SEASON_CHUNK_SIZE));
+    }
+
+    const chunkPromises = chunks.map((chunk) => {
+        if (chunk.length === 1) {
+            const num = chunk[0];
+            const cacheKey = `${tvId}:${num}`;
+            const p = fetchSingleSeasonFromNetwork(tvId, num).finally(() => {
+                seasonInflight.delete(cacheKey);
+            });
+            seasonInflight.set(cacheKey, p);
+            return p.then(data => results.set(num, data));
+        }
+
+        const resolvers = new Map();
+        chunk.forEach((num) => {
+            let resolveFn;
+            let rejectFn;
+            const p = new Promise((res, rej) => {
+                resolveFn = res;
+                rejectFn = rej;
+            });
+            const cacheKey = `${tvId}:${num}`;
+            seasonInflight.set(cacheKey, p);
+            resolvers.set(num, { resolveFn, rejectFn });
+        });
+
+        const batchWork = (async () => {
+            try {
+                const appendStr = chunk.map(n => `season/${n}`).join(',');
+                const response = await fetchTMDB(`/tv/${tvId}`, {
+                    append_to_response: appendStr,
+                });
+
+                if (response?.id && Array.isArray(response.seasons)) {
+                    tvMetaCache.set(String(tvId), {
+                        id_tmdb: response.id,
+                        status: response.status || 'Unknown',
+                        next_episode_to_air: slimNextEpisode(response.next_episode_to_air),
+                        temporadas: response.seasons.map(s => ({
+                            numero: s.season_number,
+                            nombre: s.season_number === 0 ? 'Especiales' : (s.name || `Temporada ${s.season_number}`),
+                            episodio_count: s.episode_count,
+                            poster: getImageUrl(s.poster_path, 'w342'),
+                            especial: s.season_number === 0,
+                        })),
+                    });
+                }
+
+                const idbBatch = [];
+                const missingFallback = [];
+                for (const num of chunk) {
+                    const seasonKey = `season/${num}`;
+                    const rawSeason = response?.[seasonKey];
+                    const cacheKey = `${tvId}:${num}`;
+                    if (rawSeason && Array.isArray(rawSeason.episodes)) {
+                        const slim = slimSeasonPayload(rawSeason);
+                        seasonDetailsCache.set(cacheKey, slim);
+                        idbBatch.push({ key: cacheKey, data: slim });
+                        results.set(num, slim);
+                        seasonInflight.delete(cacheKey);
+                        resolvers.get(num)?.resolveFn(slim);
+                    } else {
+                        missingFallback.push(num);
+                    }
+                }
+
+                if (idbBatch.length) {
+                    void putSeasonsToIdb(idbBatch);
+                }
+
+                if (missingFallback.length) {
+                    await Promise.all(missingFallback.map(async (num) => {
+                        const cacheKey = `${tvId}:${num}`;
+                        try {
+                            const data = await fetchSingleSeasonFromNetwork(tvId, num);
+                            results.set(num, data);
+                            resolvers.get(num)?.resolveFn(data);
+                        } catch (err) {
+                            resolvers.get(num)?.rejectFn(err);
+                        } finally {
+                            seasonInflight.delete(cacheKey);
+                        }
+                    }));
+                }
+            } catch (batchErr) {
+                // Fallback a peticiones individuales si el lote completo falla (p. ej. temporada ausente rompe append)
+                await Promise.all(chunk.map(async (num) => {
+                    const cacheKey = `${tvId}:${num}`;
+                    try {
+                        const data = await fetchSingleSeasonFromNetwork(tvId, num);
+                        results.set(num, data);
+                        resolvers.get(num)?.resolveFn(data);
+                    } catch (err) {
+                        resolvers.get(num)?.rejectFn(err || batchErr);
+                    } finally {
+                        seasonInflight.delete(cacheKey);
+                    }
+                }));
+            }
+        })();
+
+        return batchWork;
+    });
+
+    await Promise.all([...pendingInflight, ...chunkPromises]);
+    return results;
 }
 
 function clearSeasonDetailsCache(tvId = null) {
     if (tvId == null) {
         seasonDetailsCache.clear();
+        seasonInflight.clear();
         tvMetaCache.clear();
+        tvDetailsCache.clear();
         try { localStorage.removeItem(SEASON_CACHE_STORAGE_KEY); } catch (_) { /* ignore */ }
+        openTmdbIdb().then((db) => {
+            if (!db) return;
+            try {
+                if (db.objectStoreNames.contains(TMDB_IDB_LEGACY_STORE)) {
+                    db.transaction(TMDB_IDB_LEGACY_STORE, 'readwrite')
+                        .objectStore(TMDB_IDB_LEGACY_STORE)
+                        .delete(SEASON_CACHE_STORAGE_KEY);
+                }
+                if (db.objectStoreNames.contains(TMDB_IDB_ITEM_STORE)) {
+                    db.transaction(TMDB_IDB_ITEM_STORE, 'readwrite')
+                        .objectStore(TMDB_IDB_ITEM_STORE)
+                        .clear();
+                }
+            } catch (_) { /* ignore */ }
+        });
         return;
     }
     const prefix = `${tvId}:`;
+    const deletedKeys = [];
     for (const key of [...seasonDetailsCache.keys()]) {
-        if (key.startsWith(prefix)) seasonDetailsCache.delete(key);
+        if (key.startsWith(prefix)) {
+            seasonDetailsCache.delete(key);
+            deletedKeys.push(key);
+        }
+    }
+    for (const key of [...seasonInflight.keys()]) {
+        if (key.startsWith(prefix)) seasonInflight.delete(key);
     }
     tvMetaCache.delete(String(tvId));
-    // Persistir al momento para no rehidratar temporadas viejas en la próxima carga
-    if (seasonCachePersistTimer) clearTimeout(seasonCachePersistTimer);
-    persistSeasonCacheToStorage();
+    tvDetailsCache.delete(String(tvId));
+
+    openTmdbIdb().then((db) => {
+        if (!db || !db.objectStoreNames.contains(TMDB_IDB_ITEM_STORE) || !deletedKeys.length) return;
+        try {
+            const tx = db.transaction(TMDB_IDB_ITEM_STORE, 'readwrite');
+            const store = tx.objectStore(TMDB_IDB_ITEM_STORE);
+            deletedKeys.forEach(k => store.delete(k));
+        } catch (_) { /* ignore */ }
+    });
 }
 
 // ============================================
@@ -419,7 +989,7 @@ function clearSeasonDetailsCache(tvId = null) {
  * @returns {Object} Datos normalizados
  */
 function normalizeMovieData(data) {
-    return {
+    const normalized = {
         id_tmdb: data.id,
         titulo: data.title,
         titulo_original: data.original_title,
@@ -448,6 +1018,10 @@ function normalizeMovieData(data) {
             tipo: item.media_type === 'tv' ? 'tv' : 'movie',
         })),
     };
+    if (data?.['watch/providers']) {
+        normalized.watch_providers = extractWatchProvidersFromResponse(data['watch/providers']);
+    }
+    return normalized;
 }
 
 /**
@@ -457,8 +1031,8 @@ function normalizeMovieData(data) {
  */
 function normalizeTVData(data) {
     const seasons = data.seasons || [];
-    
-    return {
+
+    const normalized = {
         id_tmdb: data.id,
         titulo: data.name,
         titulo_original: data.original_name,
@@ -497,8 +1071,13 @@ function normalizeTVData(data) {
             especial: s.season_number === 0,
         })),
         status: data.status || 'Unknown',
+        next_episode_to_air: slimNextEpisode(data.next_episode_to_air),
         capitulos_vistos: [],
     };
+    if (data?.['watch/providers']) {
+        normalized.watch_providers = extractWatchProvidersFromResponse(data['watch/providers']);
+    }
+    return normalized;
 }
 
 /**
@@ -516,8 +1095,8 @@ function normalizeSearchResult(item) {
         vote_count: item.vote_count,
         overview: item.overview,
     };
-    
-    if (item.media_type === 'movie' || !item.media_type && item.title) {
+
+    if (item.media_type === 'movie' || (!item.media_type && item.title)) {
         return {
             ...baseData,
             titulo: item.title,
@@ -525,7 +1104,7 @@ function normalizeSearchResult(item) {
             tipo: 'movie',
             fecha_estreno: item.release_date,
         };
-    } else if (item.media_type === 'tv' || !item.media_type && item.name) {
+    } else if (item.media_type === 'tv' || (!item.media_type && item.name)) {
         return {
             ...baseData,
             titulo: item.name,
@@ -534,7 +1113,7 @@ function normalizeSearchResult(item) {
             fecha_estreno: item.first_air_date,
         };
     }
-    
+
     return baseData;
 }
 
@@ -545,26 +1124,22 @@ function normalizeSearchResult(item) {
  * @returns {Promise<Array>} Lista de proveedores normalizados
  */
 async function getWatchProviders(type, id) {
+    const cacheKey = `${type}:${id}`;
+    const cached = getTimedCache(watchProvidersCache, cacheKey, SESSION_DETAIL_TTL_MS);
+    if (cached) return cached;
+
     try {
         const response = await fetchTMDB(`/${type}/${id}/watch/providers`);
-        const countries = response.results || {};
-        const countryKey = Object.keys(countries).find(key => key.toUpperCase() === 'ES') || Object.keys(countries)[0];
-        const countryData = countryKey ? countries[countryKey] : {};
-
-        const providers = [
-            ...(countryData.flatrate || []),
-            ...(countryData.rent || []),
-            ...(countryData.buy || []),
-        ];
-
-        return providers.map(provider => ({
-            provider_name: provider.provider_name,
-            logo_path: provider.logo_path,
-            link_type: provider.link_type,
-        }));
+        const deduped = extractWatchProvidersFromResponse(response);
+        setTimedCache(watchProvidersCache, cacheKey, deduped, 300);
+        return deduped;
     } catch (error) {
+        if (error?.status === 404) {
+            setTimedCache(watchProvidersCache, cacheKey, [], 300);
+            return [];
+        }
         console.error('[TMDB] Error obteniendo proveedores:', error);
-        return [];
+        throw error;
     }
 }
 
@@ -573,9 +1148,13 @@ async function getWatchProviders(type, id) {
  * @param {number} id - ID TMDB de persona
  */
 async function getPersonDetails(id) {
+    const cacheKey = String(id);
+    const cached = getTimedCache(personDetailsCache, cacheKey, SESSION_DETAIL_TTL_MS);
+    if (cached) return cached;
+
     try {
         const data = await fetchTMDB(`/person/${id}`);
-        return {
+        const person = {
             id: data.id,
             name: data.name || '',
             biography: data.biography || '',
@@ -584,6 +1163,8 @@ async function getPersonDetails(id) {
             known_for_department: data.known_for_department || '',
             profile_path: getImageUrl(data.profile_path, 'w500'),
         };
+        setTimedCache(personDetailsCache, cacheKey, person, 100);
+        return person;
     } catch (error) {
         console.error('[TMDB] Error obteniendo persona:', error);
         throw error;
@@ -596,6 +1177,10 @@ async function getPersonDetails(id) {
  * @returns {Promise<Array>}
  */
 async function getPersonCredits(id) {
+    const cacheKey = String(id);
+    const cached = getTimedCache(personCreditsCache, cacheKey, SESSION_DETAIL_TTL_MS);
+    if (cached) return cached;
+
     try {
         const data = await fetchTMDB(`/person/${id}/combined_credits`);
         const cast = Array.isArray(data.cast) ? data.cast : [];
@@ -627,7 +1212,9 @@ async function getPersonCredits(id) {
             return String(b.date).localeCompare(String(a.date));
         });
 
-        return items.slice(0, 40).map(({ popularity, date, ...rest }) => rest);
+        const topCredits = items.slice(0, 40).map(({ popularity, date, ...rest }) => rest);
+        setTimedCache(personCreditsCache, cacheKey, topCredits, 100);
+        return topCredits;
     } catch (error) {
         console.error('[TMDB] Error obteniendo credits de persona:', error);
         return [];
@@ -639,29 +1226,82 @@ async function getPersonCredits(id) {
 // ============================================
 
 /**
+ * Obtiene tendencias actuales (películas y series) desde TMDB
+ * @param {number} limit - Máximo de resultados a devolver (default: 5)
+ * @param {Object} [options] - Opciones ({ signal })
+ * @returns {Promise<Array>} Lista normalizada de tendencias
+ */
+async function getTrendingSuggestions(limit = 5, options = {}) {
+    const safeLimit = Math.max(1, Math.min(20, Number(limit) || 5));
+    const cacheKey = `all:day:${safeLimit}`;
+    const cached = getTimedCache(trendingCache, cacheKey, SESSION_TRENDING_TTL_MS);
+    if (cached) return cached;
+
+    try {
+        const response = await fetchTMDB('/trending/all/day', {
+            page: 1,
+        }, options);
+
+        const items = (response.results || [])
+            .filter(item => item.media_type === 'movie' || item.media_type === 'tv')
+            .slice(0, safeLimit)
+            .map(normalizeSearchResult);
+
+        setTimedCache(trendingCache, cacheKey, items, 10);
+        return items;
+    } catch (error) {
+        if (error?.name !== 'AbortError') {
+            console.error('[TMDB] Error obteniendo tendencias:', error);
+        }
+        throw error;
+    }
+}
+
+/**
+ * Cancela cualquier búsqueda pendiente o en curso en Explorar.
+ */
+function cancelSearchDebounce() {
+    if (searchTimeout) {
+        clearTimeout(searchTimeout);
+        searchTimeout = null;
+    }
+    if (currentSearchAbortController) {
+        currentSearchAbortController.abort();
+        currentSearchAbortController = null;
+    }
+}
+
+/**
  * Realiza una búsqueda con debounce para evitar demasiadas peticiones
+ * y cancela búsquedas anteriores en curso mediante AbortController.
  * @param {string} query - Término de búsqueda
  * @param {Function} callback - Función a ejecutar con los resultados
  * @param {number} delay - Retraso en ms (default: 300)
  */
 function searchWithDebounce(query, callback, delay = 300) {
-    if (searchTimeout) {
-        clearTimeout(searchTimeout);
-    }
-    
+    cancelSearchDebounce();
+
     if (!query || query.length < 2) {
         callback([]);
         return;
     }
-    
+
     searchTimeout = setTimeout(async () => {
+        const controller = new AbortController();
+        currentSearchAbortController = controller;
         try {
-            const results = await searchMulti(query);
+            const results = await searchMulti(query, 1, { signal: controller.signal });
+            if (controller.signal.aborted) return;
             const normalized = results.results.map(normalizeSearchResult);
             callback(normalized);
         } catch (error) {
+            if (error?.name === 'AbortError') return;
             console.error('[TMDB] Error en búsqueda con debounce:', error);
             callback([]);
+        } finally {
+            if (currentSearchAbortController === controller) {
+                currentSearchAbortController = null;
+            }
         }
     }, delay);
 }
@@ -675,10 +1315,13 @@ window.TMDBService = {
     searchMulti,
     searchMovies,
     searchTV,
+    getTrendingSuggestions,
     getMovieDetails,
+    getMovieFilterMeta,
     getTVDetails,
     getTVShowMeta,
     getSeasonDetails,
+    getSeasonsBatch,
     clearSeasonDetailsCache,
     findByExternalId,
     findMovieByTitleYear,
@@ -690,17 +1333,21 @@ window.TMDBService = {
     getWatchProviders,
     getPersonDetails,
     getPersonCredits,
+    cancelSearchDebounce,
     searchWithDebounce,
 };
 
 window.searchMulti = searchMulti;
 window.searchMovies = searchMovies;
 window.searchTV = searchTV;
+window.getTrendingSuggestions = getTrendingSuggestions;
 window.hasTmdbConfig = hasTmdbConfig;
 window.getMovieDetails = getMovieDetails;
+window.getMovieFilterMeta = getMovieFilterMeta;
 window.getTVDetails = getTVDetails;
 window.getTVShowMeta = getTVShowMeta;
 window.getSeasonDetails = getSeasonDetails;
+window.getSeasonsBatch = getSeasonsBatch;
 window.clearSeasonDetailsCache = clearSeasonDetailsCache;
 window.findByExternalId = findByExternalId;
 window.findMovieByTitleYear = findMovieByTitleYear;
@@ -712,6 +1359,7 @@ window.normalizeSearchResult = normalizeSearchResult;
 window.getWatchProviders = getWatchProviders;
 window.getPersonDetails = getPersonDetails;
 window.getPersonCredits = getPersonCredits;
+window.cancelSearchDebounce = cancelSearchDebounce;
 window.searchWithDebounce = searchWithDebounce;
 
 console.log('[TMDB] tmdb-service.js cargado');
