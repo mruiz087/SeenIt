@@ -31,6 +31,7 @@ const ALLOWED_TMDB_PATH_PATTERNS = [
     /^\/person\/\d+$/,
     /^\/person\/\d+\/combined_credits$/,
     /^\/find\/[A-Za-z0-9._-]+$/,
+    /^\/watch\/providers\/(movie|tv)$/,
 ];
 
 const ALLOWED_TMDB_QUERY_PARAMS = new Set([

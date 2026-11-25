@@ -16,6 +16,7 @@ const AppState = {
     movies: [],
     shows: [],
     lists: [],
+    selectorItems: [],
     currentTab: 'series',
     currentSubTab: 'pending-list',
     currentMoviesSubTab: 'pending-list',
@@ -39,6 +40,13 @@ const AppState = {
     moviesPendingMaxRuntime: null,
     moviesPendingMySubsOnly: false,
     moviesPendingFiltersOpen: false,
+    selectorFilter: 'all',
+    selectorWinnerKey: null,
+    selectorIsSpinning: false,
+    selectorSuggestionsOpen: false,
+    selectorSearchQuery: '',
+    selectorSearchResults: [],
+    selectorSearchLoading: false,
     lastSearchResults: [],
     exploreTrendingTab: 'tv',
     trendingCache: { tv: [], movie: [] },
@@ -55,6 +63,7 @@ const AppState = {
     driveUserId: null,
     deletedIds: { movie: [], tv: [] },
     deletedListIds: [],
+    deletedSelectorKeys: [],
     expandedSeasons: {},
     revealedSpoilerEpisodeKeys: {},
     timelineHistoryVisible: { 'pending-list': 0, upcoming: 4 },
@@ -129,7 +138,7 @@ function normalizePreferences(raw = null) {
     const countryRaw = String(src.providerCountry || DEFAULT_PREFERENCES.providerCountry).trim().toUpperCase();
     const providerCountry = VALID_PROVIDER_COUNTRIES.has(countryRaw) ? countryRaw : DEFAULT_PREFERENCES.providerCountry;
     const subs = Array.isArray(src.mySubscriptions)
-        ? [...new Set(src.mySubscriptions.map(s => String(s || '').trim()).filter(Boolean))]
+        ? [...new Set(src.mySubscriptions.map(s => normalizeProviderName(String(s || '').replace(/\s*\(Con anuncios\)$/i, '').trim())).filter(Boolean))]
         : [];
     return {
         startTab,
@@ -638,17 +647,57 @@ function clearListTombstone(listId) {
     AppState.deletedListIds = AppState.deletedListIds.filter(e => e.id !== id);
 }
 
+function getSelectorItemKey(tipo, id_tmdb) {
+    const type = tipo === 'movie' ? 'movie' : 'tv';
+    return `${type}:${Number(id_tmdb)}`;
+}
+
+function normalizeDeletedSelectorKeys(raw) {
+    if (!Array.isArray(raw)) return [];
+    return raw.map((entry) => {
+        if (entry && typeof entry === 'object' && entry.key) {
+            return { key: String(entry.key), deletedAt: entry.deletedAt || nowIso() };
+        }
+        if (typeof entry === 'string' && entry) {
+            return { key: entry, deletedAt: nowIso() };
+        }
+        return null;
+    }).filter(Boolean);
+}
+
+function recordSelectorTombstone(tipo, id_tmdb) {
+    const id = Number(id_tmdb);
+    if (!Number.isFinite(id) || id <= 0) return;
+    const key = getSelectorItemKey(tipo, id);
+    const list = AppState.deletedSelectorKeys || [];
+    const existing = list.find(e => e.key === key);
+    if (existing) {
+        existing.deletedAt = nowIso();
+    } else {
+        list.push({ key, deletedAt: nowIso() });
+    }
+    AppState.deletedSelectorKeys = list;
+}
+
+function clearSelectorTombstone(tipo, id_tmdb) {
+    const key = getSelectorItemKey(tipo, id_tmdb);
+    AppState.deletedSelectorKeys = (AppState.deletedSelectorKeys || []).filter(e => e.key !== key);
+}
+
 function clearLibraryState() {
     AppState.movies = [];
     AppState.shows = [];
     AppState.lists = [];
+    AppState.selectorItems = [];
     AppState.deletedIds = { movie: [], tv: [] };
     AppState.deletedListIds = [];
+    AppState.deletedSelectorKeys = [];
     AppState.preferences = normalizePreferences();
     AppState.moviesPendingMySubsOnly = false;
     AppState.revealedSpoilerEpisodeKeys = {};
     AppState.selectedItem = null;
     AppState.selectedListId = null;
+    AppState.selectorWinnerKey = null;
     invalidateTimelineCaches();
 }
 
@@ -712,8 +761,10 @@ function applyParsedLocalData(data) {
     AppState.movies = (data.movies || []).map(normalizeStoredMovie);
     AppState.shows = (data.shows || []).map(normalizeStoredShow);
     AppState.lists = (data.lists || []).map(normalizeStoredList);
+    AppState.selectorItems = (data.selectorItems || []).map(normalizeStoredSelectorItem).filter(Boolean);
     AppState.deletedIds = normalizeDeletedIds(data.deletedIds);
     AppState.deletedListIds = normalizeDeletedListIds(data.deletedListIds);
+    AppState.deletedSelectorKeys = normalizeDeletedSelectorKeys(data.deletedSelectorKeys);
     AppState.preferences = normalizePreferences(data.preferences);
 }
 
@@ -818,6 +869,28 @@ function normalizeStoredList(list) {
     };
 }
 
+function normalizeStoredSelectorItem(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const id_tmdb = Number(raw.id_tmdb ?? raw.id);
+    if (!Number.isFinite(id_tmdb) || id_tmdb <= 0) return null;
+    const tipo = raw.tipo === 'movie' || raw.media_type === 'movie' ? 'movie' : 'tv';
+    const score = Number(raw.vote_average);
+    const runtimeNum = Number(raw.runtime);
+    return {
+        id_tmdb,
+        tipo,
+        titulo: String(raw.titulo || raw.title || raw.name || 'Sin título').trim() || 'Sin título',
+        portada: raw.portada || raw.poster || null,
+        backdrop: raw.backdrop || null,
+        fecha_estreno: raw.fecha_estreno || raw.release_date || raw.first_air_date || null,
+        vote_average: Number.isFinite(score) && score > 0 ? score : 0,
+        runtime: Number.isFinite(runtimeNum) && runtimeNum > 0 ? runtimeNum : null,
+        generos: Array.isArray(raw.generos) ? raw.generos.filter(Boolean) : [],
+        addedAt: raw.addedAt || raw.updatedAt || nowIso(),
+        updatedAt: raw.updatedAt || raw.addedAt || nowIso(),
+    };
+}
+
 function evictNonEssentialLocalStorage(currentKey) {
     try { localStorage.removeItem('seenit_tmdb_seasons_v1'); } catch (_) { /* ignore */ }
     try { localStorage.removeItem('seenit_data_backup'); } catch (_) { /* ignore */ }
@@ -835,8 +908,10 @@ function saveLocalDataImmediate() {
         movies: AppState.movies,
         shows: AppState.shows,
         lists: AppState.lists,
+        selectorItems: AppState.selectorItems,
         deletedIds: AppState.deletedIds,
         deletedListIds: AppState.deletedListIds,
+        deletedSelectorKeys: AppState.deletedSelectorKeys,
         preferences: getPreferences(),
         lastModified: nowIso(),
     };
@@ -905,11 +980,13 @@ function snapshotLibrary() {
             ...l,
             itemIds: [...(l.itemIds || [])],
         })),
+        selectorItems: (AppState.selectorItems || []).map(s => ({ ...s, generos: [...(s.generos || [])] })),
         deletedIds: {
             movie: (AppState.deletedIds.movie || []).map(e => ({ ...e })),
             tv: (AppState.deletedIds.tv || []).map(e => ({ ...e })),
         },
         deletedListIds: (AppState.deletedListIds || []).map(e => ({ ...e })),
+        deletedSelectorKeys: (AppState.deletedSelectorKeys || []).map(e => ({ ...e })),
         preferences: { ...prefs, mySubscriptions: [...(prefs.mySubscriptions || [])] },
         lastModified: getStoredLastModified() || nowIso(),
     };
@@ -920,8 +997,10 @@ function backupLibraryBeforeMerge(localSnapshot) {
         movies: localSnapshot?.movies || [],
         shows: localSnapshot?.shows || [],
         lists: localSnapshot?.lists || [],
+        selectorItems: localSnapshot?.selectorItems || [],
         deletedIds: localSnapshot?.deletedIds || { movie: [], tv: [] },
         deletedListIds: localSnapshot?.deletedListIds || [],
+        deletedSelectorKeys: localSnapshot?.deletedSelectorKeys || [],
         lastModified: localSnapshot?.lastModified || getStoredLastModified() || null,
         backedUpAt: nowIso(),
     };
@@ -932,7 +1011,7 @@ function backupLibraryBeforeMerge(localSnapshot) {
 }
 
 function libraryItemCount(lib) {
-    return (lib?.movies?.length || 0) + (lib?.shows?.length || 0) + (lib?.lists?.length || 0);
+    return (lib?.movies?.length || 0) + (lib?.shows?.length || 0) + (lib?.lists?.length || 0) + (lib?.selectorItems?.length || 0);
 }
 
 function parseModifiedMs(value) {
@@ -1002,12 +1081,32 @@ function isListTombstoned(id, tombstones, listUpdatedAt) {
     return parseModifiedMs(entry.deletedAt) >= itemUpdatedMs({ updatedAt: listUpdatedAt });
 }
 
+function isSelectorTombstoned(key, tombstones, itemUpdatedAt) {
+    const entry = (tombstones || []).find(e => String(e.key) === String(key));
+    if (!entry) return false;
+    return parseModifiedMs(entry.deletedAt) >= itemUpdatedMs({ updatedAt: itemUpdatedAt });
+}
+
 function mergeLibraries(localLib, remoteLib) {
     const deletedIds = mergeDeletedIds(localLib?.deletedIds, remoteLib?.deletedIds);
     const deletedListIds = mergeTombstoneLists(
         normalizeDeletedListIds(localLib?.deletedListIds),
         normalizeDeletedListIds(remoteLib?.deletedListIds),
     );
+    const deletedSelectorKeys = (() => {
+        const map = new Map();
+        for (const entry of [
+            ...normalizeDeletedSelectorKeys(localLib?.deletedSelectorKeys),
+            ...normalizeDeletedSelectorKeys(remoteLib?.deletedSelectorKeys),
+        ]) {
+            if (!entry?.key) continue;
+            const prev = map.get(entry.key);
+            if (!prev || parseModifiedMs(entry.deletedAt) >= parseModifiedMs(prev.deletedAt)) {
+                map.set(entry.key, { ...entry });
+            }
+        }
+        return [...map.values()];
+    })();
 
     const movieMap = new Map();
     for (const m of remoteLib.movies || []) movieMap.set(Number(m.id_tmdb), normalizeStoredMovie(m));
@@ -1061,12 +1160,26 @@ function mergeLibraries(localLib, remoteLib) {
         considerList(l);
     }
 
+    const selectorMap = new Map();
+    for (const raw of [...(remoteLib.selectorItems || []), ...(localLib.selectorItems || [])]) {
+        const norm = normalizeStoredSelectorItem(raw);
+        if (!norm) continue;
+        const key = getSelectorItemKey(norm.tipo, norm.id_tmdb);
+        if (isSelectorTombstoned(key, deletedSelectorKeys, norm.updatedAt)) continue;
+        const prev = selectorMap.get(key);
+        if (!prev || itemUpdatedMs(norm) >= itemUpdatedMs(prev)) {
+            selectorMap.set(key, norm);
+        }
+    }
+
     return {
         movies,
         shows,
         lists: [...byId.values()],
+        selectorItems: [...selectorMap.values()],
         deletedIds,
         deletedListIds,
+        deletedSelectorKeys,
         preferences: mergePreferencesLww(localLib?.preferences, remoteLib?.preferences),
     };
 }
@@ -1086,8 +1199,10 @@ function applyLibrary(lib) {
     AppState.movies = (lib.movies || []).map(normalizeStoredMovie);
     AppState.shows = (lib.shows || []).map(normalizeStoredShow);
     AppState.lists = (lib.lists || []).map(normalizeStoredList);
+    AppState.selectorItems = (lib.selectorItems || []).map(normalizeStoredSelectorItem).filter(Boolean);
     AppState.deletedIds = normalizeDeletedIds(lib.deletedIds);
     AppState.deletedListIds = normalizeDeletedListIds(lib.deletedListIds);
+    AppState.deletedSelectorKeys = normalizeDeletedSelectorKeys(lib.deletedSelectorKeys);
     AppState.preferences = normalizePreferences(lib.preferences);
 }
 
@@ -1102,8 +1217,10 @@ function reconcileWithDriveData(remoteData, localSnapshot) {
         movies: (remoteData?.movies || []).map(normalizeStoredMovie),
         shows: (remoteData?.shows || []).map(normalizeStoredShow),
         lists: (remoteData?.lists || []).map(normalizeStoredList),
+        selectorItems: (remoteData?.selectorItems || []).map(normalizeStoredSelectorItem).filter(Boolean),
         deletedIds: normalizeDeletedIds(remoteData?.deletedIds),
         deletedListIds: normalizeDeletedListIds(remoteData?.deletedListIds),
+        deletedSelectorKeys: normalizeDeletedSelectorKeys(remoteData?.deletedSelectorKeys),
         preferences: normalizePreferences(remoteData?.preferences),
         lastModified: remoteData?.lastModified || null,
     };
@@ -1479,8 +1596,10 @@ function buildDrivePayload() {
         movies: AppState.movies,
         shows: AppState.shows,
         lists: AppState.lists,
+        selectorItems: AppState.selectorItems,
         deletedIds: AppState.deletedIds,
         deletedListIds: AppState.deletedListIds,
+        deletedSelectorKeys: AppState.deletedSelectorKeys,
         preferences: getPreferences(),
         lastModified: nowIso(),
     };
@@ -1714,18 +1833,15 @@ function switchMoviesSubTab(subTab) {
 }
 
 function switchProfileTab(tab) {
-    AppState.currentProfileTab = tab;
+    const nextTab = tab === 'movies' || tab === 'picker' ? tab : 'series';
+    AppState.currentProfileTab = nextTab;
 
     document.querySelectorAll('.tvst-profile-tab').forEach(btn => btn.classList.remove('is-active'));
-    document.getElementById(`profile-tab-${tab}`)?.classList.add('is-active');
+    document.getElementById(`profile-tab-${nextTab}`)?.classList.add('is-active');
 
-    if (tab === 'series') {
-        document.getElementById('profile-series-content')?.classList.remove('hidden');
-        document.getElementById('profile-movies-content')?.classList.add('hidden');
-    } else {
-        document.getElementById('profile-series-content')?.classList.add('hidden');
-        document.getElementById('profile-movies-content')?.classList.remove('hidden');
-    }
+    document.getElementById('profile-series-content')?.classList.toggle('hidden', nextTab !== 'series');
+    document.getElementById('profile-movies-content')?.classList.toggle('hidden', nextTab !== 'movies');
+    document.getElementById('profile-picker-content')?.classList.toggle('hidden', nextTab !== 'picker');
 
     Promise.resolve(renderProfileView()).finally(() => {
         scheduleSyncMobileChromeHeights();
@@ -1971,19 +2087,45 @@ function normalizeProviderName(raw) {
     if (!name) return '';
     const lower = name.toLowerCase();
 
-    if (/amazon|prime\s*video/.test(lower)) return 'Prime Video';
     if (/netflix/.test(lower)) return 'Netflix';
+    if (!/amazon\s*channel/.test(lower) && /amazon\s*prime|prime\s*video|^amazon(\s+video)?$/.test(lower)) {
+        return 'Prime Video';
+    }
     if (/disney/.test(lower)) return 'Disney+';
-    if (/\bhbo\b|hbo max|\bmax\b/.test(lower)) return 'Max';
+    if (!/channel/.test(lower) && /\bhbo\b|hbo max|\bmax\b/.test(lower)) return 'Max';
     if (/movistar/.test(lower)) return 'Movistar Plus+';
-    if (/apple\s*tv/.test(lower)) return 'Apple TV';
-    if (/skyshowtime|sky showtime/.test(lower)) return 'SkyShowtime';
+    if (!/channel/.test(lower) && /apple\s*tv/.test(lower)) return 'Apple TV';
+    if (!/channel/.test(lower) && /skyshowtime|sky showtime/.test(lower)) return 'SkyShowtime';
     if (/rtve/.test(lower)) return 'RTVE';
-    if (/atresplayer|atresmedia|atres media/.test(lower)) return 'Atresplayer';
-    if (/filmin/.test(lower)) return 'Filmin';
-    if (/rakuten/.test(lower)) return 'Rakuten';
+    if (!/channel/.test(lower) && /atresplayer|atresmedia|atres media/.test(lower)) return 'Atresplayer';
+    if (!/channel/.test(lower) && /filmin/.test(lower)) return 'Filmin';
+    if (!/channel/.test(lower) && /rakuten/.test(lower)) return 'Rakuten';
 
     return name;
+}
+
+function getNormalizedDisplayProviders(rawProviders = []) {
+    const byName = new Map();
+    for (const provider of rawProviders || []) {
+        const canonical = normalizeProviderName(provider?.provider_name);
+        if (!canonical) continue;
+        const key = canonical.toLowerCase();
+        const isAdVariant = /\bwith\s*ads\b|\bads\b|\bstore\b/i.test(String(provider?.provider_name || ''));
+        const existing = byName.get(key);
+        if (!existing) {
+            byName.set(key, {
+                provider_name: canonical,
+                logo_path: provider?.logo_path || null,
+                isAdVariant,
+            });
+        } else if ((!existing.logo_path && provider?.logo_path) || (existing.isAdVariant && !isAdVariant && provider?.logo_path)) {
+            existing.logo_path = provider.logo_path;
+            existing.isAdVariant = isAdVariant;
+        }
+    }
+    return [...byName.values()]
+        .map(({ provider_name, logo_path }) => ({ provider_name, logo_path }))
+        .sort((a, b) => Number(isSubscribedProvider(b.provider_name)) - Number(isSubscribedProvider(a.provider_name)));
 }
 
 function isFeaturedProvider(name) {
@@ -4230,18 +4372,577 @@ async function renderProfileView() {
 
     if (!seriesContainer || !moviesContainer) return;
 
-    if (AppState.currentProfileTab === 'series') {
-        document.getElementById('profile-series-content')?.classList.remove('hidden');
-        document.getElementById('profile-movies-content')?.classList.add('hidden');
-    } else {
-        document.getElementById('profile-series-content')?.classList.add('hidden');
-        document.getElementById('profile-movies-content')?.classList.remove('hidden');
+    const activeProfileTab = AppState.currentProfileTab === 'movies' || AppState.currentProfileTab === 'picker'
+        ? AppState.currentProfileTab
+        : 'series';
+    document.querySelectorAll('.tvst-profile-tab').forEach(btn => btn.classList.remove('is-active'));
+    document.getElementById(`profile-tab-${activeProfileTab}`)?.classList.add('is-active');
+    document.getElementById('profile-series-content')?.classList.toggle('hidden', activeProfileTab !== 'series');
+    document.getElementById('profile-movies-content')?.classList.toggle('hidden', activeProfileTab !== 'movies');
+    document.getElementById('profile-picker-content')?.classList.toggle('hidden', activeProfileTab !== 'picker');
+
+    if (activeProfileTab === 'picker') {
+        renderProfilePicker();
+        return;
     }
 
     populatePlatformFilters();
 
     paintProfileLibrary();
     void refreshProfileProgressInBackground();
+}
+
+// ============================================
+// SELECTOR ALEATORIO (¿QUÉ VEMOS?)
+// ============================================
+
+let selectorSearchDebounceTimer = null;
+let selectorSearchAbortController = null;
+let selectorSpinTimer = null;
+
+function isInSelector(tipo, id_tmdb) {
+    const type = tipo === 'movie' ? 'movie' : 'tv';
+    const id = Number(id_tmdb);
+    return (AppState.selectorItems || []).some(item => item.tipo === type && Number(item.id_tmdb) === id);
+}
+
+function getFilteredSelectorItems(filter = AppState.selectorFilter) {
+    const f = filter === 'movie' || filter === 'tv' ? filter : 'all';
+    const items = AppState.selectorItems || [];
+    if (f === 'all') return items;
+    return items.filter(item => item.tipo === f);
+}
+
+function addToSelector(rawItem, options = {}) {
+    const normalized = normalizeStoredSelectorItem(rawItem);
+    if (!normalized) return false;
+    if (isInSelector(normalized.tipo, normalized.id_tmdb)) {
+        if (!options.silent) showToast('Ya está en el selector', 'info');
+        return false;
+    }
+    const now = nowIso();
+    normalized.addedAt = now;
+    normalized.updatedAt = now;
+    clearSelectorTombstone(normalized.tipo, normalized.id_tmdb);
+    AppState.selectorItems = [normalized, ...(AppState.selectorItems || [])];
+    saveLocalData();
+    syncToDrive();
+    if (!options.silent) showToast(`Añadido al selector: ${normalized.titulo}`, 'success');
+    if (AppState.currentTab === 'profile' && AppState.currentProfileTab === 'picker') {
+        renderProfilePicker();
+    }
+    return true;
+}
+
+function removeFromSelector(tipo, id_tmdb, options = {}) {
+    const type = tipo === 'movie' ? 'movie' : 'tv';
+    const id = Number(id_tmdb);
+    const key = getSelectorItemKey(type, id);
+    const beforeLen = (AppState.selectorItems || []).length;
+    AppState.selectorItems = (AppState.selectorItems || []).filter(
+        item => !(item.tipo === type && Number(item.id_tmdb) === id),
+    );
+    if (AppState.selectorItems.length === beforeLen) return false;
+
+    recordSelectorTombstone(type, id);
+    if (AppState.selectorWinnerKey === key) {
+        AppState.selectorWinnerKey = null;
+    }
+    saveLocalData();
+    syncToDrive();
+    if (!options.silent) showToast('Quitado del selector', 'info');
+    if (AppState.currentTab === 'profile' && AppState.currentProfileTab === 'picker') {
+        renderProfilePicker();
+    }
+    return true;
+}
+
+function toggleItemInSelector(tipo, id_tmdb) {
+    const type = tipo === 'movie' ? 'movie' : 'tv';
+    const id = Number(id_tmdb);
+    if (isInSelector(type, id)) {
+        removeFromSelector(type, id);
+        return;
+    }
+    const candidate = (AppState.selectedItem && AppState.selectedItem.tipo === type && Number(AppState.selectedItem.id_tmdb) === id)
+        ? AppState.selectedItem
+        : (getLibraryItem(type, id)
+            || (AppState.selectorSearchResults || []).find(r => r.tipo === type && Number(r.id_tmdb) === id)
+            || (AppState.lastSearchResults || []).find(r => r.tipo === type && Number(r.id_tmdb) === id));
+    if (candidate) {
+        addToSelector(candidate);
+    }
+}
+
+function addToSelectorFromSearch(tipo, id_tmdb) {
+    const type = tipo === 'movie' ? 'movie' : 'tv';
+    const id = Number(id_tmdb);
+    if (isInSelector(type, id)) {
+        removeFromSelector(type, id);
+        return;
+    }
+    const candidate = (AppState.selectorSearchResults || []).find(r => r.tipo === type && Number(r.id_tmdb) === id)
+        || getLibraryItem(type, id);
+    if (candidate) {
+        addToSelector(candidate);
+    }
+}
+
+async function clearSelectorItems() {
+    const items = AppState.selectorItems || [];
+    if (!items.length) return;
+    if (items.length > 1) {
+        const ok = await showConfirmDialog({
+            title: 'Vaciar selector',
+            message: `¿Quitar las ${items.length} opciones de la lista del selector?`,
+            confirmText: 'Vaciar',
+            danger: true,
+        });
+        if (!ok) return;
+    }
+    items.forEach(item => recordSelectorTombstone(item.tipo, item.id_tmdb));
+    AppState.selectorItems = [];
+    AppState.selectorWinnerKey = null;
+    saveLocalData();
+    syncToDrive();
+    renderProfilePicker();
+    showToast('Selector vaciado', 'info');
+}
+
+function setSelectorFilter(filter) {
+    const next = filter === 'movie' || filter === 'tv' ? filter : 'all';
+    if (AppState.selectorIsSpinning) return;
+    AppState.selectorFilter = next;
+    if (AppState.selectorWinnerKey) {
+        const winnerExists = getFilteredSelectorItems(next).some(
+            item => getSelectorItemKey(item.tipo, item.id_tmdb) === AppState.selectorWinnerKey,
+        );
+        if (!winnerExists) AppState.selectorWinnerKey = null;
+    }
+    renderProfilePicker();
+}
+
+function toggleSelectorSuggestions() {
+    AppState.selectorSuggestionsOpen = !AppState.selectorSuggestionsOpen;
+    renderSelectorSuggestions();
+    const btn = document.getElementById('picker-quick-library-btn');
+    if (btn) {
+        btn.textContent = AppState.selectorSuggestionsOpen ? 'Ocultar lista' : 'Desde mi lista';
+    }
+}
+
+function getSelectorLocalMatches(query) {
+    const q = normalizeSearchText(query);
+    if (!q) return [];
+    const tokens = q.split(/\s+/).filter(Boolean);
+    const combined = [
+        ...AppState.shows.map(s => ({ ...s, tipo: 'tv', fromLibrary: true })),
+        ...AppState.movies.map(m => ({ ...m, tipo: 'movie', fromLibrary: true })),
+    ];
+    return combined.filter((item) => {
+        const haystack = normalizeSearchText([
+            item.titulo,
+            item.titulo_original,
+            getItemYearString(item),
+        ].filter(Boolean).join(' '));
+        return tokens.every(t => haystack.includes(t));
+    }).slice(0, 6);
+}
+
+function onSelectorSearchInput() {
+    const input = document.getElementById('picker-search-input');
+    const clearBtn = document.getElementById('picker-search-clear');
+    const query = (input?.value || '').trim();
+    AppState.selectorSearchQuery = query;
+    if (clearBtn) clearBtn.classList.toggle('hidden', !query);
+
+    clearTimeout(selectorSearchDebounceTimer);
+    if (selectorSearchAbortController) {
+        selectorSearchAbortController.abort();
+        selectorSearchAbortController = null;
+    }
+
+    if (!query) {
+        AppState.selectorSearchLoading = false;
+        AppState.selectorSearchResults = [];
+        renderSelectorSearchResults();
+        return;
+    }
+
+    const localHits = getSelectorLocalMatches(query);
+    AppState.selectorSearchResults = localHits;
+    AppState.selectorSearchLoading = query.length >= 2;
+    renderSelectorSearchResults();
+
+    if (query.length < 2) return;
+
+    selectorSearchDebounceTimer = setTimeout(async () => {
+        const controller = new AbortController();
+        selectorSearchAbortController = controller;
+        try {
+            const resp = await searchMulti(query, 1, { signal: controller.signal });
+            if (controller.signal.aborted) return;
+            const liveQuery = (document.getElementById('picker-search-input')?.value || '').trim();
+            if (liveQuery !== query) return;
+
+            const remoteNormalized = (resp?.results || []).map(normalizeSearchResult);
+            const seen = new Set();
+            const merged = [];
+            for (const item of [...localHits, ...remoteNormalized]) {
+                const key = getSelectorItemKey(item.tipo, item.id_tmdb);
+                if (seen.has(key)) continue;
+                seen.add(key);
+                const inLib = Boolean(item.fromLibrary || getLibraryItem(item.tipo, item.id_tmdb));
+                merged.push({ ...item, fromLibrary: inLib });
+                if (merged.length >= 12) break;
+            }
+            AppState.selectorSearchResults = merged;
+        } catch (err) {
+            if (err?.name === 'AbortError') return;
+        } finally {
+            if (selectorSearchAbortController === controller) {
+                selectorSearchAbortController = null;
+            }
+            AppState.selectorSearchLoading = false;
+            renderSelectorSearchResults();
+        }
+    }, 260);
+}
+
+function clearSelectorSearch() {
+    clearTimeout(selectorSearchDebounceTimer);
+    if (selectorSearchAbortController) {
+        selectorSearchAbortController.abort();
+        selectorSearchAbortController = null;
+    }
+    AppState.selectorSearchQuery = '';
+    AppState.selectorSearchResults = [];
+    AppState.selectorSearchLoading = false;
+    const input = document.getElementById('picker-search-input');
+    const clearBtn = document.getElementById('picker-search-clear');
+    if (input) {
+        input.value = '';
+        input.focus();
+    }
+    if (clearBtn) clearBtn.classList.add('hidden');
+    renderSelectorSearchResults();
+}
+
+function renderSelectorSearchResults() {
+    const container = document.getElementById('picker-search-results');
+    if (!container) return;
+
+    const query = (AppState.selectorSearchQuery || '').trim();
+    if (!query) {
+        container.classList.add('hidden');
+        container.innerHTML = '';
+        return;
+    }
+
+    const results = AppState.selectorSearchResults || [];
+    container.classList.remove('hidden');
+
+    if (!results.length && AppState.selectorSearchLoading) {
+        container.innerHTML = '<p class="tvst-picker-search-msg">Buscando en TMDB…</p>';
+        return;
+    }
+    if (!results.length) {
+        container.innerHTML = '<p class="tvst-picker-search-msg">No se encontraron títulos.</p>';
+        return;
+    }
+
+    container.innerHTML = results.map((item) => {
+        const tipo = item.tipo === 'movie' ? 'movie' : 'tv';
+        const id = Number(item.id_tmdb);
+        const added = isInSelector(tipo, id);
+        const poster = safeUrl(item.portada);
+        const year = getItemYearString(item);
+        const kindLabel = tipo === 'movie' ? 'Película' : 'Serie';
+        return `
+            <div class="tvst-picker-result-row">
+                <button type="button" class="tvst-picker-result-main" onclick="openDetail('${tipo}', ${id})">
+                    ${poster
+                        ? `<img class="tvst-picker-result-thumb" src="${escapeHtml(poster)}" alt="" loading="lazy">`
+                        : `<div class="tvst-picker-result-fallback">${tipo === 'movie' ? UI_ICONS.film : UI_ICONS.tv}</div>`}
+                    <div class="tvst-picker-result-copy">
+                        <span class="tvst-picker-result-title">${escapeHtml(item.titulo || 'Sin título')}</span>
+                        <span class="tvst-picker-result-meta">${kindLabel}${year ? ` · ${escapeHtml(year)}` : ''}${item.fromLibrary ? ' · En tu lista' : ''}</span>
+                    </div>
+                </button>
+                <button type="button"
+                    class="tvst-picker-add-chip${added ? ' is-added' : ''}"
+                    onclick="addToSelectorFromSearch('${tipo}', ${id})"
+                    aria-label="${added ? 'Quitar del selector' : 'Añadir al selector'}">
+                    ${added ? 'En lista' : '+ Añadir'}
+                </button>
+            </div>
+        `;
+    }).join('');
+}
+
+function renderSelectorSuggestions() {
+    const wrap = document.getElementById('picker-suggestions-wrap');
+    if (!wrap) return;
+
+    if (!AppState.selectorSuggestionsOpen) {
+        wrap.classList.add('hidden');
+        wrap.innerHTML = '';
+        return;
+    }
+
+    const filter = AppState.selectorFilter;
+    const poolCandidates = [];
+    if (filter !== 'tv') {
+        AppState.movies
+            .filter(m => normalizeStatus(m.estado) !== 'completed')
+            .forEach(m => poolCandidates.push({ ...m, tipo: 'movie' }));
+    }
+    if (filter !== 'movie') {
+        AppState.shows
+            .filter(s => ['pending', 'watching', 'standby'].includes(normalizeStatus(s.estado)))
+            .forEach(s => poolCandidates.push({ ...s, tipo: 'tv' }));
+    }
+
+    const available = poolCandidates
+        .filter(item => !isInSelector(item.tipo, item.id_tmdb))
+        .sort((a, b) => parseModifiedMs(b.updatedAt) - parseModifiedMs(a.updatedAt))
+        .slice(0, 18);
+
+    wrap.classList.remove('hidden');
+    if (!available.length) {
+        wrap.innerHTML = '<p class="tvst-picker-search-msg">No hay más pendientes disponibles en tu lista para añadir.</p>';
+        return;
+    }
+
+    wrap.innerHTML = `
+        <div class="tvst-picker-suggestions-rail">
+            ${available.map((item) => {
+                const tipo = item.tipo === 'movie' ? 'movie' : 'tv';
+                const id = Number(item.id_tmdb);
+                const poster = safeUrl(item.portada);
+                return `
+                    <article class="tvst-picker-sugg-card" onclick="addToSelectorFromSearch('${tipo}', ${id})">
+                        <div class="tvst-picker-sugg-poster-wrap">
+                            ${poster
+                                ? `<img src="${escapeHtml(poster)}" alt="${escapeHtml(item.titulo || '')}" loading="lazy">`
+                                : `<div class="tvst-picker-sugg-fallback">${tipo === 'movie' ? UI_ICONS.film : UI_ICONS.tv}</div>`}
+                            <span class="tvst-picker-sugg-plus" aria-hidden="true">${UI_ICONS.plus}</span>
+                        </div>
+                        <p class="tvst-picker-sugg-title">${escapeHtml(item.titulo || 'Sin título')}</p>
+                    </article>
+                `;
+            }).join('')}
+        </div>
+    `;
+}
+
+function renderSelectorStageCard(item, options = {}) {
+    const isRolling = Boolean(options.isRolling);
+    const isPop = Boolean(options.isPop);
+    const tipo = item.tipo === 'movie' ? 'movie' : 'tv';
+    const id = Number(item.id_tmdb);
+    const poster = safeUrl(item.portada);
+    const bg = escapeCssUrl(item.backdrop || item.portada || '');
+    const year = getItemYearString(item);
+    const kindLabel = tipo === 'movie' ? 'Película' : 'Serie';
+    const score = Number(item.vote_average);
+    const runtime = tipo === 'movie' && Number(item.runtime) > 0 ? `${Math.round(Number(item.runtime))} min` : '';
+    const metaParts = [kindLabel];
+    if (year) metaParts.push(year);
+    if (runtime) metaParts.push(runtime);
+    if (Number.isFinite(score) && score > 0) metaParts.push(`★ ${score.toFixed(1)}`);
+
+    return `
+        <div class="tvst-picker-winner${isRolling ? ' is-rolling' : ''}${isPop ? ' is-winner-pop' : ''}"${bg ? ` style="--picker-winner-bg: url('${bg}')"` : ''}>
+            <div class="tvst-picker-winner-scrim"></div>
+            <div class="tvst-picker-winner-inner">
+                ${poster
+                    ? `<img class="tvst-picker-winner-poster" src="${escapeHtml(poster)}" alt="${escapeHtml(item.titulo || '')}">`
+                    : `<div class="tvst-picker-winner-fallback">${tipo === 'movie' ? UI_ICONS.film : UI_ICONS.tv}</div>`}
+                <div class="tvst-picker-winner-copy">
+                    <span class="tvst-picker-winner-kicker">${isRolling ? 'Eligiendo…' : 'Elegida para ver'}</span>
+                    <h3 class="tvst-picker-winner-title">${escapeHtml(item.titulo || 'Sin título')}</h3>
+                    <p class="tvst-picker-winner-meta">${escapeHtml(metaParts.join(' · '))}</p>
+                    ${isRolling ? '' : `
+                        <div class="tvst-picker-winner-actions">
+                            <button type="button" class="tvst-picker-btn is-primary" onclick="openDetail('${tipo}', ${id})">Ver ficha</button>
+                            <button type="button" class="tvst-picker-btn" onclick="removeFromSelector('${tipo}', ${id})">Descartar</button>
+                        </div>
+                    `}
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+function renderSelectorWinnerStage(filteredItems, options = {}) {
+    const stage = document.getElementById('picker-winner-stage');
+    if (!stage) return;
+
+    const winner = AppState.selectorWinnerKey
+        ? filteredItems.find(item => getSelectorItemKey(item.tipo, item.id_tmdb) === AppState.selectorWinnerKey)
+        : null;
+
+    if (!winner) {
+        const msg = filteredItems.length
+            ? 'Pulsa «Elegir al azar» para decidir qué ver.'
+            : 'Añade películas o series abajo para empezar el sorteo.';
+        stage.innerHTML = `<div class="tvst-picker-stage-idle"><p>${escapeHtml(msg)}</p></div>`;
+        return;
+    }
+
+    stage.innerHTML = renderSelectorStageCard(winner, { isPop: Boolean(options.pop) });
+}
+
+function renderSelectorPool(filteredItems) {
+    const grid = document.getElementById('picker-pool-grid');
+    const heading = document.getElementById('picker-pool-heading');
+    const clearBtn = document.getElementById('picker-clear-btn');
+    if (!grid) return;
+
+    const total = (AppState.selectorItems || []).length;
+    if (heading) {
+        heading.textContent = filteredItems.length
+            ? `Opciones en la lista (${filteredItems.length})`
+            : 'Opciones en la lista';
+    }
+    if (clearBtn) {
+        clearBtn.classList.toggle('hidden', total === 0);
+    }
+
+    if (!total) {
+        grid.innerHTML = emptyState('film', 'Tu selector está vacío', {
+            subtitle: 'Busca películas o series arriba, usa «Desde mi lista» o añade desde cualquier ficha en el menú ⋯.',
+        });
+        return;
+    }
+
+    if (!filteredItems.length) {
+        const label = AppState.selectorFilter === 'movie' ? 'películas' : 'series';
+        grid.innerHTML = emptyState('film', `Sin ${label} en el selector`, {
+            subtitle: 'Cambia el filtro superior a «Todo» o añade alguna opción de este tipo.',
+            actionLabel: 'Ver todo',
+            actionOnClick: "setSelectorFilter('all')",
+        });
+        return;
+    }
+
+    grid.innerHTML = filteredItems.map((item) => {
+        const tipo = item.tipo === 'movie' ? 'movie' : 'tv';
+        const id = Number(item.id_tmdb);
+        const key = getSelectorItemKey(tipo, id);
+        const isWinner = key === AppState.selectorWinnerKey;
+        const poster = safeUrl(item.portada);
+        const year = getItemYearString(item);
+        const kindLabel = tipo === 'movie' ? 'Película' : 'Serie';
+        return `
+            <article class="tvst-picker-pool-card${isWinner ? ' is-winner' : ''}" onclick="openDetail('${tipo}', ${id})">
+                <div class="tvst-picker-pool-poster-wrap">
+                    ${poster
+                        ? `<img src="${escapeHtml(poster)}" alt="${escapeHtml(item.titulo || '')}" loading="lazy">`
+                        : `<div class="tvst-picker-pool-fallback">${tipo === 'movie' ? UI_ICONS.film : UI_ICONS.tv}</div>`}
+                    <span class="tvst-picker-pool-badge">${kindLabel}</span>
+                    <button type="button"
+                        class="tvst-picker-pool-remove"
+                        onclick="event.stopPropagation(); removeFromSelector('${tipo}', ${id})"
+                        aria-label="Quitar de la lista">${UI_ICONS.closeSm}</button>
+                </div>
+                <p class="tvst-picker-pool-title">${escapeHtml(item.titulo || 'Sin título')}</p>
+                ${year ? `<p class="tvst-picker-pool-year">${escapeHtml(year)}</p>` : ''}
+            </article>
+        `;
+    }).join('');
+}
+
+function renderProfilePicker(options = {}) {
+    const filter = AppState.selectorFilter === 'movie' || AppState.selectorFilter === 'tv'
+        ? AppState.selectorFilter
+        : 'all';
+    document.querySelectorAll('.tvst-picker-pill').forEach((btn) => {
+        btn.classList.toggle('is-active', btn.dataset.pickerFilter === filter);
+    });
+
+    const filteredItems = getFilteredSelectorItems(filter);
+    const countHint = document.getElementById('picker-pool-count-hint');
+    const rollBtn = document.getElementById('picker-roll-btn');
+    if (countHint) {
+        const n = filteredItems.length;
+        countHint.textContent = `${n} ${n === 1 ? 'opción' : 'opciones'}`;
+    }
+    if (rollBtn) {
+        rollBtn.disabled = filteredItems.length === 0 || AppState.selectorIsSpinning;
+        const labelSpan = rollBtn.querySelector('span');
+        if (labelSpan) {
+            labelSpan.textContent = AppState.selectorWinnerKey && filteredItems.length > 1
+                ? 'Elegir otra'
+                : 'Elegir al azar';
+        }
+    }
+
+    const quickBtn = document.getElementById('picker-quick-library-btn');
+    if (quickBtn) {
+        quickBtn.textContent = AppState.selectorSuggestionsOpen ? 'Ocultar lista' : 'Desde mi lista';
+    }
+
+    renderSelectorWinnerStage(filteredItems, { pop: Boolean(options.pop) });
+    renderSelectorSearchResults();
+    renderSelectorSuggestions();
+    renderSelectorPool(filteredItems);
+}
+
+function spinSelectorPicker() {
+    if (AppState.selectorIsSpinning) return;
+    const pool = getFilteredSelectorItems(AppState.selectorFilter);
+    if (!pool.length) {
+        showToast('Añade al menos una opción para sortear', 'info');
+        return;
+    }
+
+    if (pool.length === 1) {
+        const only = pool[0];
+        AppState.selectorWinnerKey = getSelectorItemKey(only.tipo, only.id_tmdb);
+        renderProfilePicker({ pop: true });
+        return;
+    }
+
+    const candidates = pool.filter(
+        item => getSelectorItemKey(item.tipo, item.id_tmdb) !== AppState.selectorWinnerKey,
+    );
+    const pickPool = candidates.length ? candidates : pool;
+    const finalWinner = pickPool[Math.floor(Math.random() * pickPool.length)];
+    const finalKey = getSelectorItemKey(finalWinner.tipo, finalWinner.id_tmdb);
+
+    clearTimeout(selectorSpinTimer);
+    AppState.selectorIsSpinning = true;
+    const rollBtn = document.getElementById('picker-roll-btn');
+    if (rollBtn) rollBtn.disabled = true;
+
+    const stage = document.getElementById('picker-winner-stage');
+    const delays = [55, 65, 75, 90, 105, 125, 150, 180];
+    let step = 0;
+
+    const runStep = () => {
+        if (AppState.currentTab !== 'profile' || AppState.currentProfileTab !== 'picker') {
+            AppState.selectorIsSpinning = false;
+            AppState.selectorWinnerKey = finalKey;
+            return;
+        }
+        if (step < delays.length) {
+            const preview = pool[Math.floor(Math.random() * pool.length)];
+            if (stage && preview) {
+                stage.innerHTML = renderSelectorStageCard(preview, { isRolling: true });
+            }
+            const delay = delays[step];
+            step += 1;
+            selectorSpinTimer = setTimeout(runStep, delay);
+            return;
+        }
+        AppState.selectorIsSpinning = false;
+        AppState.selectorWinnerKey = finalKey;
+        renderProfilePicker({ pop: true });
+    };
+
+    runStep();
 }
 
 // ============================================
@@ -5882,11 +6583,14 @@ function renderDetailInfo(item) {
             })() : ''}
         </div>
         ${renderDetailTrailerSection(item)}
-        ${providers.length ? `
+        ${(() => {
+            const displayProviders = getNormalizedDisplayProviders(providers);
+            if (!displayProviders.length) return '';
+            return `
             <div class="tvst-info-section">
                 <h3>Dónde ver (${escapeHtml(getPreferredProviderCountry())})</h3>
                 <div class="tvst-providers-row">
-                    ${[...providers].sort((a, b) => Number(isSubscribedProvider(b.provider_name)) - Number(isSubscribedProvider(a.provider_name))).map(provider => {
+                    ${displayProviders.map(provider => {
                         const logoUrl = provider.logo_path ? safeUrl(window.getImageUrl(provider.logo_path, 'w92')) : '';
                         const subscribed = isSubscribedProvider(provider.provider_name);
                         return `
@@ -5898,8 +6602,8 @@ function renderDetailInfo(item) {
                     `;
                     }).join('')}
                 </div>
-            </div>
-        ` : ''}
+            </div>`;
+        })()}
         <div class="tvst-info-section">
             <h3>Reparto</h3>
             <div class="tvst-cast-rail">
@@ -7636,14 +8340,19 @@ function toggleDetailMenu(event) {
     const menu = document.getElementById('detail-overflow-menu');
     if (!menu || !item) return;
 
-    if (!isItemAlreadyAdded(item.tipo, item.id_tmdb)) {
-        closeDetailMenu();
-        showToast('Añade el título primero', 'info');
-        return;
-    }
+    const inLibrary = isItemAlreadyAdded(item.tipo, item.id_tmdb);
+    const inSelector = isInSelector(item.tipo, item.id_tmdb);
 
     if (!menu.classList.contains('hidden')) {
         closeDetailMenu();
+        return;
+    }
+
+    if (!inLibrary) {
+        menu.innerHTML = `
+            <button type="button" class="tvst-overflow-item" onclick="runDetailMenuAction('toggle-selector')">${inSelector ? 'Quitar del selector' : 'Añadir al selector'}</button>
+        `;
+        menu.classList.remove('hidden');
         return;
     }
 
@@ -7657,6 +8366,7 @@ function toggleDetailMenu(event) {
     const actions = [
         { id: 'toggle-favorite', label: isFavorite ? 'Quitar de favoritos' : 'Añadir a favoritos' },
         { id: 'add-to-list', label: 'Añadir a lista' },
+        { id: 'toggle-selector', label: inSelector ? 'Quitar del selector' : 'Añadir al selector' },
         { id: 'pending', label: 'Marcar como pendiente' },
         { id: 'standby', label: 'Ver en otro momento' },
         { id: 'remove', label: 'Eliminar', danger: true },
@@ -7672,17 +8382,17 @@ function toggleDetailMenu(event) {
 
     if (item.tipo === 'movie') {
         if (st === 'completed') {
-            actions.splice(3, 0, { id: 'movie-unwatch', label: 'Marcar como no vista' });
+            actions.splice(4, 0, { id: 'movie-unwatch', label: 'Marcar como no vista' });
         } else {
-            actions.splice(3, 0, { id: 'movie-watch', label: 'Marcar como vista' });
+            actions.splice(4, 0, { id: 'movie-watch', label: 'Marcar como vista' });
         }
     }
 
     if (item.tipo === 'tv' && watchedCount > 0) {
         if (st === 'dropped') {
-            actions.splice(3, 0, { id: 'resume', label: 'Seguir viendo' });
+            actions.splice(4, 0, { id: 'resume', label: 'Seguir viendo' });
         } else {
-            actions.splice(3, 0, { id: 'dropped', label: 'Dejar de ver' });
+            actions.splice(4, 0, { id: 'dropped', label: 'Dejar de ver' });
         }
     }
 
@@ -7696,6 +8406,11 @@ async function runDetailMenuAction(action) {
     const item = AppState.selectedItem;
     closeDetailMenu();
     if (!item) return;
+
+    if (action === 'toggle-selector') {
+        toggleItemInSelector(item.tipo, item.id_tmdb);
+        return;
+    }
 
     if (action === 'toggle-favorite') {
         toggleFavorite(item.tipo, item.id_tmdb);
@@ -7851,7 +8566,7 @@ function updateDetailHero(item) {
     if (item.tipo === 'tv') {
         const seasons = item.numero_temporadas || item.temporadas?.filter(s => !s.especial)?.length || 0;
         const official = translateOfficialStatus(item.status || item.tmdb_status);
-        const provider = item.watch_providers?.[0]?.provider_name;
+        const provider = getNormalizedDisplayProviders(item.watch_providers)[0]?.provider_name;
         const parts = [];
         if (seasons) parts.push(`${seasons} temporada${seasons === 1 ? '' : 's'}`);
         if (official) parts.push(official);
@@ -7860,7 +8575,7 @@ function updateDetailHero(item) {
     } else {
         const yearMatch = item.fecha_estreno ? String(item.fecha_estreno).match(/^(\d{4})/) : null;
         const year = yearMatch ? yearMatch[1] : null;
-        const provider = item.watch_providers?.[0]?.provider_name;
+        const provider = getNormalizedDisplayProviders(item.watch_providers)[0]?.provider_name;
         const parts = ['Película'];
         if (year) parts.push(year);
         if (provider) parts.push(provider);
@@ -8639,8 +9354,10 @@ function exportData() {
         movies: AppState.movies,
         shows: AppState.shows,
         lists: AppState.lists,
+        selectorItems: AppState.selectorItems,
         deletedIds: AppState.deletedIds,
         deletedListIds: AppState.deletedListIds,
+        deletedSelectorKeys: AppState.deletedSelectorKeys,
         preferences: getPreferences(),
         exportDate: new Date().toISOString(),
     };
@@ -8676,7 +9393,7 @@ function handleImport(event) {
         try {
             const data = JSON.parse(e.target.result);
 
-            if (data.movies || data.shows || data.lists || data.preferences) {
+            if (data.movies || data.shows || data.lists || data.selectorItems || data.preferences) {
                 closeListPicker();
                 closeListModal();
                 closeEpisodeModal();
@@ -8686,14 +9403,17 @@ function handleImport(event) {
                 AppState.selectedListId = null;
                 AppState.selectedEpisode = null;
                 AppState.selectedPerson = null;
+                AppState.selectorWinnerKey = null;
                 failedProviderFetchKeys.clear();
                 attemptedMovieFilterMetaIds.clear();
 
                 AppState.movies = (data.movies || []).map(normalizeStoredMovie);
                 AppState.shows = (data.shows || []).map(normalizeStoredShow);
                 AppState.lists = (data.lists || []).map(normalizeStoredList);
+                AppState.selectorItems = (data.selectorItems || []).map(normalizeStoredSelectorItem).filter(Boolean);
                 AppState.deletedIds = normalizeDeletedIds(data.deletedIds);
                 AppState.deletedListIds = normalizeDeletedListIds(data.deletedListIds);
+                AppState.deletedSelectorKeys = normalizeDeletedSelectorKeys(data.deletedSelectorKeys);
                 if (data.preferences) {
                     AppState.preferences = normalizePreferences(data.preferences);
                     if (typeof window.clearWatchProvidersCache === 'function') {
@@ -8735,6 +9455,7 @@ async function clearAllData() {
     AppState.movies.forEach(m => recordItemTombstone('movie', m.id_tmdb));
     AppState.shows.forEach(s => recordItemTombstone('tv', s.id_tmdb));
     AppState.lists.forEach(l => recordListTombstone(l.id));
+    (AppState.selectorItems || []).forEach(s => recordSelectorTombstone(s.tipo, s.id_tmdb));
 
     closeListPicker();
     closeListModal();
@@ -8745,6 +9466,8 @@ async function clearAllData() {
     AppState.movies = [];
     AppState.shows = [];
     AppState.lists = [];
+    AppState.selectorItems = [];
+    AppState.selectorWinnerKey = null;
     AppState.selectedItem = null;
     AppState.selectedListId = null;
     AppState.selectedEpisode = null;
@@ -9035,5 +9758,14 @@ window.shiftUpcomingCalendarWeek = shiftUpcomingCalendarWeek;
 window.selectUpcomingCalendarDate = selectUpcomingCalendarDate;
 window.resetUpcomingCalendar = resetUpcomingCalendar;
 window.jumpToUpcomingCalendarDate = jumpToUpcomingCalendarDate;
+window.setSelectorFilter = setSelectorFilter;
+window.spinSelectorPicker = spinSelectorPicker;
+window.toggleSelectorSuggestions = toggleSelectorSuggestions;
+window.onSelectorSearchInput = onSelectorSearchInput;
+window.clearSelectorSearch = clearSelectorSearch;
+window.addToSelectorFromSearch = addToSelectorFromSearch;
+window.removeFromSelector = removeFromSelector;
+window.clearSelectorItems = clearSelectorItems;
+window.toggleItemInSelector = toggleItemInSelector;
 
 console.log('[App] app.js cargado');
