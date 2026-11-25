@@ -37,9 +37,11 @@ const AppState = {
     moviesPendingGenres: [],
     moviesPendingPlatforms: [],
     moviesPendingMaxRuntime: null,
+    moviesPendingMySubsOnly: false,
     moviesPendingFiltersOpen: false,
     lastSearchResults: [],
-    lastTrendingResults: [],
+    exploreTrendingTab: 'tv',
+    trendingCache: { tv: [], movie: [] },
     selectedItem: null,
     selectedEpisode: null,
     selectedPerson: null,
@@ -54,11 +56,39 @@ const AppState = {
     deletedIds: { movie: [], tv: [] },
     deletedListIds: [],
     expandedSeasons: {},
+    revealedSpoilerEpisodeKeys: {},
     timelineHistoryVisible: { 'pending-list': 0, upcoming: 4 },
     timelineHistoryCache: {},
     timelinePendingCache: { continueWatching: [], staleWatching: [], builtAt: 0 },
     timelineUpcomingCache: { html: '', builtAt: 0, items: [] },
     lastCompletedReopenAt: 0,
+    preferences: null,
+};
+
+const VALID_START_TABS = new Set(['series', 'movies', 'explore', 'profile']);
+const VALID_INACTIVITY_DAYS = new Set([7, 14, 30, 60]);
+const VALID_PREV_EP_RULES = new Set(['ask', 'always', 'never']);
+const PROVIDER_COUNTRIES = [
+    { code: 'ES', label: 'España (ES)' },
+    { code: 'MX', label: 'México (MX)' },
+    { code: 'AR', label: 'Argentina (AR)' },
+    { code: 'CO', label: 'Colombia (CO)' },
+    { code: 'CL', label: 'Chile (CL)' },
+    { code: 'US', label: 'EE. UU. (US)' },
+];
+const VALID_PROVIDER_COUNTRIES = new Set(PROVIDER_COUNTRIES.map(c => c.code));
+
+const DEFAULT_PREFERENCES = {
+    startTab: 'series',
+    spoilerFree: false,
+    includeSpecials: false,
+    inactivityDays: 14,
+    previousEpisodesRule: 'ask',
+    showMoviePosterTitles: false,
+    showMoviePosterRatings: false,
+    providerCountry: 'ES',
+    mySubscriptions: [],
+    updatedAt: '',
 };
 
 /** Cache en memoria de episodios ordenados (sesión). */
@@ -83,6 +113,84 @@ let profileSearchDebounceTimer = null;
 let moviesPendingSearchDebounceTimer = null;
 const failedProviderFetchKeys = new Set();
 const attemptedMovieFilterMetaIds = new Set();
+
+function normalizePreferences(raw = null) {
+    const src = raw && typeof raw === 'object' ? raw : {};
+    const startTab = VALID_START_TABS.has(src.startTab) ? src.startTab : DEFAULT_PREFERENCES.startTab;
+    const inactivityNum = Number(src.inactivityDays);
+    const inactivityDays = VALID_INACTIVITY_DAYS.has(inactivityNum) ? inactivityNum : DEFAULT_PREFERENCES.inactivityDays;
+    const prevRule = VALID_PREV_EP_RULES.has(src.previousEpisodesRule) ? src.previousEpisodesRule : DEFAULT_PREFERENCES.previousEpisodesRule;
+    const countryRaw = String(src.providerCountry || DEFAULT_PREFERENCES.providerCountry).trim().toUpperCase();
+    const providerCountry = VALID_PROVIDER_COUNTRIES.has(countryRaw) ? countryRaw : DEFAULT_PREFERENCES.providerCountry;
+    const subs = Array.isArray(src.mySubscriptions)
+        ? [...new Set(src.mySubscriptions.map(s => String(s || '').trim()).filter(Boolean))]
+        : [];
+    return {
+        startTab,
+        spoilerFree: Boolean(src.spoilerFree),
+        includeSpecials: Boolean(src.includeSpecials),
+        inactivityDays,
+        previousEpisodesRule: prevRule,
+        showMoviePosterTitles: Boolean(src.showMoviePosterTitles),
+        showMoviePosterRatings: Boolean(src.showMoviePosterRatings),
+        providerCountry,
+        mySubscriptions: subs,
+        updatedAt: typeof src.updatedAt === 'string' ? src.updatedAt : '',
+    };
+}
+
+AppState.preferences = normalizePreferences();
+
+function getPreferences() {
+    if (!AppState.preferences) {
+        AppState.preferences = normalizePreferences();
+    }
+    return AppState.preferences;
+}
+
+function getValidStartTab() {
+    const tab = getPreferences().startTab;
+    return VALID_START_TABS.has(tab) ? tab : 'series';
+}
+
+function isSpoilerFreeEnabled() {
+    return Boolean(getPreferences().spoilerFree);
+}
+
+function shouldMaskEpisodeSpoilers(show, episodeId) {
+    if (!isSpoilerFreeEnabled() || !show || !episodeId) return false;
+    return !isEpisodeConsumed(show, episodeId);
+}
+
+function shouldIncludeSpecials() {
+    return Boolean(getPreferences().includeSpecials);
+}
+
+function getInactivityDays() {
+    const days = Number(getPreferences().inactivityDays);
+    return VALID_INACTIVITY_DAYS.has(days) ? days : CONTINUE_BOOST_DAYS;
+}
+
+function getPreviousEpisodesRule() {
+    const rule = getPreferences().previousEpisodesRule;
+    return VALID_PREV_EP_RULES.has(rule) ? rule : 'ask';
+}
+
+function getPreferredProviderCountry() {
+    return getPreferences().providerCountry || 'ES';
+}
+
+function getMySubscriptions() {
+    return getPreferences().mySubscriptions || [];
+}
+
+function isSubscribedProvider(rawName) {
+    const normalized = typeof normalizeProviderName === 'function'
+        ? normalizeProviderName(rawName)
+        : String(rawName || '').trim();
+    if (!normalized) return false;
+    return getMySubscriptions().some(sub => sub.toLowerCase() === normalized.toLowerCase());
+}
 
 // ============================================
 // INICIALIZACIÓN
@@ -300,7 +408,7 @@ async function enterAppAfterDrive() {
         showToast('No se pudo leer Drive; cambios no se subirán hasta reconectar', 'error');
     }
 
-    switchTab('series');
+    switchTab(getValidStartTab());
     await renderCurrentView();
     scheduleSyncMobileChromeHeights();
     const idle = window.requestIdleCallback || ((cb) => setTimeout(cb, 800));
@@ -520,6 +628,9 @@ function clearLibraryState() {
     AppState.lists = [];
     AppState.deletedIds = { movie: [], tv: [] };
     AppState.deletedListIds = [];
+    AppState.preferences = normalizePreferences();
+    AppState.moviesPendingMySubsOnly = false;
+    AppState.revealedSpoilerEpisodeKeys = {};
     AppState.selectedItem = null;
     AppState.selectedListId = null;
     invalidateTimelineCaches();
@@ -587,6 +698,7 @@ function applyParsedLocalData(data) {
     AppState.lists = (data.lists || []).map(normalizeStoredList);
     AppState.deletedIds = normalizeDeletedIds(data.deletedIds);
     AppState.deletedListIds = normalizeDeletedListIds(data.deletedListIds);
+    AppState.preferences = normalizePreferences(data.preferences);
 }
 
 /**
@@ -706,6 +818,7 @@ function saveLocalDataImmediate() {
         lists: AppState.lists,
         deletedIds: AppState.deletedIds,
         deletedListIds: AppState.deletedListIds,
+        preferences: getPreferences(),
         lastModified: nowIso(),
     };
 
@@ -765,6 +878,7 @@ function getStoredLastModified(userId = AppState.driveUserId) {
 }
 
 function snapshotLibrary() {
+    const prefs = getPreferences();
     return {
         movies: AppState.movies.map(m => ({ ...m })),
         shows: AppState.shows.map(s => ({ ...s })),
@@ -777,6 +891,7 @@ function snapshotLibrary() {
             tv: (AppState.deletedIds.tv || []).map(e => ({ ...e })),
         },
         deletedListIds: (AppState.deletedListIds || []).map(e => ({ ...e })),
+        preferences: { ...prefs, mySubscriptions: [...(prefs.mySubscriptions || [])] },
         lastModified: getStoredLastModified() || nowIso(),
     };
 }
@@ -933,7 +1048,19 @@ function mergeLibraries(localLib, remoteLib) {
         lists: [...byId.values()],
         deletedIds,
         deletedListIds,
+        preferences: mergePreferencesLww(localLib?.preferences, remoteLib?.preferences),
     };
+}
+
+function mergePreferencesLww(localPrefsRaw, remotePrefsRaw) {
+    const localPrefs = normalizePreferences(localPrefsRaw);
+    const remotePrefs = normalizePreferences(remotePrefsRaw);
+    const localMs = parseModifiedMs(localPrefs.updatedAt);
+    const remoteMs = parseModifiedMs(remotePrefs.updatedAt);
+    if (remoteMs > localMs) return remotePrefs;
+    if (localMs > remoteMs) return localPrefs;
+    if (remotePrefs.updatedAt && !localPrefs.updatedAt) return remotePrefs;
+    return localPrefs;
 }
 
 function applyLibrary(lib) {
@@ -942,6 +1069,7 @@ function applyLibrary(lib) {
     AppState.lists = (lib.lists || []).map(normalizeStoredList);
     AppState.deletedIds = normalizeDeletedIds(lib.deletedIds);
     AppState.deletedListIds = normalizeDeletedListIds(lib.deletedListIds);
+    AppState.preferences = normalizePreferences(lib.preferences);
 }
 
 /**
@@ -957,6 +1085,7 @@ function reconcileWithDriveData(remoteData, localSnapshot) {
         lists: (remoteData?.lists || []).map(normalizeStoredList),
         deletedIds: normalizeDeletedIds(remoteData?.deletedIds),
         deletedListIds: normalizeDeletedListIds(remoteData?.deletedListIds),
+        preferences: normalizePreferences(remoteData?.preferences),
         lastModified: remoteData?.lastModified || null,
     };
     const remoteCount = libraryItemCount(remoteLib);
@@ -965,7 +1094,10 @@ function reconcileWithDriveData(remoteData, localSnapshot) {
     const localMs = parseModifiedMs(localSnapshot?.lastModified);
 
     if (remoteCount === 0 && localCount > 0) {
-        applyLibrary(localSnapshot);
+        applyLibrary({
+            ...localSnapshot,
+            preferences: mergePreferencesLww(localSnapshot?.preferences, remoteLib.preferences),
+        });
         return 'local-upload';
     }
 
@@ -975,13 +1107,24 @@ function reconcileWithDriveData(remoteData, localSnapshot) {
     }
 
     if (remoteCount > 0) {
-        applyLibrary(remoteLib);
+        applyLibrary({
+            ...remoteLib,
+            preferences: mergePreferencesLww(localSnapshot?.preferences, remoteLib.preferences),
+        });
         return 'remote';
     }
 
-    if (remoteCount === 0 && localCount === 0 && remoteMs > localMs && remoteMs > 0) {
-        applyLibrary(remoteLib);
-        return 'remote';
+    if (remoteCount === 0 && localCount === 0) {
+        const mergedPrefs = mergePreferencesLww(localSnapshot?.preferences, remoteLib.preferences);
+        AppState.preferences = mergedPrefs;
+        const localPrefsMs = parseModifiedMs(localSnapshot?.preferences?.updatedAt);
+        const remotePrefsMs = parseModifiedMs(remoteLib.preferences?.updatedAt);
+        if (localPrefsMs > remotePrefsMs) return 'local-upload';
+        if (remoteMs > localMs && remoteMs > 0) {
+            applyLibrary({ ...remoteLib, preferences: mergedPrefs });
+            return 'remote';
+        }
+        return remotePrefsMs > localPrefsMs ? 'remote' : 'unchanged';
     }
 
     return 'unchanged';
@@ -1127,7 +1270,7 @@ async function updateStatus(type, id_tmdb, status) {
             show.estado = normalizedStatus;
 
             if (normalizedStatus === 'completed') {
-                const episodes = await getOrderedEpisodes(show, { includeSpecials: false });
+                const episodes = await getOrderedEpisodes(show, { includeSpecials: shouldIncludeSpecials() });
                 const airedEpisodeIds = episodes.filter(isEpisodeAired).map(ep => ep.id);
                 const prevWatched = new Set(show.capitulos_vistos || []);
                 const newlyWatchedIds = airedEpisodeIds.filter(id => !prevWatched.has(id));
@@ -1211,11 +1354,24 @@ function shouldAskToMarkPreviousEpisodes(show, episodes, episodeId) {
     return previousEpisodes.length > 0 && previousEpisodes.some(ep => !isEpisodeConsumed(show, ep.id));
 }
 
+async function resolveMarkPreviousEpisodes(show, episodes, episodeId, confirmText = 'Marcar todos') {
+    if (!shouldAskToMarkPreviousEpisodes(show, episodes, episodeId)) return false;
+    const rule = getPreviousEpisodesRule();
+    if (rule === 'always') return true;
+    if (rule === 'never') return false;
+    return showConfirmDialog({
+        title: 'Episodios anteriores',
+        message: '¿Quieres marcar también los episodios anteriores como vistos?',
+        confirmText,
+        cancelText: 'Solo este',
+    });
+}
+
 async function toggleEpisode(id_tmdb, episode) {
     const show = AppState.shows.find(s => s.id_tmdb === id_tmdb);
     if (!show) return;
 
-    const episodes = await getOrderedEpisodes(show, { includeSpecials: false });
+    const episodes = await getOrderedEpisodes(show, { includeSpecials: shouldIncludeSpecials() });
     const targetEpisode = episodes.find(ep => ep.id === episode);
 
     if (targetEpisode && !isEpisodeAired(targetEpisode)) {
@@ -1239,13 +1395,7 @@ async function toggleEpisode(id_tmdb, episode) {
         clearEpisodeWatchedRecord(show, episode);
     } else {
         const previousEpisodes = episodes.filter(isEpisodeAired).filter(ep => compareEpisodeOrder(ep, targetEpisode) < 0 && !isEpisodeConsumed(show, ep.id));
-        if (shouldAskToMarkPreviousEpisodes(show, episodes, episode)
-            && await showConfirmDialog({
-                title: 'Episodios anteriores',
-                message: '¿Quieres marcar también los episodios anteriores como vistos?',
-                confirmText: 'Marcar todos',
-                cancelText: 'Solo este',
-            })) {
+        if (await resolveMarkPreviousEpisodes(show, episodes, episode, 'Marcar todos')) {
             previousEpisodes.forEach(ep => {
                 if (!show.capitulos_vistos.includes(ep.id)) {
                     show.capitulos_vistos.push(ep.id);
@@ -1312,6 +1462,7 @@ function buildDrivePayload() {
         lists: AppState.lists,
         deletedIds: AppState.deletedIds,
         deletedListIds: AppState.deletedListIds,
+        preferences: getPreferences(),
         lastModified: nowIso(),
     };
 }
@@ -1493,7 +1644,7 @@ function switchTab(tab) {
 
     Promise.resolve(renderCurrentView()).finally(() => {
         scheduleSyncMobileChromeHeights();
-        if (tab === 'profile' || tab === 'explore' || tab === 'movies') {
+        if (tab === 'profile' || tab === 'explore' || tab === 'movies' || tab === 'settings') {
             setScrollTop(0, 'auto');
         } else if (tab === 'series' && AppState.currentSubTab === 'pending-list') {
             resetPendingListScroll();
@@ -1583,6 +1734,10 @@ async function renderCurrentView() {
 
     if (AppState.currentTab === 'profile') {
         await renderProfileView();
+        return;
+    }
+
+    if (AppState.currentTab === 'settings') {
         renderSettings();
         return;
     }
@@ -1649,15 +1804,21 @@ function renderMoviePosterGrid(movies, { showCountdown = false, showWatchToggle 
         });
     }
 
+    const prefs = getPreferences();
+    const showTitles = Boolean(prefs.showMoviePosterTitles);
+    const showRatings = Boolean(prefs.showMoviePosterRatings);
+
     return movies.map(movie => {
         const countdown = showCountdown ? formatMovieCountdown(movie.fecha_estreno) : '';
         const isCompleted = normalizeStatus(movie.estado) === 'completed';
         const poster = safeUrl(movie.portada);
-        return `
-        <article class="tvst-poster-cell" data-tmdb-id="${Number(movie.id_tmdb)}" onclick="openDetail('movie', ${Number(movie.id_tmdb)})">
+        const tmdbScore = Number(movie.vote_average);
+        const hasTmdbScore = showRatings && Number.isFinite(tmdbScore) && tmdbScore > 0;
+        const innerPoster = `
             ${poster
                 ? `<img src="${escapeHtml(poster)}" alt="${escapeHtml(movie.titulo || '')}">`
                 : `<div class="tvst-poster-fallback">${UI_ICONS.film}</div>`}
+            ${hasTmdbScore ? `<span class="tvst-poster-score is-tmdb">${UI_ICONS.starSm} ${tmdbScore.toFixed(1)}</span>` : ''}
             ${showCountdown && countdown ? `<div class="tvst-poster-countdown">${escapeHtml(countdown)}</div>` : ''}
             ${showWatchToggle ? `
                 <button type="button"
@@ -1665,6 +1826,19 @@ function renderMoviePosterGrid(movies, { showCountdown = false, showWatchToggle 
                     onclick="event.stopPropagation(); toggleMovieWatched(${Number(movie.id_tmdb)})"
                     aria-label="${isCompleted ? 'Marcar como no vista' : 'Marcar como vista'}">${UI_ICONS.check}</button>
             ` : ''}
+        `;
+
+        if (showTitles) {
+            return `
+            <article class="tvst-poster-cell has-title" data-tmdb-id="${Number(movie.id_tmdb)}" onclick="openDetail('movie', ${Number(movie.id_tmdb)})">
+                <div class="tvst-poster-frame">${innerPoster}</div>
+                <p class="tvst-poster-title">${escapeHtml(movie.titulo || 'Sin título')}</p>
+            </article>`;
+        }
+
+        return `
+        <article class="tvst-poster-cell" data-tmdb-id="${Number(movie.id_tmdb)}" onclick="openDetail('movie', ${Number(movie.id_tmdb)})">
+            ${innerPoster}
         </article>`;
     }).join('');
 }
@@ -1852,6 +2026,11 @@ function movieMatchesPendingFilters(movie) {
         if (!matchesAny) return false;
     }
 
+    if (AppState.moviesPendingMySubsOnly && getMySubscriptions().length) {
+        const movieProviders = getMovieProviderNames(movie);
+        if (!movieProviders.some(p => isSubscribedProvider(p))) return false;
+    }
+
     const maxRuntime = AppState.moviesPendingMaxRuntime;
     if (maxRuntime != null) {
         const runtime = Number(movie.runtime);
@@ -1884,6 +2063,7 @@ function getMoviesPendingActiveCount() {
     let count = 0;
     if ((AppState.moviesPendingGenres || []).length) count += AppState.moviesPendingGenres.length;
     if ((AppState.moviesPendingPlatforms || []).length) count += AppState.moviesPendingPlatforms.length;
+    if (AppState.moviesPendingMySubsOnly && getMySubscriptions().length) count += 1;
     if (AppState.moviesPendingMaxRuntime != null) count += 1;
     if ((AppState.moviesPendingSort || 'name') !== 'name') count += 1;
     return count;
@@ -1912,6 +2092,7 @@ function ensureMoviesPendingFilterShell(filtersEl) {
                 <span class="tvst-movies-random-label">Al azar</span>
             </button>
         </div>
+        <div id="movies-pending-quick-bar" class="tvst-movies-quick-bar hidden"></div>
         <div id="movies-pending-active-bar" class="tvst-active-filters-bar hidden"></div>
         <div class="tvst-movies-filters-panel hidden" data-filter-panel="1"></div>
     `;
@@ -1971,6 +2152,12 @@ function ensureMoviesPendingFilterShell(filtersEl) {
             removeActivePendingFilter(removeBtn.dataset.removeActive, removeBtn.dataset.removeValue || '');
             return;
         }
+        const mySubsBtn = event.target.closest('[data-my-subs-toggle]');
+        if (mySubsBtn && filtersEl.contains(mySubsBtn)) {
+            event.preventDefault();
+            toggleMoviesPendingMySubsOnly();
+            return;
+        }
         const btn = event.target.closest('.tvst-filter-chip');
         if (!btn || !filtersEl.contains(btn)) return;
         const key = btn.dataset.filterKey;
@@ -1987,6 +2174,11 @@ function ensureMoviesPendingFilterShell(filtersEl) {
             }
         }
     });
+}
+
+function toggleMoviesPendingMySubsOnly() {
+    AppState.moviesPendingMySubsOnly = !AppState.moviesPendingMySubsOnly;
+    renderMoviesPendingList();
 }
 
 function renderMoviesPendingActiveBar(pending) {
@@ -2009,6 +2201,9 @@ function renderMoviesPendingActiveBar(pending) {
     }
     if ((AppState.moviesPendingSort || 'name') !== 'name') {
         pills.push(`<button type="button" class="tvst-active-chip" data-remove-active="sort">${escapeHtml(getMoviesPendingSortLabel(AppState.moviesPendingSort))} ${UI_ICONS.closeSm}</button>`);
+    }
+    if (AppState.moviesPendingMySubsOnly && getMySubscriptions().length) {
+        pills.push(`<button type="button" class="tvst-active-chip" data-remove-active="mysubs">Mis plataformas ${UI_ICONS.closeSm}</button>`);
     }
     for (const g of (AppState.moviesPendingGenres || [])) {
         pills.push(`<button type="button" class="tvst-active-chip" data-remove-active="genre" data-remove-value="${escapeHtml(g)}">${escapeHtml(g)} ${UI_ICONS.closeSm}</button>`);
@@ -2045,6 +2240,8 @@ function removeActivePendingFilter(kind, value) {
         if (clearEl) clearEl.classList.add('hidden');
     } else if (kind === 'sort') {
         AppState.moviesPendingSort = 'name';
+    } else if (kind === 'mysubs') {
+        AppState.moviesPendingMySubsOnly = false;
     } else if (kind === 'genre') {
         AppState.moviesPendingGenres = (AppState.moviesPendingGenres || []).filter(g => g !== value);
     } else if (kind === 'platform') {
@@ -2061,6 +2258,7 @@ function resetMoviesPendingFilters() {
     AppState.moviesPendingSort = 'name';
     AppState.moviesPendingGenres = [];
     AppState.moviesPendingPlatforms = [];
+    AppState.moviesPendingMySubsOnly = false;
     AppState.moviesPendingMaxRuntime = null;
     const searchEl = document.getElementById('movies-pending-search');
     const clearEl = document.getElementById('movies-pending-search-clear');
@@ -2088,6 +2286,19 @@ function renderMoviesPendingFilters(pending) {
     }
     if (clearEl) {
         clearEl.classList.toggle('hidden', !(AppState.moviesPendingSearch || '').trim());
+    }
+
+    const mySubs = getMySubscriptions();
+    const quickBar = filtersEl.querySelector('#movies-pending-quick-bar');
+    if (quickBar) {
+        if (mySubs.length && pending.length) {
+            quickBar.classList.remove('hidden');
+            quickBar.innerHTML = `<button type="button" class="tvst-movies-quick-pill${AppState.moviesPendingMySubsOnly ? ' is-active' : ''}" data-my-subs-toggle="1">Solo mis plataformas (${mySubs.length})</button>`;
+        } else {
+            AppState.moviesPendingMySubsOnly = false;
+            quickBar.classList.add('hidden');
+            quickBar.innerHTML = '';
+        }
     }
 
     const availableGenres = new Set(pending.flatMap(m => m.generos || []).filter(Boolean));
@@ -2590,13 +2801,14 @@ function getDaysSinceWatchActivity(isoDate) {
 
 /** Serie en «continuar» si avanzó capítulos, tuvo boost, o el siguiente episodio se emitió hace ≤14 días. */
 function isContinueBoostFresh(show) {
-    return Boolean(show?.continueBoostAt && getDaysSinceWatchActivity(show.continueBoostAt) <= CONTINUE_BOOST_DAYS);
+    const days = getInactivityDays();
+    return Boolean(show?.continueBoostAt && getDaysSinceWatchActivity(show.continueBoostAt) <= days);
 }
 
 function isRecentlyAiredEpisode(episode) {
     if (!episode?.air_date) return false;
     const days = getDaysSinceAir(episode.air_date);
-    return Number.isFinite(days) && days >= 0 && days <= CONTINUE_BOOST_DAYS;
+    return Number.isFinite(days) && days >= 0 && days <= getInactivityDays();
 }
 
 function applyContinueBoost(show, reason = '') {
@@ -2613,7 +2825,7 @@ function isShowInContinueSection(show, nextEpisode = null) {
         const watched = show?.capitulos_vistos?.length || 0;
         return watched === 0;
     }
-    return getDaysSinceWatchActivity(lastActivity) <= CONTINUE_BOOST_DAYS;
+    return getDaysSinceWatchActivity(lastActivity) <= getInactivityDays();
 }
 
 function bumpPendingHistoryAfterWatch() {
@@ -2680,6 +2892,12 @@ function createEpisodeCardMarkup({
     }
 
     const epIdAttr = escapeHtml(String(episode.id || ''));
+    const hideSpoiler = shouldMaskEpisodeSpoilers(show, episode.id);
+    const epTitleMarkup = episode.name
+        ? (hideSpoiler
+            ? `<p class="tvst-episode-title tvst-spoiler-mask">Título oculto</p>`
+            : `<p class="tvst-episode-title">${escapeHtml(episode.name)}</p>`)
+        : '';
     return `
         <article class="tvst-episode-row${variant === 'history' ? ' is-history' : ''}${normalizeStatus(show.estado) === 'standby' ? ' is-standby' : ''}"
             data-show-id="${show.id_tmdb}"
@@ -2694,7 +2912,7 @@ function createEpisodeCardMarkup({
                     <span class="tvst-episode-code">${escapeHtml(episodeCode)}</span>
                     ${remainingCount > 0 ? `<span class="tvst-remaining">+${remainingCount}</span>` : ''}
                 </div>
-                ${episode.name ? `<p class="tvst-episode-title">${escapeHtml(episode.name)}</p>` : ''}
+                ${epTitleMarkup}
                 ${badges.length ? `<div class="tvst-badges">${badges.map(b => `<span class="${escapeHtml(b.className)}">${escapeHtml(b.label)}</span>`).join('')}</div>` : ''}
             </div>
             ${rightSide}
@@ -3109,7 +3327,7 @@ async function buildWatchingPendingEntries(watchingShows) {
         ])];
 
         let episodes = await getOrderedEpisodes(show, {
-            includeSpecials: false,
+            includeSpecials: shouldIncludeSpecials(),
             seasonNumbers: seasonHint,
         });
         let airedEpisodes = episodes.filter(isEpisodeAired);
@@ -3117,7 +3335,7 @@ async function buildWatchingPendingEntries(watchingShows) {
 
         // Si no hay siguiente en el recorte, cargar todas las temporadas
         if (!nextEpisode) {
-            episodes = await getOrderedEpisodes(show, { includeSpecials: false });
+            episodes = await getOrderedEpisodes(show, { includeSpecials: shouldIncludeSpecials() });
             airedEpisodes = episodes.filter(isEpisodeAired);
             nextEpisode = airedEpisodes.find(ep => !isEpisodeConsumed(show, ep.id));
         }
@@ -3138,13 +3356,13 @@ async function buildWatchingPendingEntries(watchingShows) {
                     ...(latest != null ? [latest] : []),
                 ])];
                 episodes = await getOrderedEpisodes(show, {
-                    includeSpecials: false,
+                    includeSpecials: shouldIncludeSpecials(),
                     seasonNumbers: retryHint.length ? retryHint : undefined,
                 });
                 airedEpisodes = episodes.filter(isEpisodeAired);
                 nextEpisode = airedEpisodes.find(ep => !isEpisodeConsumed(show, ep.id));
                 if (!nextEpisode) {
-                    episodes = await getOrderedEpisodes(show, { includeSpecials: false });
+                    episodes = await getOrderedEpisodes(show, { includeSpecials: shouldIncludeSpecials() });
                     airedEpisodes = episodes.filter(isEpisodeAired);
                     nextEpisode = airedEpisodes.find(ep => !isEpisodeConsumed(show, ep.id));
                 }
@@ -3177,7 +3395,7 @@ async function buildHistoryEntries(shows) {
         const seasonNumbers = getWatchedSeasonNumbers(show);
         if (!seasonNumbers.length) return [];
         const episodes = await getOrderedEpisodes(show, {
-            includeSpecials: false,
+            includeSpecials: shouldIncludeSpecials(),
             seasonNumbers,
         });
         const airedEpisodes = episodes.filter(isEpisodeAired);
@@ -3476,7 +3694,7 @@ async function rebuildUpcomingTimeline(upcomingShows, container) {
         const seasonNumbers = getUpcomingTargetSeasonsForShow(show);
         const regularCount = countRegularSeasons(show);
         let episodes = await getOrderedEpisodes(show, {
-            includeSpecials: false,
+            includeSpecials: shouldIncludeSpecials(),
             seasonNumbers: seasonNumbers.length ? seasonNumbers : undefined,
         });
         let future = episodes.filter(episode => {
@@ -3487,7 +3705,7 @@ async function rebuildUpcomingTimeline(upcomingShows, container) {
 
         // Solo re-escanear toda la serie si es corta y no vino next_episode_to_air confirmado
         if (!future.length && refreshedNext !== null && seasonNumbers.length && regularCount > 0 && regularCount <= 3) {
-            episodes = await getOrderedEpisodes(show, { includeSpecials: false });
+            episodes = await getOrderedEpisodes(show, { includeSpecials: shouldIncludeSpecials() });
             future = episodes.filter(episode => {
                 if (!episode.air_date) return false;
                 const daysUntil = getDaysUntilAir(episode.air_date);
@@ -3581,7 +3799,7 @@ async function prefetchTimelineSeasons() {
             ...getUpcomingTargetSeasonsForShow(show),
         ];
         if (!seasons.length) return;
-        await getOrderedEpisodes(show, { includeSpecials: false, seasonNumbers: [...new Set(seasons)] });
+        await getOrderedEpisodes(show, { includeSpecials: shouldIncludeSpecials(), seasonNumbers: [...new Set(seasons)] });
     });
 
     // Tras prefetch, reabrir completadas si hay episodios nuevos (throttle compartido)
@@ -4397,7 +4615,37 @@ function formatWatchDuration(totalMinutes) {
     const months = Math.floor(totalHours / (24 * 30));
     const days = Math.floor((totalHours % (24 * 30)) / 24);
     const hours = totalHours % 24;
+    if (months === 0 && days === 0 && hours === 0) {
+        return `${mins} min`;
+    }
     return `${months} meses · ${days} días · ${hours} h`;
+}
+
+function formatCompactDuration(totalMinutes, { ultraShort = false } = {}) {
+    const mins = Math.max(0, Math.round(Number(totalMinutes) || 0));
+    if (mins < 60) {
+        return ultraShort ? `${mins}m` : `${mins} min`;
+    }
+    const totalHours = Math.floor(mins / 60);
+    const remMins = mins % 60;
+    if (totalHours < 24) {
+        if (ultraShort) return remMins > 0 ? `${totalHours}h ${remMins}m` : `${totalHours}h`;
+        return remMins > 0 ? `${totalHours} h ${remMins} min` : `${totalHours} h`;
+    }
+    const days = Math.floor(totalHours / 24);
+    const hours = totalHours % 24;
+    if (days < 30) {
+        if (ultraShort) return hours > 0 ? `${days}d ${hours}h` : `${days}d`;
+        return hours > 0
+            ? `${days} ${days === 1 ? 'día' : 'días'} ${hours} h`
+            : `${days} ${days === 1 ? 'día' : 'días'}`;
+    }
+    const months = Math.floor(days / 30);
+    const remDays = days % 30;
+    if (ultraShort) return remDays > 0 ? `${months}me ${remDays}d` : `${months}me`;
+    return remDays > 0
+        ? `${months} ${months === 1 ? 'mes' : 'meses'} ${remDays} ${remDays === 1 ? 'día' : 'días'}`
+        : `${months} ${months === 1 ? 'mes' : 'meses'}`;
 }
 
 function getShowEpisodeRuntimeMinutes(show) {
@@ -4406,40 +4654,362 @@ function getShowEpisodeRuntimeMinutes(show) {
     return 45;
 }
 
+function getShowEstimatedTotalEpisodes(show) {
+    if (!show || show.tipo === 'movie') return 0;
+    if (show.episodios_emitidos != null && Number(show.episodios_emitidos) >= 0) {
+        return Number(show.episodios_emitidos);
+    }
+    const includeSpecials = typeof shouldIncludeSpecials === 'function' ? shouldIncludeSpecials() : false;
+    const seasons = Array.isArray(show.temporadas)
+        ? show.temporadas.filter(s => includeSpecials || (!s.especial && Number(s.numero) !== 0))
+        : [];
+    const fromSeasons = seasons.reduce((acc, s) => acc + Math.max(0, Number(s.episodio_count ?? s.episode_count) || 0), 0);
+    if (fromSeasons > 0) return fromSeasons;
+    return Math.max(0, Number(show.numero_episodios) || 0);
+}
+
+function getShowRemainingTimeInfo(show, options = {}) {
+    if (!show || show.tipo === 'movie') return null;
+    if (!options.includeDropped && normalizeStatus(show.estado) === 'dropped') {
+        return {
+            remainingEpisodes: 0,
+            remainingMinutes: 0,
+            label: '0 min',
+            shortLabel: '0m',
+        };
+    }
+
+    const totalEpisodes = getShowEstimatedTotalEpisodes(show);
+    const inLibrary = isItemAlreadyAdded('tv', show.id_tmdb);
+    let consumedCount = 0;
+    if (inLibrary) {
+        if (show.episodios_consumidos_count != null && Number(show.episodios_consumidos_count) >= 0) {
+            consumedCount = Number(show.episodios_consumidos_count);
+        } else {
+            const watchedSet = new Set(Array.isArray(show.capitulos_vistos) ? show.capitulos_vistos : []);
+            const skippedList = Array.isArray(show.capitulos_saltados) ? show.capitulos_saltados : [];
+            for (const id of skippedList) watchedSet.add(id);
+            consumedCount = watchedSet.size;
+        }
+    }
+
+    const remainingEpisodes = Math.max(0, totalEpisodes - consumedCount);
+    const runtime = getShowEpisodeRuntimeMinutes(show);
+    const remainingMinutes = remainingEpisodes * runtime;
+
+    return {
+        remainingEpisodes,
+        remainingMinutes,
+        label: formatCompactDuration(remainingMinutes),
+        shortLabel: `~${formatCompactDuration(remainingMinutes, { ultraShort: true })}`,
+    };
+}
+
+function getTopGenreStats(items, limit = 5) {
+    const counts = new Map();
+    for (const item of items || []) {
+        const genres = Array.isArray(item?.generos) ? item.generos : [];
+        const seenInItem = new Set();
+        for (const raw of genres) {
+            const name = String(raw || '').trim();
+            if (!name || seenInItem.has(name)) continue;
+            seenInItem.add(name);
+            counts.set(name, (counts.get(name) || 0) + 1);
+        }
+    }
+    return [...counts.entries()]
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'es'))
+        .slice(0, limit);
+}
+
+function renderGenreBarsHtml(genreEntries, totalItems) {
+    if (!genreEntries.length) {
+        return '<p class="tvst-stats-caption">Sin géneros registrados todavía.</p>';
+    }
+    const maxCount = Math.max(1, genreEntries[0][1]);
+    return `
+        <div class="tvst-stats-bars">
+            ${genreEntries.map(([name, count]) => {
+                const widthPct = Math.max(8, Math.round((count / maxCount) * 100));
+                const sharePct = totalItems > 0 ? Math.round((count / totalItems) * 100) : 0;
+                return `
+                    <div class="tvst-stats-bar-row">
+                        <span class="tvst-stats-bar-name" title="${escapeHtml(name)}">${escapeHtml(name)}</span>
+                        <div class="tvst-stats-bar-track">
+                            <div class="tvst-stats-bar-fill" style="width:${widthPct}%"></div>
+                        </div>
+                        <span class="tvst-stats-bar-count">${count} · ${sharePct}%</span>
+                    </div>
+                `;
+            }).join('')}
+        </div>
+    `;
+}
+
 function renderWatchStats() {
     const seriesEl = document.getElementById('stats-series-time');
     const seriesCountEl = document.getElementById('stats-series-count');
     const seriesEpsEl = document.getElementById('stats-series-episodes');
+    const seriesRatingEl = document.getElementById('stats-series-rating');
+    const seriesRatingSubEl = document.getElementById('stats-series-rating-sub');
+    const seriesCompletedEl = document.getElementById('stats-series-completed');
+    const seriesCompletedSubEl = document.getElementById('stats-series-completed-sub');
+    const seriesRemTimeEl = document.getElementById('stats-series-remaining-time');
+    const seriesRemSubEl = document.getElementById('stats-series-remaining-sub');
+    const seriesExtEl = document.getElementById('stats-series-extended');
+
     const moviesEl = document.getElementById('stats-movies-time');
     const moviesWatchedEl = document.getElementById('stats-movies-watched');
     const moviesPendingEl = document.getElementById('stats-movies-pending');
+    const moviesRatingEl = document.getElementById('stats-movies-rating');
+    const moviesRatingSubEl = document.getElementById('stats-movies-rating-sub');
+    const moviesAvgRuntimeEl = document.getElementById('stats-movies-avg-runtime');
+    const moviesAvgRuntimeSubEl = document.getElementById('stats-movies-avg-runtime-sub');
+    const moviesPendingTimeEl = document.getElementById('stats-movies-pending-time');
+    const moviesPendingSubEl = document.getElementById('stats-movies-pending-sub');
+    const moviesExtEl = document.getElementById('stats-movies-extended');
+
+    const now = new Date();
+    const curYear = now.getFullYear();
+    const curMonth = now.getMonth();
 
     let seriesMinutes = 0;
     let totalEpisodesWatched = 0;
-    for (const show of AppState.shows) {
-        const watched = Array.isArray(show.capitulos_vistos) ? show.capitulos_vistos.length : 0;
-        totalEpisodesWatched += watched;
-        seriesMinutes += watched * getShowEpisodeRuntimeMinutes(show);
-    }
-    if (seriesCountEl) seriesCountEl.textContent = String(AppState.shows.length);
-    if (seriesEpsEl) seriesEpsEl.textContent = totalEpisodesWatched.toLocaleString('es-ES');
-    if (seriesEl) seriesEl.textContent = formatWatchDuration(seriesMinutes);
+    let totalEpisodesSkipped = 0;
+    let seriesRemainingMinutes = 0;
+    let seriesRemainingEpisodes = 0;
+    let seriesScoreSum = 0;
+    let seriesScoreCount = 0;
+    let epsThisMonth = 0;
+    let minsThisMonth = 0;
+    let epsThisYear = 0;
+    let minsThisYear = 0;
+    let seriesFavCount = 0;
 
-    let moviesMinutes = 0;
-    let moviesWatchedCount = 0;
-    let moviesPendingCount = 0;
-    for (const movie of AppState.movies) {
-        if (normalizeStatus(movie.estado) === 'completed') {
-            moviesWatchedCount += 1;
-            const runtime = Number(movie.runtime);
-            moviesMinutes += runtime > 0 ? runtime : 100;
+    const statusCounts = {
+        watching: 0,
+        completed: 0,
+        pending: 0,
+        standby: 0,
+        dropped: 0,
+    };
+
+    for (const show of AppState.shows) {
+        const runtime = getShowEpisodeRuntimeMinutes(show);
+        const watchedIds = Array.isArray(show.capitulos_vistos) ? show.capitulos_vistos : [];
+        const skippedIds = Array.isArray(show.capitulos_saltados) ? show.capitulos_saltados : [];
+        const watched = watchedIds.length;
+        totalEpisodesWatched += watched;
+        totalEpisodesSkipped += skippedIds.length;
+        seriesMinutes += watched * runtime;
+
+        if (show.favorito) seriesFavCount += 1;
+
+        const score = Number(show.puntuacion);
+        if (Number.isFinite(score) && score > 0) {
+            seriesScoreSum += score;
+            seriesScoreCount += 1;
+        }
+
+        const st = normalizeStatus(show.estado);
+        if (Object.prototype.hasOwnProperty.call(statusCounts, st)) {
+            statusCounts[st] += 1;
         } else {
-            moviesPendingCount += 1;
+            statusCounts.pending += 1;
+        }
+
+        if (st !== 'dropped') {
+            const rem = getShowRemainingTimeInfo(show);
+            if (rem) {
+                seriesRemainingEpisodes += rem.remainingEpisodes;
+                seriesRemainingMinutes += rem.remainingMinutes;
+            }
+        }
+
+        const dateMap = show.capitulos_vistos_fecha && typeof show.capitulos_vistos_fecha === 'object'
+            ? show.capitulos_vistos_fecha
+            : null;
+        if (dateMap) {
+            for (const epId of watchedIds) {
+                const iso = dateMap[epId];
+                if (!iso) continue;
+                const d = new Date(iso);
+                if (Number.isNaN(d.getTime())) continue;
+                if (d.getFullYear() === curYear) {
+                    epsThisYear += 1;
+                    minsThisYear += runtime;
+                    if (d.getMonth() === curMonth) {
+                        epsThisMonth += 1;
+                        minsThisMonth += runtime;
+                    }
+                }
+            }
         }
     }
+
+    const totalShows = AppState.shows.length;
+    const completedSeriesPct = totalShows > 0 ? Math.round((statusCounts.completed / totalShows) * 100) : 0;
+
+    if (seriesCountEl) seriesCountEl.textContent = String(totalShows);
+    if (seriesEpsEl) seriesEpsEl.textContent = totalEpisodesWatched.toLocaleString('es-ES');
+    if (seriesRatingEl) seriesRatingEl.textContent = seriesScoreCount > 0 ? (seriesScoreSum / seriesScoreCount).toFixed(1) : '—';
+    if (seriesRatingSubEl) seriesRatingSubEl.textContent = seriesScoreCount > 0 ? `en ${seriesScoreCount} ${seriesScoreCount === 1 ? 'serie' : 'series'}` : 'Sin puntuar';
+    if (seriesCompletedEl) seriesCompletedEl.textContent = String(statusCounts.completed);
+    if (seriesCompletedSubEl) seriesCompletedSubEl.textContent = `${completedSeriesPct}% de tu lista`;
+    if (seriesEl) seriesEl.textContent = formatWatchDuration(seriesMinutes);
+    if (seriesRemTimeEl) seriesRemTimeEl.textContent = formatCompactDuration(seriesRemainingMinutes);
+    if (seriesRemSubEl) {
+        seriesRemSubEl.textContent = `${seriesRemainingEpisodes.toLocaleString('es-ES')} ${seriesRemainingEpisodes === 1 ? 'episodio pendiente' : 'episodios pendientes'}`;
+    }
+
+    if (seriesExtEl) {
+        const statusItems = [
+            { key: 'watching', label: 'Viendo', count: statusCounts.watching },
+            { key: 'completed', label: 'Completadas', count: statusCounts.completed },
+            { key: 'pending', label: 'Pendientes', count: statusCounts.pending },
+            { key: 'standby', label: 'En espera', count: statusCounts.standby },
+            { key: 'dropped', label: 'Abandonadas', count: statusCounts.dropped },
+        ].filter(s => s.count > 0);
+
+        const topSeriesGenres = getTopGenreStats(AppState.shows, 5);
+
+        seriesExtEl.innerHTML = `
+            <div class="tvst-stats-block">
+                <h3 class="tvst-stats-label">Actividad de episodios</h3>
+                <div class="tvst-stats-activity-row is-3">
+                    <div class="tvst-stats-mini-card">
+                        <span class="tvst-stats-mini-val">${epsThisMonth.toLocaleString('es-ES')} ep.</span>
+                        <span class="tvst-stats-mini-lbl">Este mes · ${escapeHtml(formatCompactDuration(minsThisMonth))}</span>
+                    </div>
+                    <div class="tvst-stats-mini-card">
+                        <span class="tvst-stats-mini-val">${epsThisYear.toLocaleString('es-ES')} ep.</span>
+                        <span class="tvst-stats-mini-lbl">En ${curYear} · ${escapeHtml(formatCompactDuration(minsThisYear))}</span>
+                    </div>
+                    <div class="tvst-stats-mini-card">
+                        <span class="tvst-stats-mini-val">${seriesFavCount} ★</span>
+                        <span class="tvst-stats-mini-lbl">${totalEpisodesSkipped > 0 ? `${totalEpisodesSkipped} ep. saltados` : 'Series favoritas'}</span>
+                    </div>
+                </div>
+            </div>
+            <div class="tvst-stats-block">
+                <h3 class="tvst-stats-label">Distribución por estado</h3>
+                ${totalShows > 0 ? `
+                    <div class="tvst-stats-status-bar" aria-label="Distribución de series por estado">
+                        ${statusItems.map(s => `<span class="tvst-stats-seg is-${s.key}" style="width:${Math.max(3, (s.count / totalShows) * 100)}%" title="${escapeHtml(s.label)}: ${s.count}"></span>`).join('')}
+                    </div>
+                    <div class="tvst-stats-legend">
+                        ${statusItems.map(s => `
+                            <span class="tvst-stats-legend-item">
+                                <span class="tvst-stats-dot is-${s.key}"></span>
+                                <span>${escapeHtml(s.label)} (${s.count})</span>
+                            </span>
+                        `).join('')}
+                    </div>
+                ` : '<p class="tvst-stats-caption">Añade series para ver el desglose por estado.</p>'}
+            </div>
+            <div class="tvst-stats-block">
+                <h3 class="tvst-stats-label">Géneros más vistos</h3>
+                ${renderGenreBarsHtml(topSeriesGenres, totalShows)}
+            </div>
+        `;
+    }
+
+    let moviesMinutes = 0;
+    let moviesPendingMinutes = 0;
+    let moviesWatchedCount = 0;
+    let moviesPendingCount = 0;
+    let moviesScoreSum = 0;
+    let moviesScoreCount = 0;
+    let moviesRuntimeKnownSum = 0;
+    let moviesRuntimeKnownCount = 0;
+    let moviesFavCount = 0;
+    const decadeCounts = new Map();
+
+    for (const movie of AppState.movies) {
+        const runtime = Number(movie.runtime);
+        const safeRuntime = runtime > 0 ? runtime : 100;
+        const score = Number(movie.puntuacion);
+        if (Number.isFinite(score) && score > 0) {
+            moviesScoreSum += score;
+            moviesScoreCount += 1;
+        }
+        if (movie.favorito) moviesFavCount += 1;
+
+        const yearStr = getItemYearString(movie);
+        const yearNum = Number(yearStr);
+        if (Number.isFinite(yearNum) && yearNum >= 1900) {
+            const decade = Math.floor(yearNum / 10) * 10;
+            decadeCounts.set(decade, (decadeCounts.get(decade) || 0) + 1);
+        }
+
+        if (normalizeStatus(movie.estado) === 'completed') {
+            moviesWatchedCount += 1;
+            moviesMinutes += safeRuntime;
+            if (runtime > 0) {
+                moviesRuntimeKnownSum += runtime;
+                moviesRuntimeKnownCount += 1;
+            }
+        } else {
+            moviesPendingCount += 1;
+            moviesPendingMinutes += safeRuntime;
+        }
+    }
+
+    const totalMovies = AppState.movies.length;
+    const watchedPct = totalMovies > 0 ? Math.round((moviesWatchedCount / totalMovies) * 100) : 0;
+    const avgMovieRuntime = moviesRuntimeKnownCount > 0
+        ? Math.round(moviesRuntimeKnownSum / moviesRuntimeKnownCount)
+        : (moviesWatchedCount > 0 ? Math.round(moviesMinutes / moviesWatchedCount) : 0);
+
     if (moviesWatchedEl) moviesWatchedEl.textContent = String(moviesWatchedCount);
     if (moviesPendingEl) moviesPendingEl.textContent = String(moviesPendingCount);
+    if (moviesRatingEl) moviesRatingEl.textContent = moviesScoreCount > 0 ? (moviesScoreSum / moviesScoreCount).toFixed(1) : '—';
+    if (moviesRatingSubEl) moviesRatingSubEl.textContent = moviesScoreCount > 0 ? `en ${moviesScoreCount} ${moviesScoreCount === 1 ? 'película' : 'películas'}` : 'Sin puntuar';
+    if (moviesAvgRuntimeEl) moviesAvgRuntimeEl.textContent = avgMovieRuntime > 0 ? `${avgMovieRuntime} min` : '—';
+    if (moviesAvgRuntimeSubEl) moviesAvgRuntimeSubEl.textContent = moviesWatchedCount > 0 ? 'Media por película' : 'Sin películas vistas';
     if (moviesEl) moviesEl.textContent = formatWatchDuration(moviesMinutes);
+    if (moviesPendingTimeEl) moviesPendingTimeEl.textContent = formatCompactDuration(moviesPendingMinutes);
+    if (moviesPendingSubEl) {
+        moviesPendingSubEl.textContent = `${moviesPendingCount} ${moviesPendingCount === 1 ? 'película' : 'películas'}`;
+    }
+
+    if (moviesExtEl) {
+        const watchedMovies = AppState.movies.filter(m => normalizeStatus(m.estado) === 'completed');
+        const genrePool = watchedMovies.length ? watchedMovies : AppState.movies;
+        const topMovieGenres = getTopGenreStats(genrePool, 5);
+        const topDecades = [...decadeCounts.entries()]
+            .sort((a, b) => b[1] - a[1] || b[0] - a[0])
+            .slice(0, 5);
+
+        moviesExtEl.innerHTML = `
+            <div class="tvst-stats-block">
+                <h3 class="tvst-stats-label">Progreso de tu videoteca</h3>
+                ${totalMovies > 0 ? `
+                    <div class="tvst-stats-status-bar" aria-label="Progreso de películas vistas">
+                        ${moviesWatchedCount > 0 ? `<span class="tvst-stats-seg is-movie-watched" style="width:${(moviesWatchedCount / totalMovies) * 100}%"></span>` : ''}
+                        ${moviesPendingCount > 0 ? `<span class="tvst-stats-seg is-movie-pending" style="width:${(moviesPendingCount / totalMovies) * 100}%"></span>` : ''}
+                    </div>
+                    <div class="tvst-stats-legend">
+                        <span class="tvst-stats-legend-item"><span class="tvst-stats-dot is-movie-watched"></span><span>Vistas (${moviesWatchedCount} · ${watchedPct}%)</span></span>
+                        <span class="tvst-stats-legend-item"><span class="tvst-stats-dot is-movie-pending"></span><span>Pendientes (${moviesPendingCount})</span></span>
+                        <span class="tvst-stats-legend-item"><span>★ ${moviesFavCount} favoritas</span></span>
+                    </div>
+                ` : '<p class="tvst-stats-caption">Añade películas para ver tu progreso.</p>'}
+            </div>
+            <div class="tvst-stats-block">
+                <h3 class="tvst-stats-label">Géneros favoritos</h3>
+                ${renderGenreBarsHtml(topMovieGenres, genrePool.length)}
+            </div>
+            ${topDecades.length ? `
+                <div class="tvst-stats-block">
+                    <h3 class="tvst-stats-label">Décadas</h3>
+                    <div class="tvst-stats-chips">
+                        ${topDecades.map(([decade, count]) => `<span class="tvst-stats-chip"><span>${decade}s</span><strong>${count}</strong></span>`).join('')}
+                    </div>
+                </div>
+            ` : ''}
+        `;
+    }
 }
 
 function toggleProfileExpanded(kind) {
@@ -4502,7 +5072,7 @@ async function refreshShowAiredCounts(show) {
         return false;
     }
     await ensureShowSeasonMeta(show);
-    const episodes = await getOrderedEpisodes(show, { includeSpecials: false });
+    const episodes = await getOrderedEpisodes(show, { includeSpecials: shouldIncludeSpecials() });
     const airedEpisodes = episodes.filter(isEpisodeAired);
     const watchedEpisodes = airedEpisodes.filter(ep => isEpisodeWatched(show, ep.id));
     const consumedEpisodes = airedEpisodes.filter(ep => isEpisodeConsumed(show, ep.id));
@@ -4899,6 +5469,9 @@ function renderProfileCards(items, type, options = {}) {
             ? Number(item.vote_average)
             : null;
         const progressData = type === 'tv' ? getShowProgressInfo(item) : null;
+        const remainingInfo = type === 'tv' && normalizeStatus(item.estado) !== 'dropped'
+            ? getShowRemainingTimeInfo(item)
+            : null;
         const statusBadge = getStatusBadge(item.estado);
         const isFav = Boolean(item.favorito);
         const poster = safeUrl(item.portada);
@@ -4918,7 +5491,9 @@ function renderProfileCards(items, type, options = {}) {
                     <div class="tvst-progress-track">
                         <div class="tvst-progress-fill ${progressData.colorClass}" style="width: ${progressData.progress}%;"></div>
                     </div>
-                    <p class="tvst-profile-card-pct">${progressData.progress}%</p>
+                    ${remainingInfo && remainingInfo.remainingEpisodes > 0
+                        ? `<div class="tvst-profile-card-meta-row"><span>${progressData.progress}%</span><span class="tvst-profile-card-rem">${escapeHtml(remainingInfo.shortLabel)}</span></div>`
+                        : `<p class="tvst-profile-card-pct">${progressData.progress}%</p>`}
                 </div>
             ` : ''}
         </div>`;
@@ -4976,14 +5551,16 @@ function renderDetailInfo(item) {
         </div>
         ${providers.length ? `
             <div class="tvst-info-section">
-                <h3>Dónde ver</h3>
+                <h3>Dónde ver (${escapeHtml(getPreferredProviderCountry())})</h3>
                 <div class="tvst-providers-row">
-                    ${providers.map(provider => {
+                    ${[...providers].sort((a, b) => Number(isSubscribedProvider(b.provider_name)) - Number(isSubscribedProvider(a.provider_name))).map(provider => {
                         const logoUrl = provider.logo_path ? safeUrl(window.getImageUrl(provider.logo_path, 'w92')) : '';
+                        const subscribed = isSubscribedProvider(provider.provider_name);
                         return `
-                        <span class="tvst-provider-chip">
+                        <span class="tvst-provider-chip${subscribed ? ' is-subscribed' : ''}">
                             ${logoUrl ? `<img src="${escapeHtml(logoUrl)}" alt="">` : ''}
                             <span>${escapeHtml(provider.provider_name || '')}</span>
+                            ${subscribed ? '<span class="tvst-provider-chip-badge">Tuya</span>' : ''}
                         </span>
                     `;
                     }).join('')}
@@ -5163,13 +5740,243 @@ function switchDetailTab(tab) {
     }
 }
 
+function updatePreference(key, value) {
+    const prev = getPreferences();
+    const next = normalizePreferences({
+        ...prev,
+        [key]: value,
+        updatedAt: nowIso(),
+    });
+    AppState.preferences = next;
+
+    if (key === 'includeSpecials') {
+        AppState.shows.forEach((s) => {
+            s.episodios_emitidos = null;
+            s.episodios_vistos_count = null;
+            s.episodios_consumidos_count = null;
+        });
+        invalidateTimelineCaches();
+    } else if (key === 'inactivityDays') {
+        invalidateTimelineCaches();
+    } else if (key === 'providerCountry') {
+        if (typeof window.clearWatchProvidersCache === 'function') {
+            window.clearWatchProvidersCache();
+        }
+        failedProviderFetchKeys.clear();
+        AppState.movies.forEach((m) => { delete m.watch_providers; });
+        AppState.shows.forEach((s) => { delete s.watch_providers; });
+        if (typeof refreshProvidersInBackground === 'function') {
+            setTimeout(() => { void refreshProvidersInBackground(); }, 50);
+        }
+    }
+
+    saveLocalData();
+    syncToDrive();
+    renderSettings();
+}
+
+function toggleSubscriptionPreference(providerName) {
+    const clean = String(providerName || '').trim();
+    if (!clean) return;
+    const current = getMySubscriptions();
+    const exists = current.some(p => p.toLowerCase() === clean.toLowerCase());
+    const nextSubs = exists
+        ? current.filter(p => p.toLowerCase() !== clean.toLowerCase())
+        : [...current, clean];
+    updatePreference('mySubscriptions', nextSubs);
+}
+
+function clearTmdbCachesFromSettings() {
+    invalidateOrderedEpisodesCache();
+    invalidateTimelineCaches();
+    if (typeof window.clearWatchProvidersCache === 'function') {
+        window.clearWatchProvidersCache();
+    }
+    failedProviderFetchKeys.clear();
+    attemptedMovieFilterMetaIds.clear();
+    AppState.shows.forEach((s) => {
+        s.metaCheckedAt = '';
+        s.episodios_emitidos = null;
+        s.episodios_vistos_count = null;
+        s.episodios_consumidos_count = null;
+    });
+    saveLocalData();
+    showToast('Caché de TMDB limpiada', 'success');
+}
+
 function renderSettings() {
     if (typeof window.isAuthenticated === 'function') {
         updateDriveStatus(window.isAuthenticated());
     }
+
+    const container = document.getElementById('settings-preferences-container');
+    if (!container) return;
+
+    const prefs = getPreferences();
+    const startTabOptions = [
+        { value: 'series', label: 'Series' },
+        { value: 'movies', label: 'Películas' },
+        { value: 'explore', label: 'Explorar' },
+        { value: 'profile', label: 'Perfil' },
+    ];
+    const inactivityOptions = [
+        { value: 7, label: '7 días' },
+        { value: 14, label: '14 días' },
+        { value: 30, label: '30 días' },
+        { value: 60, label: '60 días' },
+    ];
+    const prevRuleOptions = [
+        { value: 'ask', label: 'Preguntar' },
+        { value: 'always', label: 'Marcar todos' },
+        { value: 'never', label: 'Solo ese' },
+    ];
+
+    const renderSwitch = (key, checked, label, hint) => `
+        <div class="tvst-setting-row">
+            <div class="tvst-setting-copy">
+                <span class="tvst-setting-label">${escapeHtml(label)}</span>
+                ${hint ? `<p class="tvst-setting-hint">${escapeHtml(hint)}</p>` : ''}
+            </div>
+            <button type="button"
+                role="switch"
+                aria-checked="${checked ? 'true' : 'false'}"
+                aria-label="${escapeHtml(label)}"
+                class="tvst-switch${checked ? ' is-on' : ''}"
+                onclick="updatePreference('${escapeHtml(key)}', ${checked ? 'false' : 'true'})">
+                <span class="tvst-switch-thumb"></span>
+            </button>
+        </div>
+    `;
+
+    const mySubs = new Set(getMySubscriptions().map(s => s.toLowerCase()));
+    const providersList = typeof FEATURED_PROVIDERS !== 'undefined' ? FEATURED_PROVIDERS : [];
+
+    container.innerHTML = `
+        <div class="tvst-section-card">
+            <h3 class="tvst-settings-card-title">Experiencia y seguimiento</h3>
+            <div class="tvst-settings-group-list">
+                <div class="tvst-setting-row">
+                    <div class="tvst-setting-copy">
+                        <label class="tvst-setting-label" for="pref-start-tab">Pestaña de inicio</label>
+                        <p class="tvst-setting-hint">Vista que se abre automáticamente al iniciar la app.</p>
+                    </div>
+                    <select id="pref-start-tab" class="tvst-setting-select" onchange="updatePreference('startTab', this.value)">
+                        ${startTabOptions.map(o => `<option value="${escapeHtml(o.value)}"${prefs.startTab === o.value ? ' selected' : ''}>${escapeHtml(o.label)}</option>`).join('')}
+                    </select>
+                </div>
+                <div class="tvst-setting-row">
+                    <div class="tvst-setting-copy">
+                        <label class="tvst-setting-label" for="pref-inactivity-days">Días para «En espera»</label>
+                        <p class="tvst-setting-hint">Tiempo sin ver episodios antes de bajar a inactivas.</p>
+                    </div>
+                    <select id="pref-inactivity-days" class="tvst-setting-select" onchange="updatePreference('inactivityDays', Number(this.value))">
+                        ${inactivityOptions.map(o => `<option value="${o.value}"${Number(prefs.inactivityDays) === o.value ? ' selected' : ''}>${escapeHtml(o.label)}</option>`).join('')}
+                    </select>
+                </div>
+                <div class="tvst-setting-row">
+                    <div class="tvst-setting-copy">
+                        <label class="tvst-setting-label" for="pref-prev-rule">Episodios anteriores</label>
+                        <p class="tvst-setting-hint">Acción al marcar un capítulo con anteriores pendientes.</p>
+                    </div>
+                    <select id="pref-prev-rule" class="tvst-setting-select" onchange="updatePreference('previousEpisodesRule', this.value)">
+                        ${prevRuleOptions.map(o => `<option value="${escapeHtml(o.value)}"${prefs.previousEpisodesRule === o.value ? ' selected' : ''}>${escapeHtml(o.label)}</option>`).join('')}
+                    </select>
+                </div>
+            </div>
+        </div>
+
+        <div class="tvst-section-card">
+            <h3 class="tvst-settings-card-title">Visualización</h3>
+            <div class="tvst-settings-group-list">
+                ${renderSwitch(
+                    'spoilerFree',
+                    prefs.spoilerFree,
+                    'Modo sin spoilers',
+                    'Oculta títulos, imágenes y sinopsis de episodios aún no vistos.',
+                )}
+                ${renderSwitch(
+                    'includeSpecials',
+                    prefs.includeSpecials,
+                    'Incluir especiales (T0)',
+                    'Incluye los episodios especiales en listas y cálculo de progreso.',
+                )}
+                ${renderSwitch(
+                    'showMoviePosterTitles',
+                    prefs.showMoviePosterTitles,
+                    'Títulos bajo pósters',
+                    'Muestra el nombre debajo de cada carátula en Películas.',
+                )}
+                ${renderSwitch(
+                    'showMoviePosterRatings',
+                    prefs.showMoviePosterRatings,
+                    'Nota TMDB en pósters',
+                    'Muestra la puntuación de TMDB sobre cada póster en Películas.',
+                )}
+            </div>
+        </div>
+
+        <div class="tvst-section-card">
+            <h3 class="tvst-settings-card-title">Plataformas y región</h3>
+            <div class="tvst-settings-group-list">
+                <div class="tvst-setting-row">
+                    <div class="tvst-setting-copy">
+                        <label class="tvst-setting-label" for="pref-provider-country">País de catálogo</label>
+                        <p class="tvst-setting-hint">Región usada para mostrar dónde ver cada título.</p>
+                    </div>
+                    <select id="pref-provider-country" class="tvst-setting-select" onchange="updatePreference('providerCountry', this.value)">
+                        ${PROVIDER_COUNTRIES.map(c => `<option value="${escapeHtml(c.code)}"${prefs.providerCountry === c.code ? ' selected' : ''}>${escapeHtml(c.label)}</option>`).join('')}
+                    </select>
+                </div>
+                <div class="tvst-setting-row is-stacked">
+                    <div class="tvst-setting-copy">
+                        <span class="tvst-setting-label">Mis plataformas</span>
+                        <p class="tvst-setting-hint">Destaca tus servicios en las fichas y activa un filtro rápido en Películas.</p>
+                    </div>
+                    <div class="tvst-setting-chips">
+                        ${providersList.map(name => {
+                            const active = mySubs.has(name.toLowerCase());
+                            const safeName = escapeHtml(name).replace(/'/g, '&#39;');
+                            return `<button type="button" class="tvst-setting-chip${active ? ' is-active' : ''}" onclick="toggleSubscriptionPreference('${safeName}')">${escapeHtml(name)}</button>`;
+                        }).join('')}
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="tvst-section-card">
+            <h3 class="tvst-settings-card-title">Caché de TMDB</h3>
+            <p class="tvst-settings-desc">Recarga metadatos de episodios, estrenos y plataformas si notas información desactualizada.</p>
+            <div class="tvst-settings-actions">
+                <button type="button" onclick="clearTmdbCachesFromSettings()" class="tvst-settings-btn">Limpiar caché TMDB</button>
+            </div>
+        </div>
+    `;
 }
 
-let trendingFetchInflight = null;
+const trendingFetchInflight = { tv: null, movie: null };
+
+function syncExploreTrendingTabButtons(activeTab = AppState.exploreTrendingTab) {
+    const tab = activeTab === 'movie' ? 'movie' : 'tv';
+    document.getElementById('explore-trending-tab-tv')?.classList.toggle('is-active', tab === 'tv');
+    document.getElementById('explore-trending-tab-movie')?.classList.toggle('is-active', tab === 'movie');
+}
+
+function setExploreTrendingTabsVisible(visible) {
+    const nav = document.getElementById('explore-trending-tabs');
+    if (nav) nav.classList.toggle('hidden', !visible);
+}
+
+function switchExploreTrendingTab(tab) {
+    const normalized = tab === 'movie' ? 'movie' : 'tv';
+    if (AppState.exploreTrendingTab === normalized) {
+        syncExploreTrendingTabButtons(normalized);
+        return;
+    }
+    AppState.exploreTrendingTab = normalized;
+    syncExploreTrendingTabButtons(normalized);
+    setScrollTop(0, 'auto');
+    void renderExplore();
+}
 
 function syncExploreSearchClearButton() {
     const input = document.getElementById('search-input');
@@ -5193,12 +6000,14 @@ function clearExploreSearch() {
     void renderExplore();
 }
 
-function renderTrendingShowcase(items) {
-    const listItems = (items || []).slice(0, 5);
+function renderTrendingShowcase(items, { mediaType = 'tv' } = {}) {
+    const listItems = (items || []).slice(0, 10);
     if (!listItems.length) return '';
 
     const hero = listItems[0];
     const rest = listItems.slice(1);
+    const isMovieTab = mediaType === 'movie';
+    const sectionTitle = isMovieTab ? 'Tendencias hoy · Películas' : 'Tendencias hoy · Series';
 
     const heroType = hero.tipo === 'tv' ? 'tv' : 'movie';
     const heroId = Number(hero.id_tmdb) || 0;
@@ -5273,8 +6082,8 @@ function renderTrendingShowcase(items) {
 
     return `
         <div class="tvst-explore-section-head">
-            <h2 class="tvst-explore-section-title">Tendencias hoy</h2>
-            <span class="tvst-explore-section-badge">Top 5 · TMDB</span>
+            <h2 class="tvst-explore-section-title">${escapeHtml(sectionTitle)}</h2>
+            <span class="tvst-explore-section-badge">Top 10 · TMDB</span>
         </div>
         ${heroHtml}
         ${gridHtml}
@@ -5289,11 +6098,13 @@ async function renderExplore() {
 
     const query = (input?.value || '').trim();
     if (query.length >= 2) {
+        setExploreTrendingTabsVisible(false);
         renderSearchResults(AppState.lastSearchResults);
         return;
     }
 
     if (query.length > 0) {
+        setExploreTrendingTabsVisible(false);
         list.className = 'tvst-search-list';
         list.innerHTML = emptyState(
             'search',
@@ -5303,13 +6114,11 @@ async function renderExplore() {
         return;
     }
 
-    if (AppState.lastTrendingResults.length) {
-        list.className = 'tvst-trending-view';
-        list.innerHTML = renderTrendingShowcase(AppState.lastTrendingResults);
-        return;
-    }
+    const mediaType = AppState.exploreTrendingTab === 'movie' ? 'movie' : 'tv';
+    syncExploreTrendingTabButtons(mediaType);
 
     if (typeof window.getTrendingSuggestions !== 'function' || (typeof hasTmdbConfig === 'function' && !hasTmdbConfig())) {
+        setExploreTrendingTabsVisible(false);
         list.className = 'tvst-search-list';
         list.innerHTML = emptyState(
             'search',
@@ -5319,30 +6128,44 @@ async function renderExplore() {
         return;
     }
 
+    setExploreTrendingTabsVisible(true);
+
+    const cachedList = AppState.trendingCache?.[mediaType] || [];
+    if (cachedList.length) {
+        list.className = 'tvst-trending-view';
+        list.innerHTML = renderTrendingShowcase(cachedList, { mediaType });
+        return;
+    }
+
+    const sectionTitle = mediaType === 'movie' ? 'Tendencias hoy · Películas' : 'Tendencias hoy · Series';
     list.className = 'tvst-trending-view';
     list.innerHTML = `
         <div class="tvst-explore-section-head">
-            <h2 class="tvst-explore-section-title">Tendencias hoy</h2>
-            <span class="tvst-explore-section-badge">Top 5 · TMDB</span>
+            <h2 class="tvst-explore-section-title">${escapeHtml(sectionTitle)}</h2>
+            <span class="tvst-explore-section-badge">Top 10 · TMDB</span>
         </div>
         ${renderSkeletonList(5, 'episodes')}
     `;
 
     try {
-        if (!trendingFetchInflight) {
-            trendingFetchInflight = window.getTrendingSuggestions(5).finally(() => {
-                trendingFetchInflight = null;
+        if (!trendingFetchInflight[mediaType]) {
+            trendingFetchInflight[mediaType] = window.getTrendingSuggestions(mediaType, 10).finally(() => {
+                trendingFetchInflight[mediaType] = null;
             });
         }
-        const trending = await trendingFetchInflight;
-        AppState.lastTrendingResults = Array.isArray(trending) ? trending.slice(0, 5) : [];
+        const trending = await trendingFetchInflight[mediaType];
+        const normalized = Array.isArray(trending) ? trending.slice(0, 10) : [];
+        if (!AppState.trendingCache || typeof AppState.trendingCache !== 'object') {
+            AppState.trendingCache = { tv: [], movie: [] };
+        }
+        AppState.trendingCache[mediaType] = normalized;
 
         const liveQuery = (document.getElementById('search-input')?.value || '').trim();
-        if (liveQuery.length > 0) return;
+        if (liveQuery.length > 0 || AppState.exploreTrendingTab !== mediaType) return;
 
-        if (AppState.lastTrendingResults.length) {
+        if (normalized.length) {
             list.className = 'tvst-trending-view';
-            list.innerHTML = renderTrendingShowcase(AppState.lastTrendingResults);
+            list.innerHTML = renderTrendingShowcase(normalized, { mediaType });
         } else {
             list.className = 'tvst-search-list';
             list.innerHTML = emptyState(
@@ -5353,7 +6176,7 @@ async function renderExplore() {
         }
     } catch (error) {
         const liveQuery = (document.getElementById('search-input')?.value || '').trim();
-        if (liveQuery.length > 0) return;
+        if (liveQuery.length > 0 || AppState.exploreTrendingTab !== mediaType) return;
         list.className = 'tvst-search-list';
         list.innerHTML = emptyState(
             'search',
@@ -5720,13 +6543,13 @@ async function refreshShowStatus(show) {
 
     await ensureShowSeasonMeta(show);
 
-    const regularSeasons = (show.temporadas || []).filter(season => !season.especial && season.numero !== 0);
+    const regularSeasons = (show.temporadas || []).filter(season => shouldIncludeSpecials() || (!season.especial && season.numero !== 0));
     if (regularSeasons.length === 0) {
         show.estado = previousState;
         return show;
     }
 
-    const episodes = await getOrderedEpisodes(show, { includeSpecials: false });
+    const episodes = await getOrderedEpisodes(show, { includeSpecials: shouldIncludeSpecials() });
     const airedEpisodes = episodes.filter(isEpisodeAired);
     const watchedEpisodes = airedEpisodes.filter(ep => isEpisodeWatched(show, ep.id));
     const consumedEpisodes = airedEpisodes.filter(ep => isEpisodeConsumed(show, ep.id));
@@ -5895,9 +6718,16 @@ async function renderEpisodes(show) {
     container.innerHTML = renderSkeletonList(4, 'episodes');
 
     try {
-        const ordered = await getOrderedEpisodes(show, { includeSpecials: false });
+        const ordered = await getOrderedEpisodes(show, { includeSpecials: shouldIncludeSpecials() });
         const airedOrdered = ordered.filter(isEpisodeAired);
-        const nextUnwatched = airedOrdered.filter(ep => !isEpisodeConsumed(show, ep.id)).slice(0, 2);
+        const remainingOrdered = airedOrdered.filter(ep => !isEpisodeConsumed(show, ep.id));
+        const nextUnwatched = remainingOrdered.slice(0, 2);
+        const remainingMinutes = remainingOrdered.length * getShowEpisodeRuntimeMinutes(show);
+        const remainingBannerHTML = remainingOrdered.length > 0 ? `
+            <div class="tvst-ep-remaining-banner">
+                <span>Tiempo restante en esta serie</span>
+                <strong>~${escapeHtml(formatCompactDuration(remainingMinutes))} · ${remainingOrdered.length} ${remainingOrdered.length === 1 ? 'ep.' : 'ep.'}</strong>
+            </div>` : '';
 
         const episodesBySeason = new Map();
         for (const ep of ordered) {
@@ -5906,10 +6736,10 @@ async function renderEpisodes(show) {
             episodesBySeason.get(key).push(ep);
         }
 
-        let continueHTML = '';
+        let continueHTML = remainingBannerHTML;
         const showIdTmdb = Number(show.id_tmdb) || 0;
         if (nextUnwatched.length) {
-            continueHTML = `
+            continueHTML += `
                 <div class="tvst-ep-section-title">Continuar el seguimiento</div>
                 <div class="tvst-continue-cards">
                     ${nextUnwatched.map(ep => {
@@ -5918,14 +6748,15 @@ async function renderEpisodes(show) {
                         const watched = isEpisodeWatched(show, ep.id);
                         const safeEpId = escapeHtml(ep.id);
                         const epSeasonNum = Number(ep.seasonNumber) || 0;
+                        const hideSpoiler = shouldMaskEpisodeSpoilers(show, ep.id);
                         return `
                         <div class="tvst-continue-card" onclick="openEpisodeDetail(${showIdTmdb}, '${safeEpId}')" role="button" tabindex="0">
                             ${still
-                                ? `<img class="tvst-continue-still" src="${escapeHtml(still)}" alt="">`
+                                ? `<img class="tvst-continue-still${hideSpoiler ? ' is-spoiler-blur' : ''}" src="${escapeHtml(still)}" alt="">`
                                 : '<div class="tvst-continue-still"></div>'}
                             <div class="tvst-continue-text">
                                 <div class="tvst-continue-code">${escapeHtml(formatEpisodeLabel(epSeasonNum, ep.episodeNumber))}</div>
-                                <div class="tvst-continue-name">${escapeHtml(ep.name || 'Episodio')}</div>
+                                <div class="tvst-continue-name${hideSpoiler ? ' tvst-spoiler-mask' : ''}">${hideSpoiler ? 'Título oculto' : escapeHtml(ep.name || 'Episodio')}</div>
                             </div>
                             <button type="button"
                                 class="tvst-circle-check${watched ? ' is-watched' : ''}"
@@ -5937,7 +6768,7 @@ async function renderEpisodes(show) {
         }
 
         const sortedSeasons = [...(show.temporadas || [])]
-            .filter(s => !s.especial && s.numero !== 0)
+            .filter(s => shouldIncludeSpecials() || (!s.especial && s.numero !== 0))
             .sort((a, b) => a.numero - b.numero);
 
         let seasonsHTML = '<div class="tvst-ep-section-title">Todos los episodios</div>';
@@ -5995,14 +6826,15 @@ async function renderEpisodes(show) {
                             const rawEpisodeImage = episode.still_path ? getImageUrl(episode.still_path, 'w185') : null;
                             const episodeImage = safeUrl(rawEpisodeImage);
                             const aired = isEpisodeAired(episode);
+                            const hideSpoiler = shouldMaskEpisodeSpoilers(show, episodeId);
                             return `
                             <div class="tvst-ep-row${isSkipped ? ' is-skipped' : ''}" onclick="openEpisodeDetail(${showIdTmdb}, '${safeEpisodeId}')" role="button" tabindex="0">
                                 ${episodeImage
-                                    ? `<img class="tvst-ep-still" src="${escapeHtml(episodeImage)}" alt="" onerror="this.style.visibility='hidden'">`
+                                    ? `<img class="tvst-ep-still${hideSpoiler ? ' is-spoiler-blur' : ''}" src="${escapeHtml(episodeImage)}" alt="" onerror="this.style.visibility='hidden'">`
                                     : '<div class="tvst-ep-still"></div>'}
                                 <div class="tvst-ep-text">
                                     <div class="tvst-ep-code">${escapeHtml(formatEpisodeLabel(seasonNum, episode.episodeNumber))}</div>
-                                    <div class="tvst-ep-name">${escapeHtml(episode.name || 'Episodio')}${isSkipped ? ' · Saltado' : ''}</div>
+                                    <div class="tvst-ep-name${hideSpoiler ? ' tvst-spoiler-mask' : ''}">${hideSpoiler ? 'Título oculto' : `${escapeHtml(episode.name || 'Episodio')}${isSkipped ? ' · Saltado' : ''}`}</div>
                                 </div>
                                 <button type="button"
                                     class="tvst-skip-btn${isSkipped ? ' is-skipped' : ''}"
@@ -6060,7 +6892,7 @@ async function toggleEpisodeAndUpdateSeason(id_tmdb, episode, seasonNumber, seas
     const show = AppState.shows.find(s => s.id_tmdb === id_tmdb);
     if (!show) return;
 
-    const episodes = await getOrderedEpisodes(show, { includeSpecials: false });
+    const episodes = await getOrderedEpisodes(show, { includeSpecials: shouldIncludeSpecials() });
     const targetEpisode = episodes.find(ep => ep.id === episode);
 
     if (targetEpisode && !isEpisodeAired(targetEpisode)) {
@@ -6084,22 +6916,14 @@ async function toggleEpisodeAndUpdateSeason(id_tmdb, episode, seasonNumber, seas
         clearEpisodeWatchedRecord(show, episode);
     } else {
         const previousEpisodes = episodes.filter(isEpisodeAired).filter(ep => compareEpisodeOrder(ep, targetEpisode) < 0 && !isEpisodeConsumed(show, ep.id));
-        if (shouldAskToMarkPreviousEpisodes(show, episodes, episode)) {
-            const markPrevious = await showConfirmDialog({
-                title: 'Episodios anteriores',
-                message: '¿Quieres marcar también los episodios anteriores como vistos?',
-                confirmText: 'Sí, marcar',
-                cancelText: 'Solo este',
+        if (await resolveMarkPreviousEpisodes(show, episodes, episode, 'Sí, marcar')) {
+            previousEpisodes.forEach(ep => {
+                if (!show.capitulos_vistos.includes(ep.id)) {
+                    show.capitulos_vistos.push(ep.id);
+                    newlyWatchedIds.push(ep.id);
+                }
+                clearEpisodeSkipped(show, ep.id);
             });
-            if (markPrevious) {
-                previousEpisodes.forEach(ep => {
-                    if (!show.capitulos_vistos.includes(ep.id)) {
-                        show.capitulos_vistos.push(ep.id);
-                        newlyWatchedIds.push(ep.id);
-                    }
-                    clearEpisodeSkipped(show, ep.id);
-                });
-            }
         }
         show.capitulos_vistos.push(episode);
         newlyWatchedIds.push(episode);
@@ -6225,7 +7049,7 @@ async function toggleEpisodeSkipped(id_tmdb, episodeId) {
     const show = AppState.shows.find(s => s.id_tmdb === id_tmdb);
     if (!show || !episodeId) return;
 
-    const episodes = await getOrderedEpisodes(show, { includeSpecials: false });
+    const episodes = await getOrderedEpisodes(show, { includeSpecials: shouldIncludeSpecials() });
     const target = episodes.find(ep => ep.id === episodeId);
     if (target && !isEpisodeAired(target)) {
         showToast('No puedes saltar episodios aún no emitidos', 'info');
@@ -6587,6 +7411,27 @@ function updateDetailHero(item) {
         }
     }
 
+    const remainingEl = document.getElementById('modal-hero-remaining');
+    if (remainingEl) {
+        if (item.tipo === 'tv') {
+            const inLibrary = isItemAlreadyAdded('tv', item.id_tmdb);
+            const remaining = getShowRemainingTimeInfo(item, { includeDropped: true });
+            if (remaining && remaining.remainingEpisodes > 0) {
+                const epWord = remaining.remainingEpisodes === 1 ? 'episodio' : 'episodios';
+                remainingEl.textContent = inLibrary
+                    ? `Tiempo restante: ~${remaining.label} (${remaining.remainingEpisodes} ${epWord})`
+                    : `Duración aprox.: ~${remaining.label} (${remaining.remainingEpisodes} ${epWord})`;
+                remainingEl.classList.remove('hidden');
+            } else {
+                remainingEl.textContent = '';
+                remainingEl.classList.add('hidden');
+            }
+        } else {
+            remainingEl.textContent = '';
+            remainingEl.classList.add('hidden');
+        }
+    }
+
     if (pctEl) {
         pctEl.textContent = `${heroStyle.progress}%`;
         pctEl.className = `tvst-hero-pct ${heroStyle.heroClass}`;
@@ -6733,7 +7578,13 @@ function paintEpisodeModal() {
         : (show.backdrop || show.portada);
     const stillUrl = safeUrl(rawStillUrl);
 
+    const liveShow = AppState.shows.find(s => s.id_tmdb === ctx.showId) || show;
+    const revealKey = `${ctx.showId}:${episodeId}`;
+    const hideSpoiler = shouldMaskEpisodeSpoilers(liveShow, episodeId) && !AppState.revealedSpoilerEpisodeKeys[revealKey];
+    const spoilerBtn = document.getElementById('episode-spoiler-btn');
+
     if (stillEl) {
+        stillEl.classList.toggle('is-spoiler-blur', hideSpoiler && Boolean(episode.still_path));
         stillEl.innerHTML = stillUrl
             ? `<img src="${escapeHtml(stillUrl)}" alt="">`
             : `<div class="tvst-episode-still-fallback">${UI_ICONS.tv}</div>`;
@@ -6749,15 +7600,25 @@ function paintEpisodeModal() {
     }
 
     if (codeEl) codeEl.textContent = formatEpisodeLabel(episode.seasonNumber, episode.episodeNumber);
-    if (titleEl) titleEl.textContent = episode.name || 'Episodio';
+    if (titleEl) {
+        titleEl.textContent = hideSpoiler ? 'Episodio oculto' : (episode.name || 'Episodio');
+        titleEl.classList.toggle('tvst-spoiler-mask', hideSpoiler);
+    }
     if (airEl) {
         airEl.textContent = episode.air_date
             ? `Emisión: ${formatAirDateShort(episode.air_date)}`
             : 'Fecha de emisión desconocida';
     }
-    if (overviewEl) overviewEl.textContent = episode.overview || 'Sin descripción';
+    if (overviewEl) {
+        overviewEl.textContent = hideSpoiler
+            ? 'Detalles ocultos por el modo sin spoilers.'
+            : (episode.overview || 'Sin descripción');
+        overviewEl.classList.toggle('tvst-spoiler-mask', hideSpoiler);
+    }
+    if (spoilerBtn) {
+        spoilerBtn.classList.toggle('hidden', !hideSpoiler);
+    }
 
-    const liveShow = AppState.shows.find(s => s.id_tmdb === ctx.showId) || show;
     const watched = isEpisodeWatched(liveShow, episodeId);
     const skipped = isEpisodeSkipped(liveShow, episodeId);
     if (watchBtn) {
@@ -6776,6 +7637,13 @@ function paintEpisodeModal() {
     const idx = seasonEpisodes.findIndex(ep => ep.id === episodeId);
     if (prevBtn) prevBtn.disabled = idx <= 0;
     if (nextBtn) nextBtn.disabled = idx < 0 || idx >= seasonEpisodes.length - 1;
+}
+
+function revealCurrentEpisodeSpoilers() {
+    const ctx = AppState.selectedEpisode;
+    if (!ctx) return;
+    AppState.revealedSpoilerEpisodeKeys[`${ctx.showId}:${ctx.episodeId}`] = true;
+    paintEpisodeModal();
 }
 
 function navigateEpisode(delta) {
@@ -7266,6 +8134,7 @@ function exportData() {
         lists: AppState.lists,
         deletedIds: AppState.deletedIds,
         deletedListIds: AppState.deletedListIds,
+        preferences: getPreferences(),
         exportDate: new Date().toISOString(),
     };
     
@@ -7300,7 +8169,7 @@ function handleImport(event) {
         try {
             const data = JSON.parse(e.target.result);
 
-            if (data.movies || data.shows || data.lists) {
+            if (data.movies || data.shows || data.lists || data.preferences) {
                 closeListPicker();
                 closeListModal();
                 closeEpisodeModal();
@@ -7318,6 +8187,12 @@ function handleImport(event) {
                 AppState.lists = (data.lists || []).map(normalizeStoredList);
                 AppState.deletedIds = normalizeDeletedIds(data.deletedIds);
                 AppState.deletedListIds = normalizeDeletedListIds(data.deletedListIds);
+                if (data.preferences) {
+                    AppState.preferences = normalizePreferences(data.preferences);
+                    if (typeof window.clearWatchProvidersCache === 'function') {
+                        window.clearWatchProvidersCache();
+                    }
+                }
                 invalidateTimelineCaches();
                 flushSaveLocalData();
                 saveLocalDataImmediate();
@@ -7640,5 +8515,11 @@ window.toggleSeasonWatched = toggleSeasonWatched;
 window.toggleSeasonAccordion = toggleSeasonAccordion;
 window.toggleEpisodeAndUpdateSeason = toggleEpisodeAndUpdateSeason;
 window.resolveAppDialog = resolveAppDialog;
+window.updatePreference = updatePreference;
+window.toggleSubscriptionPreference = toggleSubscriptionPreference;
+window.clearTmdbCachesFromSettings = clearTmdbCachesFromSettings;
+window.revealCurrentEpisodeSpoilers = revealCurrentEpisodeSpoilers;
+window.getPreferredProviderCountry = getPreferredProviderCountry;
+window.switchExploreTrendingTab = switchExploreTrendingTab;
 
 console.log('[App] app.js cargado');

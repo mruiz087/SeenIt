@@ -97,6 +97,10 @@
                         </button>
                     </div>
                 </div>
+                <nav id="explore-trending-tabs" class="tvst-subnav tvst-explore-subnav" aria-label="Tendencias por tipo">
+                    <button type="button" id="explore-trending-tab-tv" class="tvst-subnav-tab is-active" onclick="switchExploreTrendingTab('tv')">Series</button>
+                    <button type="button" id="explore-trending-tab-movie" class="tvst-subnav-tab" onclick="switchExploreTrendingTab('movie')">Películas</button>
+                </nav>
                 <div id="search-results" class="tvst-search-list">
                     <!-- filled by JS -->
                 </div>
@@ -162,7 +166,7 @@
                             <h2 class="tvst-lists-title">Estadísticas</h2>
                         </div>
                         <div class="tvst-section-card tvst-stats-card">
-                            <div class="tvst-stats-grid">
+                            <div class="tvst-stats-grid tvst-stats-grid-4">
                                 <div class="tvst-stats-kpi">
                                     <span class="tvst-stats-kpi-label">Series</span>
                                     <strong id="stats-series-count" class="tvst-stats-kpi-value">0</strong>
@@ -171,11 +175,29 @@
                                     <span class="tvst-stats-kpi-label">Episodios vistos</span>
                                     <strong id="stats-series-episodes" class="tvst-stats-kpi-value">0</strong>
                                 </div>
+                                <div class="tvst-stats-kpi">
+                                    <span class="tvst-stats-kpi-label">Nota media</span>
+                                    <strong id="stats-series-rating" class="tvst-stats-kpi-value">—</strong>
+                                    <span id="stats-series-rating-sub" class="tvst-stats-kpi-sub">Sin puntuar</span>
+                                </div>
+                                <div class="tvst-stats-kpi">
+                                    <span class="tvst-stats-kpi-label">Completadas</span>
+                                    <strong id="stats-series-completed" class="tvst-stats-kpi-value">0</strong>
+                                    <span id="stats-series-completed-sub" class="tvst-stats-kpi-sub">0% de tu lista</span>
+                                </div>
                             </div>
-                            <div class="tvst-stats-block">
-                                <h3 class="tvst-stats-label">Tiempo visto en series</h3>
-                                <p id="stats-series-time" class="tvst-stats-value">0 meses · 0 días · 0 h</p>
+                            <div class="tvst-stats-split">
+                                <div class="tvst-stats-block">
+                                    <h3 class="tvst-stats-label">Tiempo visto</h3>
+                                    <p id="stats-series-time" class="tvst-stats-value">0 meses · 0 días · 0 h</p>
+                                </div>
+                                <div class="tvst-stats-block">
+                                    <h3 class="tvst-stats-label">Tiempo restante</h3>
+                                    <p id="stats-series-remaining-time" class="tvst-stats-value">0 min</p>
+                                    <p id="stats-series-remaining-sub" class="tvst-stats-caption">0 episodios pendientes</p>
+                                </div>
                             </div>
+                            <div id="stats-series-extended" class="tvst-stats-extended"></div>
                         </div>
                     </section>
                 </div>
@@ -229,7 +251,7 @@
                             <h2 class="tvst-lists-title">Estadísticas</h2>
                         </div>
                         <div class="tvst-section-card tvst-stats-card">
-                            <div class="tvst-stats-grid">
+                            <div class="tvst-stats-grid tvst-stats-grid-4">
                                 <div class="tvst-stats-kpi">
                                     <span class="tvst-stats-kpi-label">Películas vistas</span>
                                     <strong id="stats-movies-watched" class="tvst-stats-kpi-value">0</strong>
@@ -238,18 +260,43 @@
                                     <span class="tvst-stats-kpi-label">Pendientes</span>
                                     <strong id="stats-movies-pending" class="tvst-stats-kpi-value">0</strong>
                                 </div>
+                                <div class="tvst-stats-kpi">
+                                    <span class="tvst-stats-kpi-label">Nota media</span>
+                                    <strong id="stats-movies-rating" class="tvst-stats-kpi-value">—</strong>
+                                    <span id="stats-movies-rating-sub" class="tvst-stats-kpi-sub">Sin puntuar</span>
+                                </div>
+                                <div class="tvst-stats-kpi">
+                                    <span class="tvst-stats-kpi-label">Duración media</span>
+                                    <strong id="stats-movies-avg-runtime" class="tvst-stats-kpi-value">—</strong>
+                                    <span id="stats-movies-avg-runtime-sub" class="tvst-stats-kpi-sub">En películas vistas</span>
+                                </div>
                             </div>
-                            <div class="tvst-stats-block">
-                                <h3 class="tvst-stats-label">Tiempo visto en películas</h3>
-                                <p id="stats-movies-time" class="tvst-stats-value">0 meses · 0 días · 0 h</p>
+                            <div class="tvst-stats-split">
+                                <div class="tvst-stats-block">
+                                    <h3 class="tvst-stats-label">Tiempo visto</h3>
+                                    <p id="stats-movies-time" class="tvst-stats-value">0 meses · 0 días · 0 h</p>
+                                </div>
+                                <div class="tvst-stats-block">
+                                    <h3 class="tvst-stats-label">Pendientes por ver</h3>
+                                    <p id="stats-movies-pending-time" class="tvst-stats-value">0 min</p>
+                                    <p id="stats-movies-pending-sub" class="tvst-stats-caption">0 películas</p>
+                                </div>
                             </div>
+                            <div id="stats-movies-extended" class="tvst-stats-extended"></div>
                         </div>
                     </section>
                 </div>
 
-                <div id="profile-settings-section" class="tvst-settings-section">
-                    <div class="tvst-lists-header">
-                        <h2 class="tvst-lists-title">Ajustes</h2>
+            </div>
+
+            <!-- AJUSTES -->
+            <div id="content-settings" class="tab-content hidden">
+                <header class="tvst-settings-header">
+                    <h1 class="tvst-settings-title">Ajustes</h1>
+                </header>
+                <div id="settings-section" class="tvst-settings-section">
+                    <div id="settings-preferences-container">
+                        <!-- filled by JS -->
                     </div>
                     <div class="tvst-section-card">
                         <h3 class="tvst-settings-card-title">Google Drive</h3>
@@ -291,6 +338,10 @@
                 <svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.5"/><path d="M5 20c1.5-3.5 4-5 7-5s5.5 1.5 7 5"/></svg>
                 <span>Perfil</span>
             </button>
+            <button type="button" onclick="switchTab('settings')" class="tvst-bottom-nav-btn" data-tab="settings">
+                <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09a1.65 1.65 0 00-1-1.51 1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09a1.65 1.65 0 001.51-1 1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+                <span>Ajustes</span>
+            </button>
         </nav>
 
         </div>
@@ -327,6 +378,7 @@
                                 <p id="modal-hero-meta" class="tvst-hero-meta"></p>
                                 <span id="modal-hero-status" class="tvst-hero-status-badge hidden"></span>
                             </div>
+                            <p id="modal-hero-remaining" class="tvst-hero-remaining hidden"></p>
                         </div>
                     </div>
                 </header>
@@ -376,6 +428,7 @@
                     <h2 id="episode-title" class="tvst-episode-detail-title">Título</h2>
                     <p id="episode-air-date" class="tvst-episode-detail-meta"></p>
                     <p id="episode-overview" class="tvst-episode-detail-overview">Sin descripción</p>
+                    <button type="button" id="episode-spoiler-btn" class="tvst-spoiler-reveal-btn hidden" onclick="revealCurrentEpisodeSpoilers()">Mostrar detalles del episodio</button>
                     <div class="tvst-episode-actions">
                         <button type="button" id="episode-skip-btn" class="tvst-skip-btn tvst-episode-skip-btn" onclick="toggleEpisodeSkippedFromDetail()" aria-label="Saltar episodio">
                             <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 6l8 6-8 6V6z"/><path d="M18 6v12"/></svg>

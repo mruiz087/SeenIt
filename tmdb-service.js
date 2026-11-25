@@ -570,9 +570,22 @@ async function searchTV(query, page = 1) {
 // DETALLES
 // ============================================
 
-function extractWatchProvidersFromResponse(response) {
+function getPreferredProviderCountryCode() {
+    try {
+        const raw = typeof window.getPreferredProviderCountry === 'function'
+            ? window.getPreferredProviderCountry()
+            : 'ES';
+        const normalized = String(raw || 'ES').trim().toUpperCase();
+        return normalized || 'ES';
+    } catch (_) {
+        return 'ES';
+    }
+}
+
+function extractWatchProvidersFromResponse(response, countryCode = getPreferredProviderCountryCode()) {
     const countries = response?.results || {};
-    const countryKey = Object.keys(countries).find(key => key.toUpperCase() === 'ES') || Object.keys(countries)[0];
+    const target = String(countryCode || 'ES').trim().toUpperCase();
+    const countryKey = Object.keys(countries).find(key => key.toUpperCase() === target);
     const countryData = countryKey ? countries[countryKey] : {};
 
     const rawProviders = [
@@ -604,7 +617,8 @@ function extractWatchProvidersFromResponse(response) {
  * @returns {Promise<Object>} Detalles de la película
  */
 async function getMovieDetails(id) {
-    const cacheKey = String(id);
+    const country = getPreferredProviderCountryCode();
+    const cacheKey = `${country}:${id}`;
     const cached = getTimedCache(movieDetailsCache, cacheKey, SESSION_DETAIL_TTL_MS);
     if (cached) return cached;
 
@@ -615,13 +629,13 @@ async function getMovieDetails(id) {
 
         const normalized = normalizeMovieData(response);
         setTimedCache(movieDetailsCache, cacheKey, normalized, 150);
-        setTimedCache(movieFilterMetaCache, cacheKey, {
+        setTimedCache(movieFilterMetaCache, String(id), {
             id_tmdb: normalized.id_tmdb,
             generos: normalized.generos,
             runtime: normalized.runtime,
         }, 300);
         if (Array.isArray(normalized.watch_providers)) {
-            setTimedCache(watchProvidersCache, `movie:${id}`, normalized.watch_providers, 300);
+            setTimedCache(watchProvidersCache, `${country}:movie:${id}`, normalized.watch_providers, 300);
         }
         return normalized;
     } catch (error) {
@@ -682,7 +696,8 @@ function slimNextEpisode(raw) {
  * @returns {Promise<Object>} Detalles de la serie con temporadas y episodios
  */
 async function getTVDetails(id) {
-    const cacheKey = String(id);
+    const country = getPreferredProviderCountryCode();
+    const cacheKey = `${country}:${id}`;
     const cached = getTimedCache(tvDetailsCache, cacheKey, SESSION_DETAIL_TTL_MS);
     if (cached) return cached;
 
@@ -693,14 +708,14 @@ async function getTVDetails(id) {
 
         const normalized = normalizeTVData(response);
         setTimedCache(tvDetailsCache, cacheKey, normalized, 150);
-        tvMetaCache.set(cacheKey, {
+        tvMetaCache.set(String(id), {
             id_tmdb: normalized.id_tmdb,
             status: normalized.status,
             temporadas: normalized.temporadas,
             next_episode_to_air: normalized.next_episode_to_air ?? null,
         });
         if (Array.isArray(normalized.watch_providers)) {
-            setTimedCache(watchProvidersCache, `tv:${id}`, normalized.watch_providers, 300);
+            setTimedCache(watchProvidersCache, `${country}:tv:${id}`, normalized.watch_providers, 300);
         }
         return normalized;
     } catch (error) {
@@ -1124,13 +1139,14 @@ function normalizeSearchResult(item) {
  * @returns {Promise<Array>} Lista de proveedores normalizados
  */
 async function getWatchProviders(type, id) {
-    const cacheKey = `${type}:${id}`;
+    const country = getPreferredProviderCountryCode();
+    const cacheKey = `${country}:${type}:${id}`;
     const cached = getTimedCache(watchProvidersCache, cacheKey, SESSION_DETAIL_TTL_MS);
     if (cached) return cached;
 
     try {
         const response = await fetchTMDB(`/${type}/${id}/watch/providers`);
-        const deduped = extractWatchProvidersFromResponse(response);
+        const deduped = extractWatchProvidersFromResponse(response, country);
         setTimedCache(watchProvidersCache, cacheKey, deduped, 300);
         return deduped;
     } catch (error) {
@@ -1141,6 +1157,12 @@ async function getWatchProviders(type, id) {
         console.error('[TMDB] Error obteniendo proveedores:', error);
         throw error;
     }
+}
+
+function clearWatchProvidersCache() {
+    watchProvidersCache.clear();
+    movieDetailsCache.clear();
+    tvDetailsCache.clear();
 }
 
 /**
@@ -1226,23 +1248,46 @@ async function getPersonCredits(id) {
 // ============================================
 
 /**
- * Obtiene tendencias actuales (películas y series) desde TMDB
- * @param {number} limit - Máximo de resultados a devolver (default: 5)
- * @param {Object} [options] - Opciones ({ signal })
+ * Obtiene tendencias actuales (series, películas o mixtas) desde TMDB
+ * @param {string|number} [typeOrLimit='all'] - 'tv', 'movie', 'all' o límite numérico heredado
+ * @param {number|Object} [limitOrOptions=10] - Máximo de resultados (default: 10) u opciones
+ * @param {Object} [maybeOptions] - Opciones ({ signal })
  * @returns {Promise<Array>} Lista normalizada de tendencias
  */
-async function getTrendingSuggestions(limit = 5, options = {}) {
-    const safeLimit = Math.max(1, Math.min(20, Number(limit) || 5));
-    const cacheKey = `all:day:${safeLimit}`;
+async function getTrendingSuggestions(typeOrLimit = 'all', limitOrOptions = 10, maybeOptions = {}) {
+    let mediaType = 'all';
+    let rawLimit = 10;
+    let options = {};
+
+    if (typeof typeOrLimit === 'number') {
+        rawLimit = typeOrLimit;
+        options = (limitOrOptions && typeof limitOrOptions === 'object') ? limitOrOptions : {};
+    } else {
+        const normalizedType = String(typeOrLimit || 'all').trim().toLowerCase();
+        mediaType = (normalizedType === 'tv' || normalizedType === 'movie') ? normalizedType : 'all';
+        rawLimit = typeof limitOrOptions === 'number' ? limitOrOptions : 10;
+        options = (maybeOptions && typeof maybeOptions === 'object') ? maybeOptions : {};
+    }
+
+    const safeLimit = Math.max(1, Math.min(20, Number(rawLimit) || 10));
+    const cacheKey = `${mediaType}:day:${safeLimit}`;
     const cached = getTimedCache(trendingCache, cacheKey, SESSION_TRENDING_TTL_MS);
     if (cached) return cached;
 
+    const endpoint = mediaType === 'tv'
+        ? '/trending/tv/day'
+        : (mediaType === 'movie' ? '/trending/movie/day' : '/trending/all/day');
+
     try {
-        const response = await fetchTMDB('/trending/all/day', {
+        const response = await fetchTMDB(endpoint, {
             page: 1,
         }, options);
 
         const items = (response.results || [])
+            .map(item => ({
+                ...item,
+                media_type: item.media_type || (mediaType === 'tv' || mediaType === 'movie' ? mediaType : (item.title ? 'movie' : 'tv')),
+            }))
             .filter(item => item.media_type === 'movie' || item.media_type === 'tv')
             .slice(0, safeLimit)
             .map(normalizeSearchResult);
@@ -1331,6 +1376,7 @@ window.TMDBService = {
     normalizeTVData,
     normalizeSearchResult,
     getWatchProviders,
+    clearWatchProvidersCache,
     getPersonDetails,
     getPersonCredits,
     cancelSearchDebounce,
@@ -1357,6 +1403,7 @@ window.normalizeMovieData = normalizeMovieData;
 window.normalizeTVData = normalizeTVData;
 window.normalizeSearchResult = normalizeSearchResult;
 window.getWatchProviders = getWatchProviders;
+window.clearWatchProvidersCache = clearWatchProvidersCache;
 window.getPersonDetails = getPersonDetails;
 window.getPersonCredits = getPersonCredits;
 window.cancelSearchDebounce = cancelSearchDebounce;
