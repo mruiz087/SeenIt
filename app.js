@@ -61,6 +61,9 @@ const AppState = {
     timelineHistoryCache: {},
     timelinePendingCache: { continueWatching: [], staleWatching: [], builtAt: 0 },
     timelineUpcomingCache: { html: '', builtAt: 0, items: [] },
+    upcomingSeriesCal: { weekOffset: 0, selectedDate: null },
+    upcomingMoviesCal: { weekOffset: 0, selectedDate: null },
+    activeTrailerKey: null,
     lastCompletedReopenAt: 0,
     preferences: null,
 };
@@ -88,6 +91,8 @@ const DEFAULT_PREFERENCES = {
     showMoviePosterRatings: false,
     providerCountry: 'ES',
     mySubscriptions: [],
+    showTrailers: true,
+    showUpcomingMiniCalendar: true,
     updatedAt: '',
 };
 
@@ -113,6 +118,7 @@ let profileSearchDebounceTimer = null;
 let moviesPendingSearchDebounceTimer = null;
 const failedProviderFetchKeys = new Set();
 const attemptedMovieFilterMetaIds = new Set();
+const attemptedMovieReleaseSyncKeys = new Set();
 
 function normalizePreferences(raw = null) {
     const src = raw && typeof raw === 'object' ? raw : {};
@@ -135,6 +141,8 @@ function normalizePreferences(raw = null) {
         showMoviePosterRatings: Boolean(src.showMoviePosterRatings),
         providerCountry,
         mySubscriptions: subs,
+        showTrailers: src.showTrailers === undefined ? DEFAULT_PREFERENCES.showTrailers : Boolean(src.showTrailers),
+        showUpcomingMiniCalendar: src.showUpcomingMiniCalendar === undefined ? DEFAULT_PREFERENCES.showUpcomingMiniCalendar : Boolean(src.showUpcomingMiniCalendar),
         updatedAt: typeof src.updatedAt === 'string' ? src.updatedAt : '',
     };
 }
@@ -164,6 +172,14 @@ function shouldMaskEpisodeSpoilers(show, episodeId) {
 
 function shouldIncludeSpecials() {
     return Boolean(getPreferences().includeSpecials);
+}
+
+function areTrailersEnabled() {
+    return getPreferences().showTrailers !== false;
+}
+
+function isUpcomingMiniCalendarEnabled() {
+    return getPreferences().showUpcomingMiniCalendar !== false;
 }
 
 function getInactivityDays() {
@@ -746,6 +762,9 @@ function normalizeStoredMovie(movie) {
     const score = Number(normalized.puntuacion);
     normalized.puntuacion = Number.isFinite(score) && score > 0 ? Math.min(10, score) : 0;
     normalized.critica = typeof normalized.critica === 'string' ? normalized.critica : '';
+    if (normalized.release_date_country) {
+        normalized.release_date_country = String(normalized.release_date_country).trim().toUpperCase();
+    }
     normalized.updatedAt = normalized.updatedAt || normalized.lastModified || nowIso();
     return normalized;
 }
@@ -2593,6 +2612,70 @@ async function ensureMovieFilterMeta(pending) {
     return changed;
 }
 
+function getMoviesNeedingRegionalReleaseDate(country = getPreferredProviderCountry()) {
+    return AppState.movies.filter((movie) => {
+        if (normalizeStatus(movie.estado) === 'completed') return false;
+        if (movie.release_date_country === country) return false;
+        if (attemptedMovieReleaseSyncKeys.has(`${country}:${movie.id_tmdb}`)) return false;
+        const days = getDaysUntilRelease(movie.fecha_estreno);
+        return days === null || days >= -30;
+    });
+}
+
+async function ensureUpcomingMovieReleaseDates() {
+    if (window.__seenitMovieReleaseHydrating) return false;
+    if (typeof window.getMovieRegionalReleaseDate !== 'function') return false;
+
+    const country = getPreferredProviderCountry();
+    const candidates = getMoviesNeedingRegionalReleaseDate(country);
+    if (!candidates.length) return false;
+
+    window.__seenitMovieReleaseHydrating = true;
+    let dateChanged = false;
+    let metaSaved = false;
+
+    try {
+        const batch = candidates.slice(0, 20);
+        await mapPool(batch, 4, async (movie) => {
+            const attemptKey = `${country}:${movie.id_tmdb}`;
+            attemptedMovieReleaseSyncKeys.add(attemptKey);
+            try {
+                const res = await window.getMovieRegionalReleaseDate(movie.id_tmdb, country);
+                if (res?.fecha_estreno && res.fecha_estreno !== movie.fecha_estreno) {
+                    movie.fecha_estreno = res.fecha_estreno;
+                    dateChanged = true;
+                }
+                if (movie.release_date_country !== country) {
+                    movie.release_date_country = country;
+                    metaSaved = true;
+                }
+            } catch (error) {
+                console.warn('[App] Fecha estreno regional:', movie.titulo, error);
+            }
+        });
+
+        if (dateChanged || metaSaved) {
+            saveLocalData();
+        }
+        if (dateChanged) {
+            if (AppState.selectedItem?.tipo === 'movie') {
+                const updatedSelected = AppState.movies.find(m => m.id_tmdb === AppState.selectedItem.id_tmdb);
+                if (updatedSelected) {
+                    AppState.selectedItem = { ...updatedSelected, tipo: 'movie' };
+                    updateDetailHero(AppState.selectedItem);
+                    renderDetailInfo(AppState.selectedItem);
+                }
+            }
+            if (AppState.currentTab === 'movies') {
+                renderMoviesView();
+            }
+        }
+        return dateChanged;
+    } finally {
+        window.__seenitMovieReleaseHydrating = false;
+    }
+}
+
 function renderMoviesPendingList() {
     const container = document.getElementById('movies-pending-list-container');
     if (!container) return;
@@ -2600,6 +2683,11 @@ function renderMoviesPendingList() {
     const pending = getMoviesPendingBaseList();
     renderMoviesPendingFilters(pending);
     applyMoviesPendingFilters();
+
+    const country = getPreferredProviderCountry();
+    if (getMoviesNeedingRegionalReleaseDate(country).length) {
+        void ensureUpcomingMovieReleaseDates();
+    }
 
     // Hidratar géneros/runtime y plataformas en background
     if (!window.__seenitMoviesFilterMetaHydrating) {
@@ -2644,9 +2732,188 @@ function renderMoviesPendingList() {
     }
 }
 
+function toLocalDateKey(dateObj) {
+    if (!(dateObj instanceof Date) || Number.isNaN(dateObj.getTime())) return '';
+    const y = dateObj.getFullYear();
+    const m = String(dateObj.getMonth() + 1).padStart(2, '0');
+    const d = String(dateObj.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+}
+
+function getUpcomingWeekDates(weekOffset = 0) {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const dow = today.getDay(); // 0=Dom..6=Sab
+    const diffToMonday = dow === 0 ? -6 : 1 - dow;
+    const monday = new Date(today);
+    monday.setDate(today.getDate() + diffToMonday + (Number(weekOffset) || 0) * 7);
+    const days = [];
+    for (let i = 0; i < 7; i += 1) {
+        const d = new Date(monday);
+        d.setDate(monday.getDate() + i);
+        days.push(d);
+    }
+    return days;
+}
+
+function getUpcomingCalendarState(kind) {
+    return kind === 'movies' ? AppState.upcomingMoviesCal : AppState.upcomingSeriesCal;
+}
+
+function renderUpcomingMiniCalendarHtml(kind, countsByDate, calState) {
+    const safeKind = kind === 'movies' ? 'movies' : 'series';
+    const weekOffset = Math.max(0, Number(calState?.weekOffset) || 0);
+    const selectedDate = calState?.selectedDate || null;
+    const weekDates = getUpcomingWeekDates(weekOffset);
+    const todayKey = toLocalDateKey(new Date());
+    const dowLabels = ['L', 'M', 'X', 'J', 'V', 'S', 'D'];
+
+    const startLabel = weekDates[0].toLocaleDateString('es-ES', { day: 'numeric', month: 'short' });
+    const endLabel = weekDates[6].toLocaleDateString('es-ES', { day: 'numeric', month: 'short' });
+
+    let weekTotal = 0;
+    for (const d of weekDates) {
+        weekTotal += countsByDate.get(toLocalDateKey(d)) || 0;
+    }
+
+    const sortedAllDates = [...countsByDate.keys()].filter(k => k >= todayKey).sort();
+    const nextFutureDate = sortedAllDates.find(k => k > toLocalDateKey(weekDates[6])) || sortedAllDates[0] || null;
+
+    const daysHtml = weekDates.map((d, idx) => {
+        const dateKey = toLocalDateKey(d);
+        const count = countsByDate.get(dateKey) || 0;
+        const isToday = dateKey === todayKey;
+        const isPast = dateKey < todayKey;
+        const isSelected = selectedDate === dateKey;
+        const classes = [
+            'tvst-minical-day',
+            isToday ? 'is-today' : '',
+            isPast ? 'is-past' : '',
+            count > 0 ? 'has-events' : '',
+            isSelected ? 'is-selected' : '',
+        ].filter(Boolean).join(' ');
+        const fullLabel = d.toLocaleDateString('es-ES', { weekday: 'long', day: 'numeric', month: 'short' });
+        const indicator = count > 1
+            ? `<span class="tvst-minical-badge">${count}</span>`
+            : `<span class="tvst-minical-dot"></span>`;
+        return `
+            <button type="button" class="${classes}" onclick="selectUpcomingCalendarDate('${safeKind}', '${dateKey}')" aria-label="${escapeHtml(fullLabel)}${count ? `, ${count} estreno(s)` : ''}">
+                <span class="tvst-minical-dow">${dowLabels[idx]}</span>
+                <span class="tvst-minical-num">${d.getDate()}</span>
+                ${indicator}
+            </button>
+        `;
+    }).join('');
+
+    let footerHtml = '';
+    if (selectedDate) {
+        const parsed = new Date(`${selectedDate}T00:00:00`);
+        const selLabel = Number.isNaN(parsed.getTime())
+            ? selectedDate
+            : parsed.toLocaleDateString('es-ES', { weekday: 'short', day: 'numeric', month: 'short' });
+        const selCount = countsByDate.get(selectedDate) || 0;
+        footerHtml = `
+            <div class="tvst-minical-footer">
+                <span>Mostrando <strong>${escapeHtml(selLabel)}</strong> · ${selCount} ${selCount === 1 ? 'estreno' : 'estrenos'}</span>
+                <button type="button" class="tvst-minical-footer-btn" onclick="selectUpcomingCalendarDate('${safeKind}', null)">Ver todos</button>
+            </div>
+        `;
+    } else if (weekTotal === 0 && nextFutureDate) {
+        footerHtml = `
+            <div class="tvst-minical-footer">
+                <span>Sin estrenos esta semana · próximo el ${escapeHtml(formatAirDateShort(nextFutureDate))}</span>
+                <button type="button" class="tvst-minical-footer-btn" onclick="jumpToUpcomingCalendarDate('${safeKind}', '${escapeHtml(nextFutureDate)}')">Ir</button>
+            </div>
+        `;
+    }
+
+    const weekCountLabel = weekTotal > 0
+        ? `${weekTotal} ${weekTotal === 1 ? 'estreno esta semana' : 'estrenos esta semana'}`
+        : 'Sin estrenos esta semana';
+
+    return `
+        <section class="tvst-minical" aria-label="Minicalendario de estrenos">
+            <div class="tvst-minical-head">
+                <div class="tvst-minical-title-wrap">
+                    <span class="tvst-minical-range">${escapeHtml(startLabel)} – ${escapeHtml(endLabel)}</span>
+                    <span class="tvst-minical-count">${escapeHtml(weekCountLabel)}</span>
+                </div>
+                <div class="tvst-minical-nav">
+                    ${(weekOffset > 0 || selectedDate)
+                        ? `<button type="button" class="tvst-minical-reset" onclick="resetUpcomingCalendar('${safeKind}')">Hoy</button>`
+                        : ''}
+                    <button type="button" class="tvst-minical-nav-btn" onclick="shiftUpcomingCalendarWeek('${safeKind}', -1)" ${weekOffset <= 0 ? 'disabled' : ''} aria-label="Semana anterior">
+                        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M15 18l-6-6 6-6"/></svg>
+                    </button>
+                    <button type="button" class="tvst-minical-nav-btn" onclick="shiftUpcomingCalendarWeek('${safeKind}', 1)" aria-label="Semana siguiente">
+                        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M9 18l6-6-6-6"/></svg>
+                    </button>
+                </div>
+            </div>
+            <div class="tvst-minical-grid">${daysHtml}</div>
+            ${footerHtml}
+        </section>
+    `;
+}
+
+function rerenderUpcomingByKind(kind) {
+    if (kind === 'movies') {
+        renderMoviesUpcomingList();
+        return;
+    }
+    const container = document.getElementById('upcoming-list-container');
+    if (container && Array.isArray(AppState.timelineUpcomingCache?.items)) {
+        paintUpcomingSeriesView(AppState.timelineUpcomingCache.items, container);
+    } else {
+        void renderUpcomingList();
+    }
+}
+
+function shiftUpcomingCalendarWeek(kind, delta) {
+    const cal = getUpcomingCalendarState(kind);
+    cal.weekOffset = Math.max(0, (Number(cal.weekOffset) || 0) + (Number(delta) || 0));
+    rerenderUpcomingByKind(kind);
+}
+
+function selectUpcomingCalendarDate(kind, dateKey) {
+    const cal = getUpcomingCalendarState(kind);
+    if (!dateKey || cal.selectedDate === dateKey) {
+        cal.selectedDate = null;
+    } else {
+        cal.selectedDate = String(dateKey).slice(0, 10);
+    }
+    rerenderUpcomingByKind(kind);
+}
+
+function resetUpcomingCalendar(kind) {
+    const cal = getUpcomingCalendarState(kind);
+    cal.weekOffset = 0;
+    cal.selectedDate = null;
+    rerenderUpcomingByKind(kind);
+}
+
+function jumpToUpcomingCalendarDate(kind, dateKey) {
+    const cal = getUpcomingCalendarState(kind);
+    const target = new Date(`${String(dateKey).slice(0, 10)}T00:00:00`);
+    if (Number.isNaN(target.getTime())) return;
+    const baseMonday = getUpcomingWeekDates(0)[0];
+    const targetDow = target.getDay();
+    const targetMonday = new Date(target);
+    targetMonday.setDate(target.getDate() + (targetDow === 0 ? -6 : 1 - targetDow));
+    const diffWeeks = Math.max(0, Math.round((targetMonday - baseMonday) / (7 * 86400000)));
+    cal.weekOffset = diffWeeks;
+    cal.selectedDate = String(dateKey).slice(0, 10);
+    rerenderUpcomingByKind(kind);
+}
+
 function renderMoviesUpcomingList() {
     const container = document.getElementById('movies-upcoming-list-container');
     if (!container) return;
+
+    const country = getPreferredProviderCountry();
+    if (getMoviesNeedingRegionalReleaseDate(country).length) {
+        void ensureUpcomingMovieReleaseDates();
+    }
 
     const upcoming = AppState.movies
         .filter(movie => normalizeStatus(movie.estado) !== 'completed')
@@ -2669,7 +2936,33 @@ function renderMoviesUpcomingList() {
         return;
     }
 
-    const grouped = upcoming.reduce((acc, movie) => {
+    const countsByDate = new Map();
+    for (const movie of upcoming) {
+        const key = String(movie.fecha_estreno || '').slice(0, 10);
+        if (key) countsByDate.set(key, (countsByDate.get(key) || 0) + 1);
+    }
+
+    const calEnabled = isUpcomingMiniCalendarEnabled();
+    const calHtml = calEnabled ? renderUpcomingMiniCalendarHtml('movies', countsByDate, AppState.upcomingMoviesCal) : '';
+    const selectedDate = calEnabled ? AppState.upcomingMoviesCal?.selectedDate : null;
+    const visibleMovies = selectedDate
+        ? upcoming.filter(m => String(m.fecha_estreno || '').slice(0, 10) === selectedDate)
+        : upcoming;
+
+    if (!visibleMovies.length) {
+        container.innerHTML = calHtml + emptyState(
+            'calendar',
+            'Sin estrenos este día',
+            {
+                subtitle: 'No hay películas pendientes programadas para la fecha seleccionada.',
+                actionLabel: 'Ver todos los estrenos',
+                actionOnClick: "selectUpcomingCalendarDate('movies', null)",
+            },
+        );
+        return;
+    }
+
+    const grouped = visibleMovies.reduce((acc, movie) => {
         const label = formatUpcomingDateLabel(movie.fecha_estreno);
         if (!acc[label]) acc[label] = [];
         acc[label].push(movie);
@@ -2682,7 +2975,7 @@ function renderMoviesUpcomingList() {
         return dateA.localeCompare(dateB);
     });
 
-    container.innerHTML = labels.map(label => `
+    container.innerHTML = calHtml + labels.map(label => `
         <section class="mb-4">
             <div class="tvst-day-capsule-wrap"><span class="tvst-day-capsule">${label}</span></div>
             <div class="tvst-poster-grid">${renderMoviePosterGrid(grouped[label], { showCountdown: true })}</div>
@@ -3611,11 +3904,10 @@ async function renderUpcomingList(options = {}) {
     const cacheFresh = !options.forceRefresh
         && AppState.timelineUpcomingCache?.builtAt
         && (Date.now() - AppState.timelineUpcomingCache.builtAt) < TIMELINE_CACHE_FRESH_MS
-        && AppState.timelineUpcomingCache.html;
+        && Array.isArray(AppState.timelineUpcomingCache.items);
 
     if (cacheFresh) {
-        container.className = 'tvst-episode-list';
-        container.innerHTML = AppState.timelineUpcomingCache.html;
+        paintUpcomingSeriesView(AppState.timelineUpcomingCache.items, container);
         requestAnimationFrame(() => setScrollTop(0, 'auto'));
         void (async () => {
             const didReopen = await reopenPromise;
@@ -3724,18 +4016,53 @@ async function rebuildUpcomingTimeline(upcomingShows, container) {
     const upcomingEpisodes = chunks.flat();
     upcomingEpisodes.sort((a, b) => (a.episode.air_date || '9999').localeCompare(b.episode.air_date || '9999'));
 
-    if (upcomingEpisodes.length === 0) {
+    const html = paintUpcomingSeriesView(upcomingEpisodes, container);
+    AppState.timelineUpcomingCache = { html, builtAt: Date.now(), items: upcomingEpisodes };
+
+    requestAnimationFrame(() => setScrollTop(0, 'auto'));
+}
+
+function paintUpcomingSeriesView(upcomingEpisodes, container) {
+    if (!container) return '';
+    if (!upcomingEpisodes || upcomingEpisodes.length === 0) {
         const emptyHtml = emptyState(
             'calendar',
             'Sin episodios programados',
             { subtitle: 'No hay próximos estrenos de episodios en tus series.' },
         );
         container.innerHTML = emptyHtml;
-        AppState.timelineUpcomingCache = { html: emptyHtml, builtAt: Date.now(), items: [] };
-        return;
+        return emptyHtml;
     }
 
-    const groupedUpcoming = upcomingEpisodes.reduce((acc, item) => {
+    const countsByDate = new Map();
+    for (const item of upcomingEpisodes) {
+        const key = String(item?.episode?.air_date || '').slice(0, 10);
+        if (key) countsByDate.set(key, (countsByDate.get(key) || 0) + 1);
+    }
+
+    const calEnabled = isUpcomingMiniCalendarEnabled();
+    const calHtml = calEnabled ? renderUpcomingMiniCalendarHtml('series', countsByDate, AppState.upcomingSeriesCal) : '';
+    const selectedDate = calEnabled ? AppState.upcomingSeriesCal?.selectedDate : null;
+    const visibleEpisodes = selectedDate
+        ? upcomingEpisodes.filter(item => String(item?.episode?.air_date || '').slice(0, 10) === selectedDate)
+        : upcomingEpisodes;
+
+    if (!visibleEpisodes.length) {
+        const html = calHtml + emptyState(
+            'calendar',
+            'Sin episodios este día',
+            {
+                subtitle: 'No hay episodios programados para la fecha seleccionada.',
+                actionLabel: 'Ver todos los estrenos',
+                actionOnClick: "selectUpcomingCalendarDate('series', null)",
+            },
+        );
+        container.className = 'tvst-episode-list';
+        container.innerHTML = html;
+        return html;
+    }
+
+    const groupedUpcoming = visibleEpisodes.reduce((acc, item) => {
         const label = formatUpcomingDateLabel(item.episode.air_date);
         if (!acc[label]) acc[label] = [];
         acc[label].push(item);
@@ -3754,7 +4081,7 @@ async function rebuildUpcomingTimeline(upcomingShows, container) {
     });
 
     container.className = 'tvst-episode-list';
-    const html = dayKeys.map(label => `
+    const html = calHtml + dayKeys.map(label => `
         <div class="tvst-day-capsule-wrap"><span class="tvst-day-capsule">${label}</span></div>
         ${groupedUpcoming[label].map(({ show, episode, airedEpisodes }) => createEpisodeCardMarkup({
             show,
@@ -3766,9 +4093,7 @@ async function rebuildUpcomingTimeline(upcomingShows, container) {
         })).join('')}
     `).join('');
     container.innerHTML = html;
-    AppState.timelineUpcomingCache = { html, builtAt: Date.now(), items: upcomingEpisodes };
-
-    requestAnimationFrame(() => setScrollTop(0, 'auto'));
+    return html;
 }
 
 function invalidateTimelineCaches() {
@@ -5548,7 +5873,15 @@ function renderDetailInfo(item) {
             <h3>Descripción</h3>
             <p class="tvst-info-overview">${escapeHtml(overview)}</p>
             ${item?.generos?.length ? `<p class="tvst-info-genres">${escapeHtml(item.generos.slice(0, 4).join(' · '))}</p>` : ''}
+            ${item?.tipo === 'movie' && item?.fecha_estreno ? (() => {
+                const parsedRelease = parseReleaseDate(String(item.fecha_estreno).slice(0, 10));
+                const formattedRelease = parsedRelease
+                    ? parsedRelease.toLocaleDateString('es-ES', { day: 'numeric', month: 'long', year: 'numeric' })
+                    : String(item.fecha_estreno).slice(0, 10);
+                return `<p class="tvst-info-genres">Estreno (${escapeHtml(getPreferredProviderCountry())}): ${escapeHtml(formattedRelease)}</p>`;
+            })() : ''}
         </div>
+        ${renderDetailTrailerSection(item)}
         ${providers.length ? `
             <div class="tvst-info-section">
                 <h3>Dónde ver (${escapeHtml(getPreferredProviderCountry())})</h3>
@@ -5613,6 +5946,106 @@ function renderDetailInfo(item) {
             </div>
         </div>
     `;
+}
+
+const SAFE_YOUTUBE_KEY_RE = /^[A-Za-z0-9_-]{6,20}$/;
+
+function getValidItemVideos(item) {
+    const raw = Array.isArray(item?.videos) ? item.videos : [];
+    return raw.filter(v => v && SAFE_YOUTUBE_KEY_RE.test(String(v.key || '')));
+}
+
+function renderDetailTrailerSection(item) {
+    if (!areTrailersEnabled()) return '';
+    const videos = getValidItemVideos(item);
+    if (!videos.length) return '';
+
+    const activeKey = AppState.activeTrailerKey && videos.some(v => v.key === AppState.activeTrailerKey)
+        ? AppState.activeTrailerKey
+        : null;
+    const displayVideo = activeKey
+        ? videos.find(v => v.key === activeKey)
+        : videos[0];
+
+    const safeKey = displayVideo.key;
+    const typeLabelMap = { Trailer: 'Tráiler', Teaser: 'Teaser', Clip: 'Clip', Featurette: 'Extra' };
+    const typeLabel = typeLabelMap[displayVideo.type] || 'Vídeo';
+    const badgeText = displayVideo.lang ? `${typeLabel} · ${displayVideo.lang}` : typeLabel;
+    const thumbUrl = safeUrl(`https://i.ytimg.com/vi/${safeKey}/hqdefault.jpg`) || safeUrl(item.backdrop || item.portada);
+    const youtubeWatchUrl = `https://www.youtube.com/watch?v=${encodeURIComponent(safeKey)}`;
+
+    const playerHtml = activeKey ? `
+        <div class="tvst-trailer-frame-wrap">
+            <iframe
+                src="https://www.youtube-nocookie.com/embed/${encodeURIComponent(safeKey)}?autoplay=1&rel=0"
+                title="${escapeHtml(displayVideo.name || 'Tráiler')}"
+                allow="autoplay; encrypted-media; picture-in-picture"
+                allowfullscreen
+                loading="lazy"></iframe>
+        </div>
+        <div class="tvst-trailer-controls">
+            <button type="button" class="tvst-trailer-btn-sec" onclick="stopDetailTrailer()">Cerrar reproductor</button>
+            <a class="tvst-trailer-ext-link" href="${escapeHtml(youtubeWatchUrl)}" target="_blank" rel="noopener noreferrer">Abrir en YouTube ↗</a>
+        </div>
+    ` : `
+        <button type="button" class="tvst-trailer-preview" onclick="playDetailTrailer('${escapeHtml(safeKey)}')" aria-label="Reproducir tráiler">
+            ${thumbUrl ? `<img class="tvst-trailer-thumb" src="${escapeHtml(thumbUrl)}" alt="${escapeHtml(displayVideo.name || 'Tráiler')}" loading="lazy">` : ''}
+            <div class="tvst-trailer-scrim"></div>
+            <span class="tvst-trailer-play-circle" aria-hidden="true">
+                <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+            </span>
+            <div class="tvst-trailer-caption">
+                <span class="tvst-trailer-type">${escapeHtml(badgeText)}</span>
+                <span class="tvst-trailer-name">${escapeHtml(displayVideo.name || 'Ver tráiler')}</span>
+            </div>
+        </button>
+    `;
+
+    const chipsHtml = videos.length > 1 ? `
+        <div class="tvst-trailer-chips">
+            ${videos.map(v => {
+                const isSelected = activeKey === v.key || (!activeKey && v.key === safeKey);
+                const label = v.lang ? `${v.type === 'Trailer' ? 'Tráiler' : v.type} (${v.lang})` : (v.name || v.type);
+                return `<button type="button" class="tvst-trailer-chip${isSelected ? ' is-active' : ''}" onclick="playDetailTrailer('${escapeHtml(v.key)}')">${escapeHtml(label)}</button>`;
+            }).join('')}
+        </div>
+    ` : '';
+
+    return `
+        <div id="detail-trailer-section" class="tvst-info-section">
+            <h3>Tráiler</h3>
+            ${playerHtml}
+            ${chipsHtml}
+        </div>
+    `;
+}
+
+function playDetailTrailer(key) {
+    const safeKey = String(key || '');
+    if (!SAFE_YOUTUBE_KEY_RE.test(safeKey) || !AppState.selectedItem) return;
+    AppState.activeTrailerKey = safeKey;
+    renderDetailInfo(AppState.selectedItem);
+}
+
+function stopDetailTrailer() {
+    AppState.activeTrailerKey = null;
+    if (AppState.selectedItem) {
+        renderDetailInfo(AppState.selectedItem);
+    }
+}
+
+function jumpToDetailTrailer() {
+    if (!areTrailersEnabled()) return;
+    const item = AppState.selectedItem;
+    if (!item) return;
+    const videos = getValidItemVideos(item);
+    if (!videos.length) return;
+    switchDetailTab('info');
+    AppState.activeTrailerKey = videos[0].key;
+    renderDetailInfo(item);
+    requestAnimationFrame(() => {
+        document.getElementById('detail-trailer-section')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
 }
 
 function handleCastImgError(img) {
@@ -5763,10 +6196,32 @@ function updatePreference(key, value) {
             window.clearWatchProvidersCache();
         }
         failedProviderFetchKeys.clear();
-        AppState.movies.forEach((m) => { delete m.watch_providers; });
+        attemptedMovieReleaseSyncKeys.clear();
+        AppState.movies.forEach((m) => {
+            delete m.watch_providers;
+            delete m.release_date_country;
+        });
         AppState.shows.forEach((s) => { delete s.watch_providers; });
         if (typeof refreshProvidersInBackground === 'function') {
             setTimeout(() => { void refreshProvidersInBackground(); }, 50);
+        }
+        setTimeout(() => { void ensureUpcomingMovieReleaseDates(); }, 60);
+    } else if (key === 'showTrailers') {
+        if (!next.showTrailers) {
+            AppState.activeTrailerKey = null;
+        }
+        if (AppState.selectedItem) {
+            updateDetailHero(AppState.selectedItem);
+            renderDetailInfo(AppState.selectedItem);
+        }
+    } else if (key === 'showUpcomingMiniCalendar') {
+        if (!next.showUpcomingMiniCalendar) {
+            AppState.upcomingSeriesCal.selectedDate = null;
+            AppState.upcomingMoviesCal.selectedDate = null;
+        }
+        rerenderUpcomingByKind('movies');
+        if (AppState.timelineUpcomingCache?.builtAt > 0 || (AppState.currentTab === 'series' && AppState.seriesSubTab === 'upcoming')) {
+            rerenderUpcomingByKind('series');
         }
     }
 
@@ -5911,6 +6366,18 @@ function renderSettings() {
                     prefs.showMoviePosterRatings,
                     'Nota TMDB en pósters',
                     'Muestra la puntuación de TMDB sobre cada póster en Películas.',
+                )}
+                ${renderSwitch(
+                    'showTrailers',
+                    prefs.showTrailers,
+                    'Tráiler en la ficha',
+                    'Muestra el botón y reproductor de tráiler dentro de cada ficha.',
+                )}
+                ${renderSwitch(
+                    'showUpcomingMiniCalendar',
+                    prefs.showUpcomingMiniCalendar,
+                    'Minicalendario en Próximamente',
+                    'Muestra la vista semanal interactiva en Series y Películas.',
                 )}
             </div>
         </div>
@@ -7141,6 +7608,7 @@ function mergeDetailItem(existingItem, freshDetails) {
             ...(freshDetails.credits || {}),
         },
         recommendations: freshDetails.recommendations || existingItem.recommendations || [],
+        videos: Array.isArray(freshDetails.videos) ? freshDetails.videos : (Array.isArray(existingItem.videos) ? existingItem.videos : []),
     };
 }
 
@@ -7447,6 +7915,12 @@ function updateDetailHero(item) {
     updateDetailHeroFavorite(item);
     updateDetailAddBar(item);
     updateDetailHeroActions(item);
+
+    const heroTrailerBtn = document.getElementById('modal-hero-trailer-btn');
+    if (heroTrailerBtn) {
+        const hasVideos = areTrailersEnabled() && getValidItemVideos(item).length > 0;
+        heroTrailerBtn.classList.toggle('hidden', !hasVideos);
+    }
 }
 
 const DETAIL_HERO_ACTION_ICONS = {
@@ -7782,6 +8256,7 @@ async function openDetail(type, id_tmdb) {
     modal.classList.remove('hidden');
     document.getElementById('modal-actions')?.classList.add('hidden');
     AppState.detailCriticaEditing = false;
+    AppState.activeTrailerKey = null;
 
     showLoading(true);
 
@@ -7794,15 +8269,24 @@ async function openDetail(type, id_tmdb) {
         const castMissingIds = Array.isArray(item?.credits?.cast)
             && item.credits.cast.length > 0
             && !item.credits.cast.some(p => Number(p.id) > 0);
+        const currentCountry = getPreferredProviderCountry();
         const needsFreshDetails = !item?.overview || !item?.credits?.cast?.length || castMissingIds || !item?.recommendations?.length || !item?.backdrop;
         const needsProviders = !item?.watch_providers?.length;
+        const needsVideos = areTrailersEnabled() && !Array.isArray(item?.videos);
+        const needsReleaseDate = type === 'movie' && Boolean(libraryItem) && libraryItem.release_date_country !== currentCountry;
 
-        const [fresh, watchProviders] = await Promise.all([
+        const [fresh, watchProviders, fetchedVideos, fetchedRelease] = await Promise.all([
             needsFreshDetails
                 ? (type === 'movie' ? getMovieDetails(id_tmdb) : getTVDetails(id_tmdb))
                 : Promise.resolve(null),
             !needsFreshDetails && needsProviders && typeof window.getWatchProviders === 'function'
                 ? window.getWatchProviders(type === 'movie' ? 'movie' : 'tv', id_tmdb)
+                : Promise.resolve(null),
+            !needsFreshDetails && needsVideos && typeof window.getTitleVideos === 'function'
+                ? window.getTitleVideos(type === 'movie' ? 'movie' : 'tv', id_tmdb)
+                : Promise.resolve(null),
+            !needsFreshDetails && needsReleaseDate && typeof window.getMovieRegionalReleaseDate === 'function'
+                ? window.getMovieRegionalReleaseDate(id_tmdb, currentCountry)
                 : Promise.resolve(null),
         ]);
 
@@ -7819,6 +8303,26 @@ async function openDetail(type, id_tmdb) {
         if (watchProviders?.length) {
             item.watch_providers = watchProviders;
             if (libraryItem) libraryItem.watch_providers = watchProviders;
+        }
+        if (Array.isArray(fetchedVideos)) {
+            item.videos = fetchedVideos;
+            if (libraryItem) libraryItem.videos = fetchedVideos;
+        }
+        if (fetchedRelease && type === 'movie') {
+            let releaseMetaChanged = false;
+            if (fetchedRelease.fecha_estreno && fetchedRelease.fecha_estreno !== item.fecha_estreno) {
+                item.fecha_estreno = fetchedRelease.fecha_estreno;
+                if (libraryItem) libraryItem.fecha_estreno = fetchedRelease.fecha_estreno;
+                releaseMetaChanged = true;
+            }
+            if (item.release_date_country !== currentCountry) {
+                item.release_date_country = currentCountry;
+                if (libraryItem) libraryItem.release_date_country = currentCountry;
+                releaseMetaChanged = true;
+            }
+            if (releaseMetaChanged && libraryItem) {
+                saveLocalData();
+            }
         }
 
         if (type === 'tv' && libraryItem) {
@@ -7876,6 +8380,9 @@ function closeModal() {
     document.querySelector('.tvst-modal-scroll')?.classList.remove('has-add-bar');
     closeDetailMenu();
     AppState.detailCriticaEditing = false;
+    AppState.activeTrailerKey = null;
+    const activeTrailerFrame = document.querySelector('#detail-info-panel .tvst-trailer-frame-wrap');
+    if (activeTrailerFrame) activeTrailerFrame.remove();
     AppState.selectedItem = null;
     if (AppState.currentTab === 'explore') {
         void renderExplore();
@@ -8521,5 +9028,12 @@ window.clearTmdbCachesFromSettings = clearTmdbCachesFromSettings;
 window.revealCurrentEpisodeSpoilers = revealCurrentEpisodeSpoilers;
 window.getPreferredProviderCountry = getPreferredProviderCountry;
 window.switchExploreTrendingTab = switchExploreTrendingTab;
+window.playDetailTrailer = playDetailTrailer;
+window.stopDetailTrailer = stopDetailTrailer;
+window.jumpToDetailTrailer = jumpToDetailTrailer;
+window.shiftUpcomingCalendarWeek = shiftUpcomingCalendarWeek;
+window.selectUpcomingCalendarDate = selectUpcomingCalendarDate;
+window.resetUpcomingCalendar = resetUpcomingCalendar;
+window.jumpToUpcomingCalendarDate = jumpToUpcomingCalendarDate;
 
 console.log('[App] app.js cargado');

@@ -21,8 +21,11 @@ const ALLOWED_TMDB_PATH_PATTERNS = [
     /^\/search\/(multi|movie|tv)$/,
     /^\/trending\/(all|movie|tv)\/(day|week)$/,
     /^\/movie\/\d+$/,
+    /^\/movie\/\d+\/videos$/,
+    /^\/movie\/\d+\/release_dates$/,
     /^\/movie\/\d+\/watch\/providers$/,
     /^\/tv\/\d+$/,
+    /^\/tv\/\d+\/videos$/,
     /^\/tv\/\d+\/season\/\d+$/,
     /^\/tv\/\d+\/watch\/providers$/,
     /^\/person\/\d+$/,
@@ -37,9 +40,11 @@ const ALLOWED_TMDB_QUERY_PARAMS = new Set([
     'append_to_response',
     'external_source',
     'language',
+    'include_video_language',
+    'region',
 ]);
 
-const ALLOWED_APPEND_TOKEN_RE = /^(credits|recommendations|watch\/providers|season\/\d{1,3})$/;
+const ALLOWED_APPEND_TOKEN_RE = /^(credits|recommendations|videos|watch\/providers|release_dates|season\/\d{1,3})$/;
 const TMDB_CACHE_MAX_ENTRIES = 600;
 const TMDB_UPSTREAM_TIMEOUT_MS = 12000;
 const tmdbResponseCache = new Map();

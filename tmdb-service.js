@@ -49,6 +49,8 @@ const movieDetailsCache = new Map();
 const movieFilterMetaCache = new Map();
 const tvDetailsCache = new Map();
 const watchProvidersCache = new Map();
+const videosCache = new Map();
+const releaseDatesCache = new Map();
 const personDetailsCache = new Map();
 const personCreditsCache = new Map();
 const searchMultiCache = new Map();
@@ -359,7 +361,9 @@ async function fetchTMDB(endpoint, params = {}, options = {}) {
     if (!useProxy) {
         url.searchParams.append('api_key', getTmdbApiKey());
     }
-    url.searchParams.append('language', 'es-ES');
+    if (!Object.prototype.hasOwnProperty.call(params, 'language')) {
+        url.searchParams.append('language', 'es-ES');
+    }
     cleanEntries.forEach(([key, value]) => {
         url.searchParams.append(key, value);
     });
@@ -624,7 +628,8 @@ async function getMovieDetails(id) {
 
     try {
         const response = await fetchTMDB(`/movie/${id}`, {
-            append_to_response: 'credits,recommendations,watch/providers',
+            append_to_response: 'credits,recommendations,videos,watch/providers,release_dates',
+            include_video_language: 'es,en,null',
         });
 
         const normalized = normalizeMovieData(response);
@@ -636,6 +641,15 @@ async function getMovieDetails(id) {
         }, 300);
         if (Array.isArray(normalized.watch_providers)) {
             setTimedCache(watchProvidersCache, `${country}:movie:${id}`, normalized.watch_providers, 300);
+        }
+        if (Array.isArray(normalized.videos)) {
+            setTimedCache(videosCache, `movie:${id}`, normalized.videos, 300);
+        }
+        if (normalized.release_date_country) {
+            setTimedCache(releaseDatesCache, `${country}:${id}`, {
+                fecha_estreno: normalized.fecha_estreno || null,
+                country,
+            }, 300);
         }
         return normalized;
     } catch (error) {
@@ -703,7 +717,8 @@ async function getTVDetails(id) {
 
     try {
         const response = await fetchTMDB(`/tv/${id}`, {
-            append_to_response: 'credits,recommendations,watch/providers',
+            append_to_response: 'credits,recommendations,videos,watch/providers',
+            include_video_language: 'es,en,null',
         });
 
         const normalized = normalizeTVData(response);
@@ -716,6 +731,9 @@ async function getTVDetails(id) {
         });
         if (Array.isArray(normalized.watch_providers)) {
             setTimedCache(watchProvidersCache, `${country}:tv:${id}`, normalized.watch_providers, 300);
+        }
+        if (Array.isArray(normalized.videos)) {
+            setTimedCache(videosCache, `tv:${id}`, normalized.videos, 300);
         }
         return normalized;
     } catch (error) {
@@ -998,12 +1016,53 @@ function clearSeasonDetailsCache(tvId = null) {
 // NORMALIZACIÓN DE DATOS
 // ============================================
 
+function extractRegionalReleaseDate(releaseDatesPayload, fallbackDate = null, countryCode = getPreferredProviderCountryCode()) {
+    const normalizeDateStr = (val) => {
+        const match = String(val || '').match(/^(\d{4}-\d{2}-\d{2})/);
+        return match ? match[1] : null;
+    };
+
+    const target = String(countryCode || 'ES').trim().toUpperCase();
+    const results = Array.isArray(releaseDatesPayload?.results) ? releaseDatesPayload.results : [];
+    const countryBlock = results.find(r => String(r?.iso_3166_1 || '').trim().toUpperCase() === target);
+    const entries = Array.isArray(countryBlock?.release_dates) ? countryBlock.release_dates : [];
+
+    // Orden de prioridad alineado con TMDB: cines (3), limitada (2), digital (4), TV (6), premiere (1), físico (5)
+    const typePriority = [3, 2, 4, 6, 1, 5];
+    for (const type of typePriority) {
+        const dates = entries
+            .filter(entry => Number(entry?.type) === type)
+            .map(entry => normalizeDateStr(entry?.release_date))
+            .filter(Boolean)
+            .sort();
+        if (dates.length) {
+            return dates[0];
+        }
+    }
+
+    const anyDates = entries
+        .map(entry => normalizeDateStr(entry?.release_date))
+        .filter(Boolean)
+        .sort();
+    if (anyDates.length) {
+        return anyDates[0];
+    }
+
+    return normalizeDateStr(fallbackDate);
+}
+
 /**
  * Normaliza los datos de una película al formato de la app
  * @param {Object} data - Datos crudos de TMDB
  * @returns {Object} Datos normalizados
  */
 function normalizeMovieData(data) {
+    const country = getPreferredProviderCountryCode();
+    const fallbackDate = data.release_date ? String(data.release_date).slice(0, 10) : null;
+    const regionalDate = data?.release_dates
+        ? extractRegionalReleaseDate(data.release_dates, fallbackDate, country)
+        : fallbackDate;
+
     const normalized = {
         id_tmdb: data.id,
         titulo: data.title,
@@ -1013,7 +1072,8 @@ function normalizeMovieData(data) {
         puntuacion: 0,
         estado: 'pending',
         tipo: 'movie',
-        fecha_estreno: data.release_date,
+        fecha_estreno: regionalDate,
+        ...(data?.release_dates ? { release_date_country: country } : {}),
         generos: data.genres?.map(g => g.name) || [],
         overview: data.overview,
         vote_average: data.vote_average,
@@ -1035,6 +1095,9 @@ function normalizeMovieData(data) {
     };
     if (data?.['watch/providers']) {
         normalized.watch_providers = extractWatchProvidersFromResponse(data['watch/providers']);
+    }
+    if (data?.videos) {
+        normalized.videos = extractVideosFromResponse(data.videos);
     }
     return normalized;
 }
@@ -1091,6 +1154,9 @@ function normalizeTVData(data) {
     };
     if (data?.['watch/providers']) {
         normalized.watch_providers = extractWatchProvidersFromResponse(data['watch/providers']);
+    }
+    if (data?.videos) {
+        normalized.videos = extractVideosFromResponse(data.videos);
     }
     return normalized;
 }
@@ -1159,10 +1225,111 @@ async function getWatchProviders(type, id) {
     }
 }
 
+async function getMovieRegionalReleaseDate(id, countryCode = getPreferredProviderCountryCode()) {
+    const country = String(countryCode || getPreferredProviderCountryCode() || 'ES').trim().toUpperCase();
+    const safeId = Number(id);
+    if (!Number.isFinite(safeId) || safeId <= 0) {
+        return { fecha_estreno: null, country };
+    }
+
+    const detailCached = getTimedCache(movieDetailsCache, `${country}:${safeId}`, SESSION_DETAIL_TTL_MS);
+    if (detailCached?.release_date_country === country) {
+        return { fecha_estreno: detailCached.fecha_estreno || null, country };
+    }
+
+    const cacheKey = `${country}:${safeId}`;
+    const cached = getTimedCache(releaseDatesCache, cacheKey, SESSION_DETAIL_TTL_MS);
+    if (cached) return cached;
+
+    try {
+        const response = await fetchTMDB(`/movie/${safeId}/release_dates`);
+        const fechaEstreno = extractRegionalReleaseDate(response, null, country);
+        const result = { fecha_estreno: fechaEstreno, country };
+        setTimedCache(releaseDatesCache, cacheKey, result, 300);
+        return result;
+    } catch (error) {
+        if (error?.status === 404) {
+            const empty = { fecha_estreno: null, country };
+            setTimedCache(releaseDatesCache, cacheKey, empty, 300);
+            return empty;
+        }
+        console.warn('[TMDB] Error obteniendo fechas de estreno regionales:', error);
+        throw error;
+    }
+}
+
 function clearWatchProvidersCache() {
     watchProvidersCache.clear();
+    releaseDatesCache.clear();
     movieDetailsCache.clear();
     tvDetailsCache.clear();
+}
+
+const YOUTUBE_KEY_RE = /^[A-Za-z0-9_-]{6,20}$/;
+
+function extractVideosFromResponse(videosPayload) {
+    const rawList = Array.isArray(videosPayload?.results) ? videosPayload.results : [];
+    const typeRank = { Trailer: 0, Teaser: 1, Clip: 2, Featurette: 3 };
+    const langRank = (lang) => {
+        const code = String(lang || '').toLowerCase();
+        if (code === 'es') return 0;
+        if (code === 'en') return 1;
+        return 2;
+    };
+
+    const valid = rawList.filter(v =>
+        String(v?.site || '').toLowerCase() === 'youtube'
+        && YOUTUBE_KEY_RE.test(String(v?.key || ''))
+        && Object.prototype.hasOwnProperty.call(typeRank, v?.type),
+    );
+
+    valid.sort((a, b) => {
+        const typeDiff = (typeRank[a.type] ?? 9) - (typeRank[b.type] ?? 9);
+        if (typeDiff !== 0) return typeDiff;
+        const langDiff = langRank(a.iso_639_1) - langRank(b.iso_639_1);
+        if (langDiff !== 0) return langDiff;
+        const officialDiff = Number(Boolean(b.official)) - Number(Boolean(a.official));
+        if (officialDiff !== 0) return officialDiff;
+        return String(b.published_at || '').localeCompare(String(a.published_at || ''));
+    });
+
+    const seenKeys = new Set();
+    const out = [];
+    for (const v of valid) {
+        const key = String(v.key);
+        if (seenKeys.has(key)) continue;
+        seenKeys.add(key);
+        out.push({
+            key,
+            name: String(v.name || 'Tráiler').trim(),
+            type: v.type,
+            official: Boolean(v.official),
+            lang: String(v.iso_639_1 || '').toUpperCase(),
+        });
+        if (out.length >= 4) break;
+    }
+    return out;
+}
+
+async function getTitleVideos(tipo, id) {
+    const mediaType = tipo === 'movie' ? 'movie' : 'tv';
+    const safeId = Number(id);
+    if (!Number.isFinite(safeId) || safeId <= 0) return [];
+    const cacheKey = `${mediaType}:${safeId}`;
+    const cached = getTimedCache(videosCache, cacheKey, SESSION_DETAIL_TTL_MS);
+    if (cached) return cached;
+
+    try {
+        const response = await fetchTMDB(`/${mediaType}/${safeId}/videos`, {
+            include_video_language: 'es,en,null',
+        });
+        const videos = extractVideosFromResponse(response);
+        setTimedCache(videosCache, cacheKey, videos, 300);
+        return videos;
+    } catch (error) {
+        console.warn('[TMDB] Error obteniendo vídeos:', error);
+        return [];
+    }
 }
 
 /**
@@ -1376,7 +1543,10 @@ window.TMDBService = {
     normalizeTVData,
     normalizeSearchResult,
     getWatchProviders,
+    getMovieRegionalReleaseDate,
+    extractRegionalReleaseDate,
     clearWatchProvidersCache,
+    getTitleVideos,
     getPersonDetails,
     getPersonCredits,
     cancelSearchDebounce,
@@ -1403,7 +1573,10 @@ window.normalizeMovieData = normalizeMovieData;
 window.normalizeTVData = normalizeTVData;
 window.normalizeSearchResult = normalizeSearchResult;
 window.getWatchProviders = getWatchProviders;
+window.getMovieRegionalReleaseDate = getMovieRegionalReleaseDate;
+window.extractRegionalReleaseDate = extractRegionalReleaseDate;
 window.clearWatchProvidersCache = clearWatchProvidersCache;
+window.getTitleVideos = getTitleVideos;
 window.getPersonDetails = getPersonDetails;
 window.getPersonCredits = getPersonCredits;
 window.cancelSearchDebounce = cancelSearchDebounce;
