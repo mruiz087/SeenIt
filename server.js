@@ -108,6 +108,9 @@ function readLocalConfigFallbacks() {
         return {
             tmdbKey: extract('CONFIG_TMDB_API_KEY'),
             googleClientId: extract('CONFIG_GOOGLE_CLIENT_ID'),
+            adsClientId: extract('CONFIG_ADS_CLIENT_ID'),
+            adsSlotId: extract('CONFIG_ADS_SLOT_ID'),
+            amazonAffiliateTag: extract('CONFIG_AFFILIATE_AMAZON_TAG'),
         };
     } catch (_) {
         return {};
@@ -118,9 +121,17 @@ function getServerConfig() {
     const fallback = readLocalConfigFallbacks();
     const rawTmdb = String(process.env.TMDB_API_KEY || fallback.tmdbKey || '').trim();
     const rawGoogleClientId = String(process.env.GOOGLE_CLIENT_ID || fallback.googleClientId || '').trim();
+    const rawAdsClientId = String(process.env.ADS_CLIENT_ID || fallback.adsClientId || '').trim();
+    const rawAdsSlotId = String(process.env.ADS_SLOT_ID || fallback.adsSlotId || '').trim();
+    const rawAmazonTag = String(process.env.AFFILIATE_AMAZON_TAG || fallback.amazonAffiliateTag || '').trim();
+
     const tmdbKey = rawTmdb && !rawTmdb.includes('tu_api_key') ? rawTmdb : '';
     const googleClientId = rawGoogleClientId && !rawGoogleClientId.includes('tu_client_id') ? rawGoogleClientId : '';
-    return { tmdbKey, googleClientId };
+    const adsClientId = rawAdsClientId && !rawAdsClientId.includes('pub-XXXX') ? rawAdsClientId : '';
+    const adsSlotId = rawAdsSlotId;
+    const amazonAffiliateTag = rawAmazonTag;
+
+    return { tmdbKey, googleClientId, adsClientId, adsSlotId, amazonAffiliateTag };
 }
 
 app.use((req, res, next) => {
@@ -154,13 +165,16 @@ app.use((req, res, next) => {
 });
 
 app.get('/config.js', (req, res) => {
-    const { tmdbKey, googleClientId } = getServerConfig();
+    const { tmdbKey, googleClientId, adsClientId, adsSlotId, amazonAffiliateTag } = getServerConfig();
     res.type('application/javascript; charset=utf-8');
     res.setHeader('Cache-Control', 'no-store');
     const payload = [
         'const CONFIG_TMDB_PROXY = true;',
         `const CONFIG_TMDB_CONFIGURED = ${JSON.stringify(Boolean(tmdbKey))};`,
         `const CONFIG_GOOGLE_CLIENT_ID = ${JSON.stringify(googleClientId)};`,
+        `const CONFIG_ADS_CLIENT_ID = ${JSON.stringify(adsClientId)};`,
+        `const CONFIG_ADS_SLOT_ID = ${JSON.stringify(adsSlotId)};`,
+        `const CONFIG_AFFILIATE_AMAZON_TAG = ${JSON.stringify(amazonAffiliateTag)};`,
     ].join('\n');
     return res.send(payload);
 });
@@ -268,6 +282,10 @@ app.use(express.static(ROOT_DIR, {
     index: 'index.html',
 }));
 
-app.listen(PORT, HOST, () => {
-    console.log(`[SeenIt] Servidor iniciado en http://${HOST}:${PORT}`);
-});
+if (require.main === module) {
+    app.listen(PORT, HOST, () => {
+        console.log(`[SeenIt] Servidor iniciado en http://${HOST}:${PORT}`);
+    });
+}
+
+module.exports = app;

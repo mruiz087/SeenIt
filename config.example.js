@@ -14,3 +14,8 @@
 const CONFIG_TMDB_API_KEY = 'tu_api_key_tmdb';
 const CONFIG_GOOGLE_CLIENT_ID = 'tu_client_id.apps.googleusercontent.com';
 const CONFIG_GOOGLE_API_KEY = 'tu_google_api_key'; // opcional
+
+// Publicidad y afiliación opcionales:
+const CONFIG_ADS_CLIENT_ID = ''; // ej. 'ca-pub-XXXXXXXXXXXXXXXX'
+const CONFIG_ADS_SLOT_ID = ''; // ej. '1234567890'
+const CONFIG_AFFILIATE_AMAZON_TAG = ''; // ej. 'tu_tag-21'

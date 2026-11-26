@@ -75,11 +75,27 @@ const AppState = {
     activeTrailerKey: null,
     lastCompletedReopenAt: 0,
     preferences: null,
+    gamification: null,
+    achievementsFilter: 'all',
+    achievementsCategory: 'all',
+    achievementsExpanded: false,
+    rewardsExpanded: false,
 };
 
 const VALID_START_TABS = new Set(['series', 'movies', 'explore', 'profile']);
 const VALID_INACTIVITY_DAYS = new Set([7, 14, 30, 60]);
 const VALID_PREV_EP_RULES = new Set(['ask', 'always', 'never']);
+const VALID_GAMIF_THEMES = new Set(['default', 'oled', 'cinema', 'neon', 'emerald', 'crimson', 'royal', 'solaris', 'platinum', 'imperial']);
+const VALID_POSTER_STYLES = new Set([
+    'default',
+    'glass',
+    'cinema_glow',
+    'matte_film',
+    'collector',
+    'holo_foil',
+    'legend',
+    'archive_gold',
+]);
 const PROVIDER_COUNTRIES = [
     { code: 'ES', label: 'España (ES)' },
     { code: 'MX', label: 'México (MX)' },
@@ -102,6 +118,10 @@ const DEFAULT_PREFERENCES = {
     mySubscriptions: [],
     showTrailers: true,
     showUpcomingMiniCalendar: true,
+    gamificationEnabled: true,
+    gamificationTheme: 'default',
+    posterStyle: 'default',
+    celebrationEffects: true,
     updatedAt: '',
 };
 
@@ -140,6 +160,12 @@ function normalizePreferences(raw = null) {
     const subs = Array.isArray(src.mySubscriptions)
         ? [...new Set(src.mySubscriptions.map(s => normalizeProviderName(String(s || '').replace(/\s*\(Con anuncios\)$/i, '').trim())).filter(Boolean))]
         : [];
+    const gamificationTheme = VALID_GAMIF_THEMES.has(src.gamificationTheme)
+        ? src.gamificationTheme
+        : DEFAULT_PREFERENCES.gamificationTheme;
+    const posterStyle = VALID_POSTER_STYLES.has(src.posterStyle)
+        ? src.posterStyle
+        : DEFAULT_PREFERENCES.posterStyle;
     return {
         startTab,
         spoilerFree: Boolean(src.spoilerFree),
@@ -152,6 +178,10 @@ function normalizePreferences(raw = null) {
         mySubscriptions: subs,
         showTrailers: src.showTrailers === undefined ? DEFAULT_PREFERENCES.showTrailers : Boolean(src.showTrailers),
         showUpcomingMiniCalendar: src.showUpcomingMiniCalendar === undefined ? DEFAULT_PREFERENCES.showUpcomingMiniCalendar : Boolean(src.showUpcomingMiniCalendar),
+        gamificationEnabled: src.gamificationEnabled === undefined ? DEFAULT_PREFERENCES.gamificationEnabled : Boolean(src.gamificationEnabled),
+        gamificationTheme,
+        posterStyle,
+        celebrationEffects: src.celebrationEffects === undefined ? DEFAULT_PREFERENCES.celebrationEffects : Boolean(src.celebrationEffects),
         updatedAt: typeof src.updatedAt === 'string' ? src.updatedAt : '',
     };
 }
@@ -189,6 +219,14 @@ function areTrailersEnabled() {
 
 function isUpcomingMiniCalendarEnabled() {
     return getPreferences().showUpcomingMiniCalendar !== false;
+}
+
+function isGamificationEnabled() {
+    return getPreferences().gamificationEnabled !== false;
+}
+
+function areCelebrationEffectsEnabled() {
+    return isGamificationEnabled() && getPreferences().celebrationEffects !== false;
 }
 
 function getInactivityDays() {
@@ -434,6 +472,7 @@ async function enterAppAfterDrive() {
     }
 
     switchTab(getValidStartTab());
+    applyGamificationAppearance();
     await renderCurrentView();
     scheduleSyncMobileChromeHeights();
     const idle = window.requestIdleCallback || ((cb) => setTimeout(cb, 800));
@@ -693,12 +732,15 @@ function clearLibraryState() {
     AppState.deletedListIds = [];
     AppState.deletedSelectorKeys = [];
     AppState.preferences = normalizePreferences();
+    AppState.gamification = normalizeGamificationState();
+    AppState.achievementsFilter = 'all';
     AppState.moviesPendingMySubsOnly = false;
     AppState.revealedSpoilerEpisodeKeys = {};
     AppState.selectedItem = null;
     AppState.selectedListId = null;
     AppState.selectorWinnerKey = null;
     invalidateTimelineCaches();
+    applyGamificationAppearance();
 }
 
 const LOCAL_IDB_NAME = 'seenit_local_db';
@@ -766,6 +808,9 @@ function applyParsedLocalData(data) {
     AppState.deletedListIds = normalizeDeletedListIds(data.deletedListIds);
     AppState.deletedSelectorKeys = normalizeDeletedSelectorKeys(data.deletedSelectorKeys);
     AppState.preferences = normalizePreferences(data.preferences);
+    AppState.gamification = normalizeGamificationState(data.gamification);
+    evaluateGamification({ silent: true, skipSave: true });
+    applyGamificationAppearance();
 }
 
 /**
@@ -913,6 +958,7 @@ function saveLocalDataImmediate() {
         deletedListIds: AppState.deletedListIds,
         deletedSelectorKeys: AppState.deletedSelectorKeys,
         preferences: getPreferences(),
+        gamification: getGamificationState(),
         lastModified: nowIso(),
     };
 
@@ -973,6 +1019,7 @@ function getStoredLastModified(userId = AppState.driveUserId) {
 
 function snapshotLibrary() {
     const prefs = getPreferences();
+    const gamif = getGamificationState();
     return {
         movies: AppState.movies.map(m => ({ ...m })),
         shows: AppState.shows.map(s => ({ ...s })),
@@ -988,6 +1035,7 @@ function snapshotLibrary() {
         deletedListIds: (AppState.deletedListIds || []).map(e => ({ ...e })),
         deletedSelectorKeys: (AppState.deletedSelectorKeys || []).map(e => ({ ...e })),
         preferences: { ...prefs, mySubscriptions: [...(prefs.mySubscriptions || [])] },
+        gamification: cloneGamificationState(gamif),
         lastModified: getStoredLastModified() || nowIso(),
     };
 }
@@ -1001,6 +1049,7 @@ function backupLibraryBeforeMerge(localSnapshot) {
         deletedIds: localSnapshot?.deletedIds || { movie: [], tv: [] },
         deletedListIds: localSnapshot?.deletedListIds || [],
         deletedSelectorKeys: localSnapshot?.deletedSelectorKeys || [],
+        gamification: localSnapshot?.gamification || normalizeGamificationState(),
         lastModified: localSnapshot?.lastModified || getStoredLastModified() || null,
         backedUpAt: nowIso(),
     };
@@ -1181,6 +1230,7 @@ function mergeLibraries(localLib, remoteLib) {
         deletedListIds,
         deletedSelectorKeys,
         preferences: mergePreferencesLww(localLib?.preferences, remoteLib?.preferences),
+        gamification: mergeGamificationState(localLib?.gamification, remoteLib?.gamification),
     };
 }
 
@@ -1204,6 +1254,9 @@ function applyLibrary(lib) {
     AppState.deletedListIds = normalizeDeletedListIds(lib.deletedListIds);
     AppState.deletedSelectorKeys = normalizeDeletedSelectorKeys(lib.deletedSelectorKeys);
     AppState.preferences = normalizePreferences(lib.preferences);
+    AppState.gamification = normalizeGamificationState(lib.gamification);
+    evaluateGamification({ silent: true, skipSave: true });
+    applyGamificationAppearance();
 }
 
 /**
@@ -1222,6 +1275,7 @@ function reconcileWithDriveData(remoteData, localSnapshot) {
         deletedListIds: normalizeDeletedListIds(remoteData?.deletedListIds),
         deletedSelectorKeys: normalizeDeletedSelectorKeys(remoteData?.deletedSelectorKeys),
         preferences: normalizePreferences(remoteData?.preferences),
+        gamification: normalizeGamificationState(remoteData?.gamification),
         lastModified: remoteData?.lastModified || null,
     };
     const remoteCount = libraryItemCount(remoteLib);
@@ -1288,6 +1342,7 @@ async function addMovie(movie) {
         clearItemTombstone('movie', normalized.id_tmdb);
         AppState.movies.push(normalized);
         saveLocalData();
+        evaluateGamification();
         syncToDrive();
         renderCurrentView();
         showToast('Película añadida', 'success');
@@ -1316,6 +1371,7 @@ async function addShow(show) {
         AppState.shows.push(normalized);
         invalidateTimelineCaches();
         saveLocalData();
+        evaluateGamification();
         syncToDrive();
         renderCurrentView();
         showToast('Serie añadida (Pendiente)', 'success');
@@ -1376,6 +1432,10 @@ function updateRating(type, id_tmdb, rating) {
         }
     }
     saveLocalData();
+    if (value > 0) {
+        recordGamificationRating(value);
+        evaluateGamification();
+    }
     // Persistencia inmediata en Drive (sin debounce) para no perder notas
     if (typeof isAuthenticated === 'function' && isAuthenticated()) {
         syncToDriveNow().catch((error) => {
@@ -1424,10 +1484,14 @@ async function updateStatus(type, id_tmdb, status) {
         }
     }
 
+    if (normalizedStatus === 'completed') {
+        recordGamificationCompletion(type, id_tmdb);
+    }
     if (type === 'tv') {
         invalidateTimelineCaches();
     }
     saveLocalData();
+    evaluateGamification();
     syncToDrive();
     renderFollowing();
 }
@@ -1561,7 +1625,11 @@ async function toggleEpisode(id_tmdb, episode) {
     await refreshShowStatus(show);
     touchUpdatedAt(show);
     invalidateTimelineCaches();
+    if (normalizeStatus(show.estado) === 'completed') {
+        recordGamificationCompletion('tv', show.id_tmdb);
+    }
     saveLocalData();
+    evaluateGamification();
     syncToDrive();
     if (AppState.selectedItem?.tipo === 'tv' && AppState.selectedItem.id_tmdb === id_tmdb) {
         AppState.selectedItem = { ...show, tipo: 'tv' };
@@ -1601,6 +1669,7 @@ function buildDrivePayload() {
         deletedListIds: AppState.deletedListIds,
         deletedSelectorKeys: AppState.deletedSelectorKeys,
         preferences: getPreferences(),
+        gamification: getGamificationState(),
         lastModified: nowIso(),
     };
 }
@@ -1833,7 +1902,10 @@ function switchMoviesSubTab(subTab) {
 }
 
 function switchProfileTab(tab) {
-    const nextTab = tab === 'movies' || tab === 'picker' ? tab : 'series';
+    let nextTab = tab === 'movies' || tab === 'picker' || tab === 'achievements' ? tab : 'series';
+    if (nextTab === 'achievements' && !isGamificationEnabled()) {
+        nextTab = 'series';
+    }
     AppState.currentProfileTab = nextTab;
 
     document.querySelectorAll('.tvst-profile-tab').forEach(btn => btn.classList.remove('is-active'));
@@ -1842,6 +1914,7 @@ function switchProfileTab(tab) {
     document.getElementById('profile-series-content')?.classList.toggle('hidden', nextTab !== 'series');
     document.getElementById('profile-movies-content')?.classList.toggle('hidden', nextTab !== 'movies');
     document.getElementById('profile-picker-content')?.classList.toggle('hidden', nextTab !== 'picker');
+    document.getElementById('profile-achievements-content')?.classList.toggle('hidden', nextTab !== 'achievements');
 
     Promise.resolve(renderProfileView()).finally(() => {
         scheduleSyncMobileChromeHeights();
@@ -1985,7 +2058,11 @@ async function toggleMovieWatched(id_tmdb) {
     const isCompleted = normalizeStatus(movie.estado) === 'completed';
     movie.estado = isCompleted ? 'pending' : 'completed';
     touchUpdatedAt(movie);
+    if (!isCompleted) {
+        recordGamificationCompletion('movie', id_tmdb);
+    }
     saveLocalData();
+    evaluateGamification();
     syncToDrive();
 
     if (AppState.selectedItem?.tipo === 'movie' && AppState.selectedItem.id_tmdb === id_tmdb) {
@@ -3211,6 +3288,9 @@ function recordEpisodesWatched(show, episodeIds) {
     episodeIds.forEach(id => {
         if (id) show.capitulos_vistos_fecha[id] = now;
     });
+    if (episodeIds.length > 0) {
+        recordGamificationEpisodeActivity(show, episodeIds.length);
+    }
 }
 
 function clearEpisodeWatchedRecord(show, episodeId) {
@@ -4372,17 +4452,33 @@ async function renderProfileView() {
 
     if (!seriesContainer || !moviesContainer) return;
 
-    const activeProfileTab = AppState.currentProfileTab === 'movies' || AppState.currentProfileTab === 'picker'
+    const gamifEnabled = isGamificationEnabled();
+    const achTabBtn = document.getElementById('profile-tab-achievements');
+    if (achTabBtn) achTabBtn.classList.toggle('hidden', !gamifEnabled);
+
+    let activeProfileTab = AppState.currentProfileTab === 'movies'
+        || AppState.currentProfileTab === 'picker'
+        || AppState.currentProfileTab === 'achievements'
         ? AppState.currentProfileTab
         : 'series';
+    if (activeProfileTab === 'achievements' && !gamifEnabled) {
+        activeProfileTab = 'series';
+        AppState.currentProfileTab = 'series';
+    }
     document.querySelectorAll('.tvst-profile-tab').forEach(btn => btn.classList.remove('is-active'));
     document.getElementById(`profile-tab-${activeProfileTab}`)?.classList.add('is-active');
     document.getElementById('profile-series-content')?.classList.toggle('hidden', activeProfileTab !== 'series');
     document.getElementById('profile-movies-content')?.classList.toggle('hidden', activeProfileTab !== 'movies');
     document.getElementById('profile-picker-content')?.classList.toggle('hidden', activeProfileTab !== 'picker');
+    document.getElementById('profile-achievements-content')?.classList.toggle('hidden', activeProfileTab !== 'achievements');
 
     if (activeProfileTab === 'picker') {
         renderProfilePicker();
+        return;
+    }
+
+    if (activeProfileTab === 'achievements') {
+        renderProfileAchievements();
         return;
     }
 
@@ -4426,6 +4522,7 @@ function addToSelector(rawItem, options = {}) {
     clearSelectorTombstone(normalized.tipo, normalized.id_tmdb);
     AppState.selectorItems = [normalized, ...(AppState.selectorItems || [])];
     saveLocalData();
+    evaluateGamification();
     syncToDrive();
     if (!options.silent) showToast(`Añadido al selector: ${normalized.titulo}`, 'success');
     if (AppState.currentTab === 'profile' && AppState.currentProfileTab === 'picker') {
@@ -4888,6 +4985,7 @@ function renderProfilePicker(options = {}) {
     renderSelectorSearchResults();
     renderSelectorSuggestions();
     renderSelectorPool(filteredItems);
+    applySelectorSkinClass();
 }
 
 function spinSelectorPicker() {
@@ -4900,7 +4998,9 @@ function spinSelectorPicker() {
 
     if (pool.length === 1) {
         const only = pool[0];
-        AppState.selectorWinnerKey = getSelectorItemKey(only.tipo, only.id_tmdb);
+        const onlyKey = getSelectorItemKey(only.tipo, only.id_tmdb);
+        AppState.selectorWinnerKey = onlyKey;
+        recordGamificationSelectorWin(onlyKey);
         renderProfilePicker({ pop: true });
         return;
     }
@@ -4925,6 +5025,7 @@ function spinSelectorPicker() {
         if (AppState.currentTab !== 'profile' || AppState.currentProfileTab !== 'picker') {
             AppState.selectorIsSpinning = false;
             AppState.selectorWinnerKey = finalKey;
+            recordGamificationSelectorWin(finalKey);
             return;
         }
         if (step < delays.length) {
@@ -4939,6 +5040,7 @@ function spinSelectorPicker() {
         }
         AppState.selectorIsSpinning = false;
         AppState.selectorWinnerKey = finalKey;
+        recordGamificationSelectorWin(finalKey);
         renderProfilePicker({ pop: true });
     };
 
@@ -4979,6 +5081,7 @@ function createList(name, tipo) {
     clearListTombstone(list.id);
     AppState.lists.push(list);
     saveLocalData();
+    evaluateGamification();
     syncToDrive();
     return list;
 }
@@ -5020,6 +5123,7 @@ function addItemToList(listId, id_tmdb) {
     if (!list.coverId) list.coverId = id;
     touchUpdatedAt(list);
     saveLocalData();
+    evaluateGamification();
     syncToDrive();
     return true;
 }
@@ -5180,6 +5284,7 @@ function toggleFavorite(tipo, id_tmdb) {
         updateDetailHeroFavorite(AppState.selectedItem);
     }
     saveLocalData();
+    evaluateGamification();
     syncToDrive();
     renderProfileFavorites();
     if (AppState.currentTab === 'profile') {
@@ -6822,6 +6927,9 @@ function updateCritica(type, id_tmdb, text) {
         touchUpdatedAt(show);
     }
     saveLocalData();
+    if (value.trim()) {
+        evaluateGamification();
+    }
     syncToDrive();
 }
 
@@ -6926,6 +7034,24 @@ function updatePreference(key, value) {
         rerenderUpcomingByKind('movies');
         if (AppState.timelineUpcomingCache?.builtAt > 0 || (AppState.currentTab === 'series' && AppState.seriesSubTab === 'upcoming')) {
             rerenderUpcomingByKind('series');
+        }
+    } else if (key === 'gamificationEnabled') {
+        if (next.gamificationEnabled) {
+            evaluateGamification({ silent: true });
+        } else {
+            clearGamificationToastQueue();
+            if (AppState.currentProfileTab === 'achievements') {
+                AppState.currentProfileTab = 'series';
+            }
+        }
+        applyGamificationAppearance();
+        if (AppState.currentTab === 'profile') {
+            void renderProfileView();
+        }
+    } else if (key === 'gamificationTheme' || key === 'posterStyle' || key === 'celebrationEffects') {
+        applyGamificationAppearance();
+        if (AppState.currentTab === 'profile' && AppState.currentProfileTab === 'achievements') {
+            renderProfileAchievements();
         }
     }
 
@@ -7111,6 +7237,27 @@ function renderSettings() {
                         }).join('')}
                     </div>
                 </div>
+            </div>
+        </div>
+
+        <div class="tvst-section-card">
+            <h3 class="tvst-settings-card-title">Gamificación y recompensas</h3>
+            <div class="tvst-settings-group-list">
+                ${renderSwitch(
+                    'gamificationEnabled',
+                    prefs.gamificationEnabled,
+                    'Activar gamificación',
+                    'Niveles de cinéfilo, logros, avisos al desbloquearlos y recompensas visuales.',
+                )}
+                ${prefs.gamificationEnabled ? `
+                    ${renderSwitch(
+                        'celebrationEffects',
+                        prefs.celebrationEffects,
+                        'Efectos de celebración',
+                        'Resplandor sutil al desbloquear logros o sortear un título en el Selector.',
+                    )}
+                    ${renderSettingsGamificationRewardsRows()}
+                ` : ''}
             </div>
         </div>
 
@@ -8117,7 +8264,11 @@ async function toggleEpisodeAndUpdateSeason(id_tmdb, episode, seasonNumber, seas
     await refreshShowStatus(show);
     touchUpdatedAt(show);
     invalidateTimelineCaches();
+    if (normalizeStatus(show.estado) === 'completed') {
+        recordGamificationCompletion('tv', show.id_tmdb);
+    }
     saveLocalData();
+    evaluateGamification();
     syncToDrive();
 
     if (AppState.selectedItem?.tipo === 'tv' && AppState.selectedItem.id_tmdb === id_tmdb) {
@@ -8188,7 +8339,11 @@ async function toggleSeasonWatched(id_tmdb, seasonNumber) {
     await refreshShowStatus(show);
     touchUpdatedAt(show);
     invalidateTimelineCaches();
+    if (normalizeStatus(show.estado) === 'completed') {
+        recordGamificationCompletion('tv', show.id_tmdb);
+    }
     saveLocalData();
+    evaluateGamification();
     syncToDrive();
 
     if (AppState.selectedItem?.tipo === 'tv' && AppState.selectedItem.id_tmdb === id_tmdb) {
@@ -8204,6 +8359,7 @@ async function persistShowEpisodeChange(show) {
     touchUpdatedAt(show);
     invalidateTimelineCaches();
     saveLocalData();
+    evaluateGamification();
     syncToDrive();
     if (AppState.selectedItem?.tipo === 'tv' && AppState.selectedItem.id_tmdb === show.id_tmdb) {
         AppState.selectedItem = { ...show, tipo: 'tv' };
@@ -9359,6 +9515,7 @@ function exportData() {
         deletedListIds: AppState.deletedListIds,
         deletedSelectorKeys: AppState.deletedSelectorKeys,
         preferences: getPreferences(),
+        gamification: getGamificationState(),
         exportDate: new Date().toISOString(),
     };
     
@@ -9393,7 +9550,7 @@ function handleImport(event) {
         try {
             const data = JSON.parse(e.target.result);
 
-            if (data.movies || data.shows || data.lists || data.selectorItems || data.preferences) {
+            if (data.movies || data.shows || data.lists || data.selectorItems || data.preferences || data.gamification) {
                 closeListPicker();
                 closeListModal();
                 closeEpisodeModal();
@@ -9420,6 +9577,9 @@ function handleImport(event) {
                         window.clearWatchProvidersCache();
                     }
                 }
+                AppState.gamification = normalizeGamificationState(data.gamification);
+                evaluateGamification({ silent: true, skipSave: true });
+                applyGamificationAppearance();
                 invalidateTimelineCaches();
                 flushSaveLocalData();
                 saveLocalDataImmediate();
@@ -9468,6 +9628,10 @@ async function clearAllData() {
     AppState.lists = [];
     AppState.selectorItems = [];
     AppState.selectorWinnerKey = null;
+    AppState.gamification = normalizeGamificationState();
+    AppState.achievementsFilter = 'all';
+    clearGamificationToastQueue();
+    applyGamificationAppearance();
     AppState.selectedItem = null;
     AppState.selectedListId = null;
     AppState.selectedEpisode = null;
@@ -9632,6 +9796,2249 @@ function setupEventListeners() {
 }
 
 // ============================================
+// GAMIFICACIÓN (LOGROS, NIVELES Y RECOMPENSAS)
+// ============================================
+
+const GAMIFICATION_RANKS = [
+    {
+        minLevel: 1,
+        title: 'Espectador Casual',
+        frame: 'bronze',
+        animalId: 'cat',
+        animalName: 'Gato Curioso',
+        animalIcon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 10L4 4l5 3a7.5 7.5 0 016 0l5-3-1 6a7.5 7.5 0 01-7 10 7.5 7.5 0 01-7-10z"/><circle cx="9.5" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="14.5" cy="12" r="1" fill="currentColor" stroke="none"/><path d="M11 15h2l-1 1.2L11 15zM3 13h3M18 13h3M3.5 16l2.5-.5M20.5 16l-2.5-.5"/></svg>',
+    },
+    {
+        minLevel: 5,
+        title: 'Devorador de Palomitas',
+        frame: 'bronze',
+        animalId: 'fox',
+        animalName: 'Zorro Astuto',
+        animalIcon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4l4.5 3.5h7L20 4l-1.5 8L12 20 5.5 12 4 4z"/><path d="M8.5 11.5l1.5.7M15.5 11.5l-1.5.7"/><circle cx="12" cy="16.5" r="1" fill="currentColor" stroke="none"/><path d="M5.5 12l4 2.5M18.5 12l-4 2.5"/></svg>',
+    },
+    {
+        minLevel: 10,
+        title: 'Seriéfilo Nocturno',
+        frame: 'silver',
+        animalId: 'owl',
+        animalName: 'Búho Real',
+        animalIcon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 5l3.5 2.5a8 8 0 017 0L19 5l-.8 5.2A7 7 0 0112 20a7 7 0 01-6.2-9.8L5 5z"/><circle cx="9.2" cy="11.5" r="2.1"/><circle cx="14.8" cy="11.5" r="2.1"/><circle cx="9.2" cy="11.5" r="0.8" fill="currentColor" stroke="none"/><circle cx="14.8" cy="11.5" r="0.8" fill="currentColor" stroke="none"/><path d="M11 14.5l1 2 1-2z"/></svg>',
+    },
+    {
+        minLevel: 15,
+        title: 'Crítico de Butaca',
+        frame: 'silver',
+        animalId: 'falcon',
+        animalName: 'Halcón Cazador',
+        animalIcon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 19c1.5-6 4.5-12 10-14l4-1-1.5 2.5 4.5 1.5c.8 1.5.2 3.2-1.8 3.6l-1.8.4c.6 1.2.4 2.8-.8 3.8L12 14l-2 5H3z"/><path d="M12.5 8.5l2.5-.6"/><circle cx="13.8" cy="9.6" r="0.9" fill="currentColor" stroke="none"/></svg>',
+    },
+    {
+        minLevel: 20,
+        title: 'Cazador de Estrenos',
+        frame: 'gold',
+        animalId: 'wolf',
+        animalName: 'Lobo Alfa',
+        animalIcon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3l3.8 4.2h6.4L19 3l-.5 6.5 2.5 2.5-3 3L15.5 20h-7L6 15l-3-3 2.5-2.5L5 3z"/><path d="M8 10.5l2.2 1.2M16 10.5l-2.2 1.2M10.5 16.5h3l-1.5 1.8-1.5-1.8z"/></svg>',
+    },
+    {
+        minLevel: 30,
+        title: 'Cinéfilo de Culto',
+        frame: 'gold',
+        animalId: 'panther',
+        animalName: 'Pantera Negra',
+        animalIcon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 7.5L6 4l4 2.5h4L18 4l1.5 3.5L21 12l-2.5 5.5L15 20.5H9l-3.5-3L3 12l1.5-4.5z"/><path d="M7.5 10.5l3 1.3M16.5 10.5l-3 1.3M9 16.5l1.2-1.5h3.6l1.2 1.5M10 17.5v1.5M14 17.5v1.5"/></svg>',
+    },
+    {
+        minLevel: 40,
+        title: 'Maestro del Maratón',
+        frame: 'emerald',
+        animalId: 'bear',
+        animalName: 'Oso Grizzly',
+        animalIcon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 6a2.5 2.5 0 11-3.2 2.4A7.5 7.5 0 0112 5a7.5 7.5 0 018.2 3.4A2.5 2.5 0 1117 6"/><path d="M4.5 10.5C3.8 14.5 5.5 19.5 12 20.5c6.5-1 8.2-6 7.5-10"/><path d="M8 10.5l2 .8M16 10.5l-2 .8"/><path d="M9.5 15.5a2.5 2.5 0 015 0v1.5a2.5 2.5 0 01-5 0v-1.5z"/><path d="M11 14.5h2"/></svg>',
+    },
+    {
+        minLevel: 50,
+        title: 'Leyenda del Séptimo Arte',
+        frame: 'platinum',
+        animalId: 'tiger',
+        animalName: 'Tigre de Bengala',
+        animalIcon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 7l1.5-3.5 3.2 2a8.5 8.5 0 014.6 0l3.2-2L19 7l2 5.5-2.5 5.5-6.5 3-6.5-3L3 12.5 5 7z"/><path d="M12 5v2.5M9.5 5.5l.8 2M14.5 5.5l-.8 2M4.5 12l2.5.4M19.5 12l-2.5.4M7.5 10l2.5 1M16.5 10l-2.5 1M9.5 16.5l2.5-1.2 2.5 1.2M10.2 17.2v1.6M13.8 17.2v1.6"/></svg>',
+    },
+    {
+        minLevel: 60,
+        title: 'Cronista del Celuloide',
+        frame: 'crimson',
+        animalId: 'lion',
+        animalName: 'León Soberano',
+        animalIcon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l2.2 2.2 3-.6.8 3 2.8 1.3-.9 2.9 1.6 2.6-2.2 2.1.3 3-2.9.8L15 22l-3-1.2L9 22l-1.7-2.7-2.9-.8.3-3L2.5 13.4l1.6-2.6-.9-2.9L6 6.6l.8-3 3 .6L12 2z"/><path d="M8 10.5l2.2 1M16 10.5l-2.2 1M10.5 15.5h3l-1.5 1.5-1.5-1.5z"/></svg>',
+    },
+    {
+        minLevel: 75,
+        title: 'Oráculo de la Pantalla',
+        frame: 'prism',
+        animalId: 'shark',
+        animalName: 'Tiburón Blanco',
+        animalIcon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 15c2.5-3.5 5.5-5.5 9-6L12.5 3l3 5.5c3.5.8 5.8 3 6.5 5.5l-4.8 1.5 3.3 2c-2.5 1.6-6 2.3-9.5 2-3.2-.3-6-1.5-9-4.5z"/><circle cx="16.2" cy="11.5" r="0.9" fill="currentColor" stroke="none"/><path d="M11 12.5v2.5M13 12.8v2.2"/></svg>',
+    },
+    {
+        minLevel: 90,
+        title: 'Eterno de Filmoteca',
+        frame: 'celestial',
+        animalId: 'trex',
+        animalName: 'Tiranosaurio',
+        animalIcon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11l2-5.5L11 3h6.5a2.5 2.5 0 012.5 2.5V8l-6 .5v2l5 .5v2.5h-5.5l-2 4.5-3.5 3L5 19l1-4.5L4 11z"/><circle cx="14.5" cy="5.8" r="0.9" fill="currentColor" stroke="none"/><path d="M13.5 11v1.3M15.5 11v1.4M17.5 11v1.4"/></svg>',
+    },
+    {
+        minLevel: 100,
+        title: 'Inmortal de la Gran Pantalla',
+        frame: 'immortal',
+        animalId: 'dragon',
+        animalName: 'Dragón Inmortal',
+        animalIcon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3l3 4 3-3 3 3 3-4-1 5.5 3.5 2.5-2.5 3 2 3-4.5 2L12 21.5 7.5 19 3 17l2-3-2.5-3L6 8.5 6 3z"/><path d="M8 11.5l2.5 1.2M16 11.5l-2.5 1.2M9.5 16.5l2.5 1.5 2.5-1.5M10 17v2M14 17v2"/></svg>',
+    },
+];
+
+const GAMIFICATION_BADGE_ICONS = {
+    film: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 4v16M17 4v16M3 9h4M3 15h4M17 9h4M17 15h4"/></svg>',
+    tv: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="13" rx="2"/><path d="M8 3l4 3 4-3"/></svg>',
+    trophy: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M6 4h12v5a6 6 0 01-12 0V4z"/><path d="M6 6H4a2 2 0 00-2 2v1a3 3 0 003 3h1M18 6h2a2 2 0 012 2v1a3 3 0 01-3 3h-1"/><path d="M12 15v4M8 21h8"/></svg>',
+    flame: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2c1.5 3.2 4.5 5 4.5 9a4.5 4.5 0 11-9 0c0-2.1.8-4 2.2-5.4.2 1.6 1 2.7 2.3 3.4-.5-2-.3-4.6 0-7z"/></svg>',
+    clock: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>',
+    pen: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>',
+    star: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linejoin="round"><path d="M12 2.5l2.9 5.9 6.5.9-4.7 4.6 1.1 6.5L12 17.3l-5.8 3.1 1.1-6.5L2.6 9.3l6.5-.9L12 2.5z"/></svg>',
+    layers: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 12l10 5 10-5"/><path d="M2 17l10 5 10-5"/></svg>',
+    moon: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z"/></svg>',
+    dice: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="3"/><circle cx="9" cy="9" r="1" fill="currentColor" stroke="none"/><circle cx="15" cy="9" r="1" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1" fill="currentColor" stroke="none"/><circle cx="9" cy="15" r="1" fill="currentColor" stroke="none"/><circle cx="15" cy="15" r="1" fill="currentColor" stroke="none"/></svg>',
+    compass: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polygon points="15.5,8.5 13.5,13.5 8.5,15.5 10.5,10.5" fill="currentColor" stroke="none"/></svg>',
+    scale: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M5 21h14M4 7h16"/><path d="M4 7l-2 6h4l-2-6zM20 7l-2 6h4l-2-6z"/></svg>',
+    heart: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M20.8 5.6a5.2 5.2 0 00-7.4 0L12 7l-1.4-1.4a5.2 5.2 0 00-7.4 7.4l1.4 1.4L12 21l7.4-6.6 1.4-1.4a5.2 5.2 0 000-7.4z"/></svg>',
+    crown: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M3 18h18l-1.5-10-4.5 4-3-6-3 6-4.5-4L3 18z"/><path d="M5 21h14"/></svg>',
+    hourglass: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h12M6 21h12"/><path d="M7 3v3c0 2.5 5 4.5 5 6s-5 3.5-5 6v3M17 3v3c0 2.5-5 4.5-5 6s5 3.5 5 6v3"/></svg>',
+    bookmark: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h12a1 1 0 011 1v17l-7-4-7 4V4a1 1 0 011-1z"/></svg>',
+    coffee: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M17 8h1a4 4 0 110 8h-1"/><path d="M3 8h14v9a4 4 0 01-4 4H7a4 4 0 01-4-4V8z"/><path d="M6 2v3M10 2v3M14 2v3"/></svg>',
+    sparkles: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.6 4.4L18 9l-4.4 1.6L12 15l-1.6-4.4L6 9l4.4-1.6L12 3z"/><path d="M5 16l.8 2.2L8 19l-2.2.8L5 22l-.8-2.2L2 19l2.2-.8L5 16z"/></svg>',
+};
+
+const ACHIEVEMENTS_CATALOG = [
+    // ── CINE (23) ──
+    {
+        id: 'first_movie',
+        title: 'Primera sesión',
+        desc: 'Marca tu primera película como vista.',
+        category: 'movies',
+        categoryLabel: 'Cine',
+        icon: 'film',
+        xp: 30,
+        target: 1,
+        value: m => m.watchedMovies,
+    },
+    {
+        id: 'ten_movies',
+        title: 'Cinéfilo de finde',
+        desc: 'Completa 10 películas vistas.',
+        category: 'movies',
+        categoryLabel: 'Cine',
+        icon: 'film',
+        xp: 50,
+        target: 10,
+        value: m => m.watchedMovies,
+    },
+    {
+        id: 'twentyfive_movies',
+        title: 'Butaca fija',
+        desc: 'La fila 7, asiento 12 ya lleva tu nombre (25 pelis).',
+        category: 'movies',
+        categoryLabel: 'Cine',
+        icon: 'film',
+        xp: 70,
+        target: 25,
+        value: m => m.watchedMovies,
+    },
+    {
+        id: 'fifty_movies',
+        title: 'Sala llena',
+        desc: 'Completa 50 películas en tu historial.',
+        category: 'movies',
+        categoryLabel: 'Cine',
+        icon: 'trophy',
+        xp: 95,
+        target: 50,
+        value: m => m.watchedMovies,
+    },
+    {
+        id: 'hundred_movies',
+        title: 'Club del Siglo',
+        desc: 'Alcanza las 100 películas vistas.',
+        category: 'movies',
+        categoryLabel: 'Cine',
+        icon: 'trophy',
+        xp: 140,
+        target: 100,
+        value: m => m.watchedMovies,
+    },
+    {
+        id: 'twofifty_movies',
+        title: 'Filmoteca viva',
+        desc: 'Alcanza las 250 películas vistas.',
+        category: 'movies',
+        categoryLabel: 'Cine',
+        icon: 'crown',
+        xp: 220,
+        target: 250,
+        value: m => m.watchedMovies,
+    },
+    {
+        id: 'fivehundred_movies',
+        title: 'Archivo Nacional',
+        desc: 'Alcanza las 500 películas vistas.',
+        category: 'movies',
+        categoryLabel: 'Cine',
+        icon: 'crown',
+        xp: 340,
+        target: 500,
+        value: m => m.watchedMovies,
+    },
+    {
+        id: 'thousand_movies',
+        title: '¿Duermes entre créditos?',
+        desc: 'Alcanza las 1.000 películas vistas.',
+        category: 'movies',
+        categoryLabel: 'Cine',
+        icon: 'crown',
+        xp: 500,
+        target: 1000,
+        value: m => m.watchedMovies,
+    },
+    {
+        id: 'short_and_sweet',
+        title: 'Cortita y al pie',
+        desc: 'Ve una película de 85 minutos o menos. Ideal si tienes sueño.',
+        category: 'movies',
+        categoryLabel: 'Cine',
+        icon: 'clock',
+        xp: 40,
+        target: 1,
+        value: m => m.shortMoviesCount,
+    },
+    {
+        id: 'long_haul_cinema',
+        title: 'Metraje épico',
+        desc: 'Ve 5 películas de 150 minutos o más.',
+        category: 'movies',
+        categoryLabel: 'Cine',
+        icon: 'hourglass',
+        xp: 80,
+        target: 5,
+        value: m => m.longMoviesCount,
+    },
+    {
+        id: 'bladder_test',
+        title: 'Prueba de vejiga',
+        desc: 'Sobrevive a una película de 3 horas o más sin pausa.',
+        category: 'movies',
+        categoryLabel: 'Cine',
+        icon: 'hourglass',
+        xp: 75,
+        target: 1,
+        value: m => m.epicRuntimeMoviesCount,
+    },
+    {
+        id: 'classic_archaeologist',
+        title: 'Arqueólogo del cine',
+        desc: 'Ve 5 películas estrenadas antes de 1990.',
+        category: 'movies',
+        categoryLabel: 'Cine',
+        icon: 'clock',
+        xp: 65,
+        target: 5,
+        value: m => m.classicMoviesCount,
+    },
+    {
+        id: 'classic_curator',
+        title: 'Guardián del celuloide',
+        desc: 'Ve 20 películas estrenadas antes de 1990.',
+        category: 'movies',
+        categoryLabel: 'Cine',
+        icon: 'clock',
+        xp: 120,
+        target: 20,
+        value: m => m.classicMoviesCount,
+    },
+    {
+        id: 'golden_age',
+        title: 'Edad de Oro',
+        desc: 'Ve 3 clásicos estrenados antes de 1970.',
+        category: 'movies',
+        categoryLabel: 'Cine',
+        icon: 'film',
+        xp: 90,
+        target: 3,
+        value: m => m.goldenAgeMoviesCount,
+    },
+    {
+        id: 'black_and_white',
+        title: 'Cuando no había 4K',
+        desc: 'Ve una película anterior a 1960.',
+        category: 'movies',
+        categoryLabel: 'Cine',
+        icon: 'film',
+        xp: 70,
+        target: 1,
+        value: m => m.pre1960MoviesCount,
+    },
+    {
+        id: 'decade_traveler',
+        title: 'Viajero entre décadas',
+        desc: 'Ve películas estrenadas en 4 décadas distintas.',
+        category: 'movies',
+        categoryLabel: 'Cine',
+        icon: 'compass',
+        xp: 90,
+        target: 4,
+        value: m => m.movieDecadesCount,
+    },
+    {
+        id: 'six_decades',
+        title: 'Máquina del tiempo',
+        desc: 'De tus abuelos a tu algoritmo: 6 décadas vistas.',
+        category: 'movies',
+        categoryLabel: 'Cine',
+        icon: 'compass',
+        xp: 140,
+        target: 6,
+        value: m => m.movieDecadesCount,
+    },
+    {
+        id: 'cinema_hours_100',
+        title: 'Cien horas a oscuras',
+        desc: 'Acumula 100 horas viendo películas.',
+        category: 'movies',
+        categoryLabel: 'Cine',
+        icon: 'hourglass',
+        xp: 130,
+        target: 100,
+        value: m => m.movieHoursWatched,
+    },
+    {
+        id: 'animation_fan',
+        title: 'No es solo para niños',
+        desc: 'Ve 10 títulos de Animación (también hacen llorar).',
+        category: 'movies',
+        categoryLabel: 'Cine',
+        icon: 'sparkles',
+        xp: 65,
+        target: 10,
+        value: m => m.genreCounts.animation,
+    },
+    {
+        id: 'horror_fan',
+        title: 'Con la luz encendida',
+        desc: 'Ve 10 títulos de Terror y luego mira debajo de la cama.',
+        category: 'movies',
+        categoryLabel: 'Cine',
+        icon: 'moon',
+        xp: 65,
+        target: 10,
+        value: m => m.genreCounts.horror,
+    },
+    {
+        id: 'scifi_fan',
+        title: 'Pasaporte galáctico',
+        desc: 'Ve 10 títulos de Ciencia ficción. Más en el espacio que en casa.',
+        category: 'movies',
+        categoryLabel: 'Cine',
+        icon: 'compass',
+        xp: 65,
+        target: 10,
+        value: m => m.genreCounts.scifi,
+    },
+    {
+        id: 'comedy_fan',
+        title: 'Terapia de risa',
+        desc: 'Ve 15 comedias. Receta médica sin cita previa.',
+        category: 'movies',
+        categoryLabel: 'Cine',
+        icon: 'sparkles',
+        xp: 75,
+        target: 15,
+        value: m => m.genreCounts.comedy,
+    },
+    {
+        id: 'doc_fan',
+        title: 'Modo documental',
+        desc: 'Ve 5 documentales para aprender algo mientras cenas.',
+        category: 'movies',
+        categoryLabel: 'Cine',
+        icon: 'bookmark',
+        xp: 60,
+        target: 5,
+        value: m => m.genreCounts.documentary,
+    },
+
+    // ── SERIES (21) ──
+    {
+        id: 'first_episode',
+        title: 'Piloto aprobado',
+        desc: 'Marca tu primer episodio como visto.',
+        category: 'tv',
+        categoryLabel: 'Series',
+        icon: 'tv',
+        xp: 30,
+        target: 1,
+        value: m => m.watchedEpisodes,
+    },
+    {
+        id: 'fifty_episodes',
+        title: 'Enganche oficial',
+        desc: 'Supera los 50 episodios vistos.',
+        category: 'tv',
+        categoryLabel: 'Series',
+        icon: 'tv',
+        xp: 50,
+        target: 50,
+        value: m => m.watchedEpisodes,
+    },
+    {
+        id: 'hundred_episodes',
+        title: 'Cien capítulos',
+        desc: 'Supera los 100 episodios vistos.',
+        category: 'tv',
+        categoryLabel: 'Series',
+        icon: 'tv',
+        xp: 70,
+        target: 100,
+        value: m => m.watchedEpisodes,
+    },
+    {
+        id: 'five_hundred_episodes',
+        title: 'Maratón sin fin',
+        desc: 'Alcanza los 500 episodios vistos.',
+        category: 'tv',
+        categoryLabel: 'Series',
+        icon: 'flame',
+        xp: 115,
+        target: 500,
+        value: m => m.watchedEpisodes,
+    },
+    {
+        id: 'thousand_episodes',
+        title: 'Mil noches de serie',
+        desc: 'Alcanza los 1.000 episodios vistos.',
+        category: 'tv',
+        categoryLabel: 'Series',
+        icon: 'trophy',
+        xp: 185,
+        target: 1000,
+        value: m => m.watchedEpisodes,
+    },
+    {
+        id: 'two_thousand_episodes',
+        title: 'Leyenda televisiva',
+        desc: 'Alcanza los 2.500 episodios vistos.',
+        category: 'tv',
+        categoryLabel: 'Series',
+        icon: 'crown',
+        xp: 275,
+        target: 2500,
+        value: m => m.watchedEpisodes,
+    },
+    {
+        id: 'five_thousand_episodes',
+        title: 'Señor del Mando',
+        desc: 'Alcanza los 5.000 episodios vistos.',
+        category: 'tv',
+        categoryLabel: 'Series',
+        icon: 'crown',
+        xp: 400,
+        target: 5000,
+        value: m => m.watchedEpisodes,
+    },
+    {
+        id: 'ten_thousand_eps',
+        title: 'Ya sales en los créditos',
+        desc: 'Alcanza los 10.000 episodios vistos.',
+        category: 'tv',
+        categoryLabel: 'Series',
+        icon: 'crown',
+        xp: 550,
+        target: 10000,
+        value: m => m.watchedEpisodes,
+    },
+    {
+        id: 'binge_five',
+        title: 'Maratoniano',
+        desc: 'Ve 5 o más episodios de una serie en un día.',
+        category: 'tv',
+        categoryLabel: 'Series',
+        icon: 'flame',
+        xp: 60,
+        target: 5,
+        value: m => m.maxSameDayBinge,
+    },
+    {
+        id: 'binge_ten',
+        title: 'Modo bucle',
+        desc: 'El botón de «Siguiente episodio» echa humo (10+ en un día).',
+        category: 'tv',
+        categoryLabel: 'Series',
+        icon: 'flame',
+        xp: 115,
+        target: 10,
+        value: m => m.maxSameDayBinge,
+    },
+    {
+        id: 'first_series_done',
+        title: 'Temporada cerrada',
+        desc: 'Completa tu primera serie entera.',
+        category: 'tv',
+        categoryLabel: 'Series',
+        icon: 'tv',
+        xp: 55,
+        target: 1,
+        value: m => m.completedShows,
+    },
+    {
+        id: 'ten_series_done',
+        title: 'Devora-series',
+        desc: 'Completa 10 series en tu historial.',
+        category: 'tv',
+        categoryLabel: 'Series',
+        icon: 'trophy',
+        xp: 110,
+        target: 10,
+        value: m => m.completedShows,
+    },
+    {
+        id: 'twentyfive_series_done',
+        title: 'Catálogo dominado',
+        desc: 'Completa 25 series enteras.',
+        category: 'tv',
+        categoryLabel: 'Series',
+        icon: 'crown',
+        xp: 190,
+        target: 25,
+        value: m => m.completedShows,
+    },
+    {
+        id: 'mini_series_sprint',
+        title: 'De una sentada',
+        desc: 'Completa una miniserie de 1 temporada y ≤10 capítulos.',
+        category: 'tv',
+        categoryLabel: 'Series',
+        icon: 'flame',
+        xp: 55,
+        target: 1,
+        value: m => m.miniSeriesCompleted,
+    },
+    {
+        id: 'long_series_done',
+        title: 'A contracorriente',
+        desc: 'Completa una serie de 4 o más temporadas.',
+        category: 'tv',
+        categoryLabel: 'Series',
+        icon: 'trophy',
+        xp: 85,
+        target: 1,
+        value: m => m.longCompletedShows,
+    },
+    {
+        id: 'epic_series_done',
+        title: 'Saga interminable',
+        desc: 'Completa 3 series de 5 o más temporadas.',
+        category: 'tv',
+        categoryLabel: 'Series',
+        icon: 'crown',
+        xp: 155,
+        target: 3,
+        value: m => m.epicCompletedShows,
+    },
+    {
+        id: 'five_shows_watching',
+        title: 'Malabarista de tramas',
+        desc: 'Ten 5 o más series «Viendo» a la vez. ¿De qué iba esta?',
+        category: 'tv',
+        categoryLabel: 'Series',
+        icon: 'tv',
+        xp: 55,
+        target: 5,
+        value: m => m.watchingShowsCount,
+    },
+    {
+        id: 'ten_shows_watching',
+        title: 'Multiverso propio',
+        desc: 'Ten 10 series «Viendo» a la vez y confunde los personajes.',
+        category: 'tv',
+        categoryLabel: 'Series',
+        icon: 'tv',
+        xp: 95,
+        target: 10,
+        value: m => m.watchingShowsCount,
+    },
+    {
+        id: 'standby_hoarder',
+        title: 'Algún día volveré',
+        desc: 'Deja 5 o más series «En espera». Promesa solemne.',
+        category: 'tv',
+        categoryLabel: 'Series',
+        icon: 'clock',
+        xp: 45,
+        target: 5,
+        value: m => m.standbyShowsCount,
+    },
+    {
+        id: 'dropped_one',
+        title: 'Mejor dejarlo a tiempo',
+        desc: 'Abandona tu primera serie. La vida es corta para relleno.',
+        category: 'tv',
+        categoryLabel: 'Series',
+        icon: 'tv',
+        xp: 35,
+        target: 1,
+        value: m => m.droppedShowsCount,
+    },
+    {
+        id: 'serial_dropper',
+        title: 'Sin piedad con el piloto',
+        desc: 'Abandona 5 series. Si no engancha en 20 minutos, puerta.',
+        category: 'tv',
+        categoryLabel: 'Series',
+        icon: 'scale',
+        xp: 75,
+        target: 5,
+        value: m => m.droppedShowsCount,
+    },
+    {
+        id: 'skipped_episode',
+        title: 'Esto no ha pasado',
+        desc: 'Salta un episodio de relleno o especial en cualquier serie.',
+        category: 'tv',
+        categoryLabel: 'Series',
+        icon: 'tv',
+        xp: 35,
+        target: 1,
+        value: m => m.skippedEpisodesCount,
+    },
+
+    // ── COLECCIÓN Y CRÍTICA (18) ──
+    {
+        id: 'genre_explorer',
+        title: 'Paladar ecléctico',
+        desc: 'Ve títulos de al menos 6 géneros distintos.',
+        category: 'critic',
+        categoryLabel: 'Colección',
+        icon: 'compass',
+        xp: 55,
+        target: 6,
+        value: m => m.distinctWatchedGenres,
+    },
+    {
+        id: 'genre_master',
+        title: 'Omnívoro cultural',
+        desc: 'Ve títulos de al menos 12 géneros distintos.',
+        category: 'critic',
+        categoryLabel: 'Colección',
+        icon: 'compass',
+        xp: 115,
+        target: 12,
+        value: m => m.distinctWatchedGenres,
+    },
+    {
+        id: 'first_favorite',
+        title: 'Amor a primera vista',
+        desc: 'Marca tu primer título favorito.',
+        category: 'critic',
+        categoryLabel: 'Colección',
+        icon: 'heart',
+        xp: 30,
+        target: 1,
+        value: m => m.favoritesCount,
+    },
+    {
+        id: 'fifteen_favorites',
+        title: 'Altar cinéfilo',
+        desc: 'Reúne 15 títulos en tus favoritos.',
+        category: 'critic',
+        categoryLabel: 'Colección',
+        icon: 'heart',
+        xp: 75,
+        target: 15,
+        value: m => m.favoritesCount,
+    },
+    {
+        id: 'sharp_pen',
+        title: 'Pluma afilada',
+        desc: 'Escribe 5 críticas personales.',
+        category: 'critic',
+        categoryLabel: 'Colección',
+        icon: 'pen',
+        xp: 60,
+        target: 5,
+        value: m => m.reviewsWritten,
+    },
+    {
+        id: 'essayist',
+        title: 'Cronista oficial',
+        desc: 'Escribe 20 críticas personales.',
+        category: 'critic',
+        categoryLabel: 'Colección',
+        icon: 'pen',
+        xp: 130,
+        target: 20,
+        value: m => m.reviewsWritten,
+    },
+    {
+        id: 'wordy_critic',
+        title: 'Crítica con tesis',
+        desc: 'Escribe una crítica personal de 200 caracteres o más.',
+        category: 'critic',
+        categoryLabel: 'Colección',
+        icon: 'pen',
+        xp: 55,
+        target: 1,
+        value: m => m.longReviewsCount,
+    },
+    {
+        id: 'fair_judge',
+        title: 'Crítico de butaca',
+        desc: 'Puntúa 15 títulos entre películas y series.',
+        category: 'critic',
+        categoryLabel: 'Colección',
+        icon: 'star',
+        xp: 55,
+        target: 15,
+        value: m => m.ratedItems,
+    },
+    {
+        id: 'veteran_judge',
+        title: 'Jurado del festival',
+        desc: 'Puntúa 75 títulos entre películas y series.',
+        category: 'critic',
+        categoryLabel: 'Colección',
+        icon: 'star',
+        xp: 120,
+        target: 75,
+        value: m => m.ratedItems,
+    },
+    {
+        id: 'centurion_judge',
+        title: 'Academia privada',
+        desc: 'Puntúa 200 títulos en tu biblioteca.',
+        category: 'critic',
+        categoryLabel: 'Colección',
+        icon: 'crown',
+        xp: 210,
+        target: 200,
+        value: m => m.ratedItems,
+    },
+    {
+        id: 'perfectionist_ten',
+        title: 'Obra maestra absoluta',
+        desc: 'Otorga un 10 redondo a un título. Cine con mayúsculas.',
+        category: 'critic',
+        categoryLabel: 'Colección',
+        icon: 'sparkles',
+        xp: 45,
+        target: 1,
+        value: m => m.tenRatingsCount,
+    },
+    {
+        id: 'zero_mercy',
+        title: 'Devolver la entrada',
+        desc: 'Puntúa con 2 o menos un título que no te devolvió esas horas.',
+        category: 'critic',
+        categoryLabel: 'Colección',
+        icon: 'scale',
+        xp: 45,
+        target: 1,
+        value: m => m.brutalRatingsCount,
+    },
+    {
+        id: 'optimist_critic',
+        title: 'Entusiasta nato',
+        desc: 'Puntúa 20 títulos con un 8 o más. Todo te flipa, qué bien.',
+        category: 'critic',
+        categoryLabel: 'Colección',
+        icon: 'star',
+        xp: 75,
+        target: 20,
+        value: m => m.highRatingsCount,
+    },
+    {
+        id: 'harsh_critic',
+        title: 'Paladar exigente',
+        desc: 'Puntúa 10 títulos con un 5 o menos. Aprobar contigo cuesta.',
+        category: 'critic',
+        categoryLabel: 'Colección',
+        icon: 'scale',
+        xp: 75,
+        target: 10,
+        value: m => m.lowRatingsCount,
+    },
+    {
+        id: 'guilty_pleasure',
+        title: 'Placer culpable',
+        desc: 'Pon ≥8 a un título con menos de 6,0 en TMDB. A mucha honra.',
+        category: 'critic',
+        categoryLabel: 'Colección',
+        icon: 'heart',
+        xp: 65,
+        target: 1,
+        value: m => m.guiltyPleasureCount,
+    },
+    {
+        id: 'contrarian',
+        title: 'A contracorriente total',
+        desc: 'Pon ≤4 a un título con ≥8,0 en TMDB. Contigo no cuela el hype.',
+        category: 'critic',
+        categoryLabel: 'Colección',
+        icon: 'scale',
+        xp: 65,
+        target: 1,
+        value: m => m.contrarianCount,
+    },
+    {
+        id: 'curator',
+        title: 'Comisario de cine',
+        desc: 'Crea 3 listas personalizadas.',
+        category: 'critic',
+        categoryLabel: 'Colección',
+        icon: 'layers',
+        xp: 50,
+        target: 3,
+        value: m => m.customLists,
+    },
+    {
+        id: 'archivist',
+        title: 'Gran archivista',
+        desc: 'Crea 8 listas personalizadas.',
+        category: 'critic',
+        categoryLabel: 'Colección',
+        icon: 'layers',
+        xp: 105,
+        target: 8,
+        value: m => m.customLists,
+    },
+    {
+        id: 'packed_list',
+        title: 'Lista de referencia',
+        desc: 'Reúne al menos 15 títulos en una misma lista.',
+        category: 'critic',
+        categoryLabel: 'Colección',
+        icon: 'bookmark',
+        xp: 80,
+        target: 15,
+        value: m => m.maxListSize,
+    },
+    {
+        id: 'mega_list',
+        title: 'Enciclopedia viviente',
+        desc: 'Reúne 30 o más títulos dentro de una sola lista.',
+        category: 'critic',
+        categoryLabel: 'Colección',
+        icon: 'bookmark',
+        xp: 120,
+        target: 30,
+        value: m => m.maxListSize,
+    },
+
+    // ── HÁBITOS Y SELECTOR (15) ──
+    {
+        id: 'midnight_snack',
+        title: 'Solo un capítulo más...',
+        desc: 'Registra actividad entre las 00:00 y las 01:59. Spoiler: nunca es uno.',
+        category: 'habits',
+        categoryLabel: 'Hábitos',
+        icon: 'moon',
+        xp: 45,
+        target: 1,
+        value: m => m.midnightSnackCount,
+    },
+    {
+        id: 'night_owl',
+        title: 'Noctámbulo',
+        desc: 'Registra un episodio o película entre la 01:00 y las 05:59.',
+        category: 'habits',
+        categoryLabel: 'Hábitos',
+        icon: 'moon',
+        xp: 50,
+        target: 1,
+        value: m => m.nightOwlCount,
+    },
+    {
+        id: 'night_owl_habit',
+        title: 'Vampiro de sofá',
+        desc: 'Registra contenido de madrugada 5 veces.',
+        category: 'habits',
+        categoryLabel: 'Hábitos',
+        icon: 'moon',
+        xp: 100,
+        target: 5,
+        value: m => m.nightOwlCount,
+    },
+    {
+        id: 'early_bird',
+        title: 'Con el café en la mano',
+        desc: 'Marca contenido entre las 06:00 y las 08:59 antes de empezar el día.',
+        category: 'habits',
+        categoryLabel: 'Hábitos',
+        icon: 'coffee',
+        xp: 55,
+        target: 1,
+        value: m => m.earlyBirdCount,
+    },
+    {
+        id: 'backlog_mountain',
+        title: 'Síndrome de Diógenes',
+        desc: 'Acumula 50 pendientes y sigue diciendo «no hay nada que ver».',
+        category: 'habits',
+        categoryLabel: 'Hábitos',
+        icon: 'layers',
+        xp: 60,
+        target: 50,
+        value: m => m.pendingItemsCount,
+    },
+    {
+        id: 'backlog_abyss',
+        title: 'Lista sin fondo',
+        desc: 'Acumula 150 títulos pendientes. Necesitas tres vidas.',
+        category: 'habits',
+        categoryLabel: 'Hábitos',
+        icon: 'layers',
+        xp: 110,
+        target: 150,
+        value: m => m.pendingItemsCount,
+    },
+    {
+        id: 'indecisive_pro',
+        title: 'Duda crónica',
+        desc: 'Ten 10 títulos metidos en la ruleta del Selector.',
+        category: 'habits',
+        categoryLabel: 'Hábitos',
+        icon: 'dice',
+        xp: 50,
+        target: 10,
+        value: m => m.selectorPoolSize,
+    },
+    {
+        id: 'selector_first_spin',
+        title: 'Mano inocente',
+        desc: 'Usa la ruleta del Selector por primera vez.',
+        category: 'habits',
+        categoryLabel: 'Hábitos',
+        icon: 'dice',
+        xp: 35,
+        target: 1,
+        value: m => m.selectorSpins,
+    },
+    {
+        id: 'selector_ten_spins',
+        title: 'En manos del azar',
+        desc: 'Realiza 10 sorteos en el Selector.',
+        category: 'habits',
+        categoryLabel: 'Hábitos',
+        icon: 'dice',
+        xp: 75,
+        target: 10,
+        value: m => m.selectorSpins,
+    },
+    {
+        id: 'selector_twentyfive',
+        title: 'Adicto a la ruleta',
+        desc: 'Gira el Selector 25 veces para que decida por ti.',
+        category: 'habits',
+        categoryLabel: 'Hábitos',
+        icon: 'dice',
+        xp: 120,
+        target: 25,
+        value: m => m.selectorSpins,
+    },
+    {
+        id: 'destiny_fulfilled',
+        title: 'Destino cumplido',
+        desc: 'Completa un título elegido al azar por el Selector.',
+        category: 'habits',
+        categoryLabel: 'Hábitos',
+        icon: 'dice',
+        xp: 55,
+        target: 1,
+        value: m => m.selectorCompletedCount,
+    },
+    {
+        id: 'destiny_master',
+        title: 'Oráculo del Selector',
+        desc: 'Completa 5 títulos elegidos por el Selector.',
+        category: 'habits',
+        categoryLabel: 'Hábitos',
+        icon: 'crown',
+        xp: 130,
+        target: 5,
+        value: m => m.selectorCompletedCount,
+    },
+    {
+        id: 'polar_judge',
+        title: 'Juez implacable',
+        desc: 'Puntúa un título con ≤3 y otro con ≥9 el mismo día.',
+        category: 'habits',
+        categoryLabel: 'Hábitos',
+        icon: 'scale',
+        xp: 60,
+        target: 1,
+        value: m => (m.twoExtremesAchieved ? 1 : 0),
+    },
+    {
+        id: 'total_hours_500',
+        title: 'Medio millar de horas',
+        desc: 'Acumula 500 horas totales entre series y películas.',
+        category: 'habits',
+        categoryLabel: 'Hábitos',
+        icon: 'hourglass',
+        xp: 160,
+        target: 500,
+        value: m => m.totalHoursWatched,
+    },
+    {
+        id: 'total_hours_1000',
+        title: 'Mil horas de pantalla',
+        desc: 'Más de 41 días seguidos viendo historias sin parpadear.',
+        category: 'habits',
+        categoryLabel: 'Hábitos',
+        icon: 'crown',
+        xp: 260,
+        target: 1000,
+        value: m => m.totalHoursWatched,
+    },
+];
+
+const GAMIFICATION_THEMES = [
+    {
+        id: 'default',
+        label: 'Obsidiana',
+        swatch: '#facc15',
+        bgSwatch: '#070709',
+        metaColor: '#070709',
+        unlockLabel: 'Incluido',
+        isUnlocked: () => true,
+    },
+    {
+        id: 'oled',
+        label: 'OLED Puro',
+        swatch: '#facc15',
+        bgSwatch: '#000000',
+        metaColor: '#000000',
+        unlockLabel: 'Nivel 5',
+        isUnlocked: (summary) => summary.level >= 5,
+    },
+    {
+        id: 'cinema',
+        label: 'Cine Clásico',
+        swatch: '#e5b869',
+        bgSwatch: '#0d0a08',
+        metaColor: '#0d0a08',
+        unlockLabel: 'Nivel 10 o Arqueólogo',
+        isUnlocked: (summary, unlocked) => summary.level >= 10 || Boolean(unlocked.classic_archaeologist),
+    },
+    {
+        id: 'neon',
+        label: 'Medianoche Neón',
+        swatch: '#38bdf8',
+        bgSwatch: '#060912',
+        metaColor: '#060912',
+        unlockLabel: 'Nivel 15 o Noctámbulo',
+        isUnlocked: (summary, unlocked) => summary.level >= 15 || Boolean(unlocked.night_owl),
+    },
+    {
+        id: 'emerald',
+        label: 'Bosque Esmeralda',
+        swatch: '#34d399',
+        bgSwatch: '#050b09',
+        metaColor: '#050b09',
+        unlockLabel: 'Nivel 20 o Omnívoro',
+        isUnlocked: (summary, unlocked) => summary.level >= 20 || Boolean(unlocked.genre_master),
+    },
+    {
+        id: 'crimson',
+        label: 'Terciopelo Carmesí',
+        swatch: '#fb7185',
+        bgSwatch: '#0e0609',
+        metaColor: '#0e0609',
+        unlockLabel: 'Nivel 30 o 250 pelis',
+        isUnlocked: (summary, unlocked) => summary.level >= 30 || Boolean(unlocked.twofifty_movies),
+    },
+    {
+        id: 'royal',
+        label: 'Púrpura Imperial',
+        swatch: '#a78bfa',
+        bgSwatch: '#080612',
+        metaColor: '#080612',
+        unlockLabel: 'Nivel 40 o 30 logros',
+        isUnlocked: (summary, unlocked) => summary.level >= 40 || Object.keys(unlocked || {}).length >= 30,
+    },
+    {
+        id: 'solaris',
+        label: 'Oro de Festival',
+        swatch: '#fbbf24',
+        bgSwatch: '#0b0905',
+        metaColor: '#0b0905',
+        unlockLabel: 'Nivel 50 o 45 logros',
+        isUnlocked: (summary, unlocked) => summary.level >= 50 || Object.keys(unlocked || {}).length >= 45,
+    },
+    {
+        id: 'platinum',
+        label: 'Platino Glacial',
+        swatch: '#bae6fd',
+        bgSwatch: '#06090e',
+        metaColor: '#06090e',
+        unlockLabel: 'Nivel 75 o 55 logros',
+        isUnlocked: (summary, unlocked) => summary.level >= 75 || Object.keys(unlocked || {}).length >= 55,
+    },
+    {
+        id: 'imperial',
+        label: 'Champán Real',
+        swatch: '#f5c478',
+        bgSwatch: '#09060b',
+        metaColor: '#09060b',
+        unlockLabel: 'Nivel 100 o 65 logros',
+        isUnlocked: (summary, unlocked) => summary.level >= 100 || Object.keys(unlocked || {}).length >= 65,
+    },
+];
+
+const GAMIFICATION_POSTER_STYLES = [
+    {
+        id: 'default',
+        label: 'Estándar',
+        swatch: '#71717a',
+        unlockLabel: 'Incluido',
+        isUnlocked: () => true,
+    },
+    {
+        id: 'glass',
+        label: 'Cristal pulido',
+        swatch: '#e2e8f0',
+        unlockLabel: 'Nivel 10',
+        isUnlocked: (summary) => summary.level >= 10,
+    },
+    {
+        id: 'cinema_glow',
+        label: 'Brillo de Cartelera',
+        swatch: '#38bdf8',
+        unlockLabel: 'Nivel 20',
+        isUnlocked: (summary) => summary.level >= 20,
+    },
+    {
+        id: 'matte_film',
+        label: 'Mate 35mm',
+        swatch: '#e5b869',
+        unlockLabel: 'Nivel 30',
+        isUnlocked: (summary) => summary.level >= 30,
+    },
+    {
+        id: 'collector',
+        label: 'Edición Coleccionista',
+        swatch: '#facc15',
+        unlockLabel: 'Nivel 45',
+        isUnlocked: (summary) => summary.level >= 45,
+    },
+    {
+        id: 'holo_foil',
+        label: 'Borde Prismático',
+        swatch: '#a78bfa',
+        unlockLabel: 'Nivel 60',
+        isUnlocked: (summary) => summary.level >= 60,
+    },
+    {
+        id: 'legend',
+        label: 'Cartel de Gala',
+        swatch: '#fb7185',
+        unlockLabel: 'Nivel 80',
+        isUnlocked: (summary) => summary.level >= 80,
+    },
+    {
+        id: 'archive_gold',
+        label: 'Edición de Archivo',
+        swatch: '#f5c478',
+        unlockLabel: 'Nivel 100',
+        isUnlocked: (summary) => summary.level >= 100,
+    },
+];
+
+function getLocalDateKey(date = new Date()) {
+    const y = date.getFullYear();
+    const m = String(date.getMonth() + 1).padStart(2, '0');
+    const d = String(date.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+}
+
+function normalizeGamificationState(raw = null) {
+    const src = raw && typeof raw === 'object' ? raw : {};
+    const unlockedAchievements = {};
+    if (src.unlockedAchievements && typeof src.unlockedAchievements === 'object') {
+        for (const [id, ts] of Object.entries(src.unlockedAchievements)) {
+            if (id && typeof ts === 'string' && ts) {
+                unlockedAchievements[id] = ts;
+            }
+        }
+    }
+    const c = src.counters && typeof src.counters === 'object' ? src.counters : {};
+    const selectorWins = Array.isArray(c.selectorWins)
+        ? [...new Set(c.selectorWins.map(k => String(k || '').trim()).filter(Boolean))].slice(0, 250)
+        : [];
+    const selectorCompletedKeys = Array.isArray(c.selectorCompletedKeys)
+        ? [...new Set(c.selectorCompletedKeys.map(k => String(k || '').trim()).filter(Boolean))].slice(0, 250)
+        : [];
+    const ratingExtremes = c.ratingExtremes && typeof c.ratingExtremes === 'object'
+        ? {
+            date: typeof c.ratingExtremes.date === 'string' ? c.ratingExtremes.date : '',
+            hasLow: Boolean(c.ratingExtremes.hasLow),
+            hasHigh: Boolean(c.ratingExtremes.hasHigh),
+        }
+        : { date: '', hasLow: false, hasHigh: false };
+    return {
+        unlockedAchievements,
+        counters: {
+            selectorSpins: Math.max(0, Number(c.selectorSpins) || 0),
+            selectorWins,
+            selectorCompletedKeys,
+            nightOwlCount: Math.max(0, Number(c.nightOwlCount) || 0),
+            midnightSnackCount: Math.max(0, Number(c.midnightSnackCount) || 0),
+            earlyBirdCount: Math.max(0, Number(c.earlyBirdCount) || 0),
+            maxSameDayBinge: Math.max(0, Number(c.maxSameDayBinge) || 0),
+            ratingExtremes,
+            twoExtremesAchieved: Boolean(c.twoExtremesAchieved),
+        },
+        lastKnownLevel: Math.max(1, Number(src.lastKnownLevel) || 1),
+        updatedAt: typeof src.updatedAt === 'string' ? src.updatedAt : '',
+    };
+}
+
+function cloneGamificationState(state) {
+    const norm = normalizeGamificationState(state);
+    return {
+        unlockedAchievements: { ...norm.unlockedAchievements },
+        counters: {
+            ...norm.counters,
+            selectorWins: [...norm.counters.selectorWins],
+            selectorCompletedKeys: [...norm.counters.selectorCompletedKeys],
+            ratingExtremes: { ...norm.counters.ratingExtremes },
+        },
+        lastKnownLevel: norm.lastKnownLevel,
+        updatedAt: norm.updatedAt,
+    };
+}
+
+function getGamificationState() {
+    if (!AppState.gamification) {
+        AppState.gamification = normalizeGamificationState();
+    }
+    return AppState.gamification;
+}
+
+function mergeGamificationState(localRaw, remoteRaw) {
+    const a = normalizeGamificationState(localRaw);
+    const b = normalizeGamificationState(remoteRaw);
+    const unlockedAchievements = { ...b.unlockedAchievements };
+    for (const [id, ts] of Object.entries(a.unlockedAchievements)) {
+        if (!unlockedAchievements[id] || parseModifiedMs(ts) < parseModifiedMs(unlockedAchievements[id])) {
+            unlockedAchievements[id] = ts;
+        }
+    }
+    const selectorWins = [...new Set([...b.counters.selectorWins, ...a.counters.selectorWins])].slice(0, 250);
+    const selectorCompletedKeys = [...new Set([...b.counters.selectorCompletedKeys, ...a.counters.selectorCompletedKeys])].slice(0, 250);
+    let ratingExtremes = a.counters.ratingExtremes;
+    if (b.counters.ratingExtremes.date && a.counters.ratingExtremes.date === b.counters.ratingExtremes.date) {
+        ratingExtremes = {
+            date: a.counters.ratingExtremes.date,
+            hasLow: a.counters.ratingExtremes.hasLow || b.counters.ratingExtremes.hasLow,
+            hasHigh: a.counters.ratingExtremes.hasHigh || b.counters.ratingExtremes.hasHigh,
+        };
+    } else if (b.counters.ratingExtremes.date > a.counters.ratingExtremes.date) {
+        ratingExtremes = { ...b.counters.ratingExtremes };
+    }
+    const updatedAt = parseModifiedMs(b.updatedAt) > parseModifiedMs(a.updatedAt) ? b.updatedAt : a.updatedAt;
+    return normalizeGamificationState({
+        unlockedAchievements,
+        counters: {
+            selectorSpins: Math.max(a.counters.selectorSpins, b.counters.selectorSpins),
+            selectorWins,
+            selectorCompletedKeys,
+            nightOwlCount: Math.max(a.counters.nightOwlCount, b.counters.nightOwlCount),
+            midnightSnackCount: Math.max(a.counters.midnightSnackCount, b.counters.midnightSnackCount),
+            earlyBirdCount: Math.max(a.counters.earlyBirdCount, b.counters.earlyBirdCount),
+            maxSameDayBinge: Math.max(a.counters.maxSameDayBinge, b.counters.maxSameDayBinge),
+            ratingExtremes,
+            twoExtremesAchieved: a.counters.twoExtremesAchieved || b.counters.twoExtremesAchieved,
+        },
+        lastKnownLevel: Math.max(a.lastKnownLevel, b.lastKnownLevel),
+        updatedAt,
+    });
+}
+
+function recordGamificationTimeHabits(date = new Date()) {
+    const hour = date.getHours();
+    const g = getGamificationState();
+    let changed = false;
+    if (hour >= 1 && hour < 6) {
+        g.counters.nightOwlCount = Math.max(1, (g.counters.nightOwlCount || 0) + 1);
+        changed = true;
+    }
+    if (hour >= 0 && hour < 2) {
+        g.counters.midnightSnackCount = Math.max(1, (g.counters.midnightSnackCount || 0) + 1);
+        changed = true;
+    }
+    if (hour >= 6 && hour < 9) {
+        g.counters.earlyBirdCount = Math.max(1, (g.counters.earlyBirdCount || 0) + 1);
+        changed = true;
+    }
+    if (changed) {
+        g.updatedAt = nowIso();
+    }
+}
+
+function recordGamificationEpisodeActivity(show, newlyWatchedCount = 1) {
+    const g = getGamificationState();
+    recordGamificationTimeHabits();
+    if (show?.capitulos_vistos_fecha && typeof show.capitulos_vistos_fecha === 'object') {
+        const perDay = new Map();
+        for (const iso of Object.values(show.capitulos_vistos_fecha)) {
+            if (!iso) continue;
+            const d = new Date(iso);
+            if (Number.isNaN(d.getTime())) continue;
+            const key = getLocalDateKey(d);
+            perDay.set(key, (perDay.get(key) || 0) + 1);
+        }
+        let maxDay = 0;
+        for (const count of perDay.values()) {
+            if (count > maxDay) maxDay = count;
+        }
+        if (maxDay > g.counters.maxSameDayBinge) {
+            g.counters.maxSameDayBinge = maxDay;
+        }
+    }
+    if (newlyWatchedCount > g.counters.maxSameDayBinge) {
+        g.counters.maxSameDayBinge = newlyWatchedCount;
+    }
+    g.updatedAt = nowIso();
+}
+
+function recordGamificationCompletion(tipo, id_tmdb) {
+    const g = getGamificationState();
+    recordGamificationTimeHabits();
+    const key = getSelectorItemKey(tipo, id_tmdb);
+    if ((g.counters.selectorWins || []).includes(key) && !(g.counters.selectorCompletedKeys || []).includes(key)) {
+        g.counters.selectorCompletedKeys.push(key);
+    }
+    g.updatedAt = nowIso();
+}
+
+function recordGamificationRating(score) {
+    const num = Number(score);
+    if (!Number.isFinite(num) || num <= 0) return;
+    const g = getGamificationState();
+    const today = getLocalDateKey();
+    if (g.counters.ratingExtremes.date !== today) {
+        g.counters.ratingExtremes = { date: today, hasLow: false, hasHigh: false };
+    }
+    if (num <= 3) g.counters.ratingExtremes.hasLow = true;
+    if (num >= 9) g.counters.ratingExtremes.hasHigh = true;
+    if (g.counters.ratingExtremes.hasLow && g.counters.ratingExtremes.hasHigh) {
+        g.counters.twoExtremesAchieved = true;
+    }
+    g.updatedAt = nowIso();
+}
+
+function recordGamificationSelectorWin(key) {
+    const g = getGamificationState();
+    g.counters.selectorSpins = (g.counters.selectorSpins || 0) + 1;
+    if (key && !(g.counters.selectorWins || []).includes(key)) {
+        g.counters.selectorWins.push(key);
+    }
+    g.updatedAt = nowIso();
+    saveLocalData();
+    evaluateGamification();
+    syncToDrive();
+}
+
+function normalizeGamificationGenre(raw) {
+    return String(raw || '')
+        .trim()
+        .toLowerCase()
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '');
+}
+
+function computeGamificationMetrics() {
+    const g = getGamificationState();
+    const movies = AppState.movies || [];
+    const shows = AppState.shows || [];
+    const lists = AppState.lists || [];
+
+    let watchedMovies = 0;
+    let classicMoviesCount = 0;
+    let goldenAgeMoviesCount = 0;
+    let pre1960MoviesCount = 0;
+    let shortMoviesCount = 0;
+    let longMoviesCount = 0;
+    let epicRuntimeMoviesCount = 0;
+    let movieMinutesWatched = 0;
+    let reviewsWritten = 0;
+    let longReviewsCount = 0;
+    let ratedItems = 0;
+    let tenRatingsCount = 0;
+    let brutalRatingsCount = 0;
+    let highRatingsCount = 0;
+    let lowRatingsCount = 0;
+    let guiltyPleasureCount = 0;
+    let contrarianCount = 0;
+    let favoritesCount = 0;
+    let pendingItemsCount = 0;
+    const genreSet = new Set();
+    const movieDecades = new Set();
+    const genreCounts = {
+        animation: 0,
+        horror: 0,
+        scifi: 0,
+        comedy: 0,
+        documentary: 0,
+    };
+
+    const tallyGenreHits = (rawGenres) => {
+        const seen = new Set();
+        for (const rawGenre of (Array.isArray(rawGenres) ? rawGenres : [])) {
+            const norm = normalizeGamificationGenre(rawGenre);
+            if (!norm) continue;
+            genreSet.add(norm);
+            if (seen.has(norm)) continue;
+            seen.add(norm);
+            if (norm.includes('animac') || norm.includes('animation')) genreCounts.animation += 1;
+            if (norm.includes('terror') || norm.includes('horror')) genreCounts.horror += 1;
+            if (norm.includes('ciencia ficc') || norm.includes('sci-fi') || norm.includes('science fiction')) genreCounts.scifi += 1;
+            if (norm.includes('comedia') || norm.includes('comedy')) genreCounts.comedy += 1;
+            if (norm.includes('documental') || norm.includes('documentary')) genreCounts.documentary += 1;
+        }
+    };
+
+    const tallyRatingAndReview = (item) => {
+        const rev = String(item.critica || '').trim();
+        if (rev) {
+            reviewsWritten += 1;
+            if (rev.length >= 200) longReviewsCount += 1;
+        }
+        const score = Number(item.puntuacion);
+        const tmdb = Number(item.vote_average);
+        if (score > 0) {
+            ratedItems += 1;
+            if (score >= 10) tenRatingsCount += 1;
+            if (score <= 2) brutalRatingsCount += 1;
+            if (score >= 8) highRatingsCount += 1;
+            if (score <= 5) lowRatingsCount += 1;
+            if (tmdb > 0 && tmdb < 6.0 && score >= 8) guiltyPleasureCount += 1;
+            if (tmdb >= 8.0 && score <= 4) contrarianCount += 1;
+        }
+        if (item.favorito) favoritesCount += 1;
+    };
+
+    for (const m of movies) {
+        const st = normalizeStatus(m.estado);
+        if (st === 'pending') pendingItemsCount += 1;
+        const isDone = st === 'completed';
+        const runtime = Number(m.runtime);
+        if (isDone) {
+            watchedMovies += 1;
+            movieMinutesWatched += runtime > 0 ? runtime : 100;
+            if (runtime > 0 && runtime <= 85) shortMoviesCount += 1;
+            if (runtime >= 150) longMoviesCount += 1;
+            if (runtime >= 180) epicRuntimeMoviesCount += 1;
+            const year = Number(getItemYearString(m));
+            if (Number.isFinite(year) && year > 1880) {
+                if (year < 1990) classicMoviesCount += 1;
+                if (year < 1970) goldenAgeMoviesCount += 1;
+                if (year < 1960) pre1960MoviesCount += 1;
+                movieDecades.add(Math.floor(year / 10) * 10);
+            }
+            tallyGenreHits(m.generos);
+        }
+        tallyRatingAndReview(m);
+    }
+
+    let watchedEpisodes = 0;
+    let skippedEpisodesCount = 0;
+    let completedShows = 0;
+    let miniSeriesCompleted = 0;
+    let longCompletedShows = 0;
+    let epicCompletedShows = 0;
+    let watchingShowsCount = 0;
+    let standbyShowsCount = 0;
+    let droppedShowsCount = 0;
+    let seriesMinutesWatched = 0;
+    let maxHistoricalBinge = g.counters.maxSameDayBinge || 0;
+    let historicalNightOwls = g.counters.nightOwlCount || 0;
+    let historicalMidnight = g.counters.midnightSnackCount || 0;
+    let historicalEarly = g.counters.earlyBirdCount || 0;
+
+    for (const s of shows) {
+        const eps = Array.isArray(s.capitulos_vistos) ? s.capitulos_vistos : [];
+        const skipped = Array.isArray(s.capitulos_saltados) ? s.capitulos_saltados : [];
+        watchedEpisodes += eps.length;
+        skippedEpisodesCount += skipped.length;
+        seriesMinutesWatched += eps.length * getShowEpisodeRuntimeMinutes(s);
+        const st = normalizeStatus(s.estado);
+        if (st === 'pending') pendingItemsCount += 1;
+        if (st === 'watching') watchingShowsCount += 1;
+        if (st === 'standby') standbyShowsCount += 1;
+        if (st === 'dropped') droppedShowsCount += 1;
+        const isDone = st === 'completed';
+        if (isDone) {
+            completedShows += 1;
+            const regularSeasonsList = Array.isArray(s.temporadas)
+                ? s.temporadas.filter(t => !t.especial && Number(t.numero) > 0)
+                : [];
+            const regularSeasons = regularSeasonsList.length;
+            const totalRegularEps = regularSeasonsList.reduce(
+                (acc, t) => acc + (Number(t.episodio_count ?? t.episode_count) || 0),
+                0,
+            );
+            if (regularSeasons === 1 && ((totalRegularEps > 0 && totalRegularEps <= 10) || (totalRegularEps === 0 && eps.length > 0 && eps.length <= 10))) {
+                miniSeriesCompleted += 1;
+            }
+            if (regularSeasons >= 4) {
+                longCompletedShows += 1;
+            }
+            if (regularSeasons >= 5) {
+                epicCompletedShows += 1;
+            }
+        }
+        if (isDone || eps.length > 0) {
+            tallyGenreHits(s.generos);
+        }
+        tallyRatingAndReview(s);
+
+        if (s.capitulos_vistos_fecha && typeof s.capitulos_vistos_fecha === 'object') {
+            const perDay = new Map();
+            let nightOwlInShow = 0;
+            let midnightInShow = 0;
+            let earlyInShow = 0;
+            for (const iso of Object.values(s.capitulos_vistos_fecha)) {
+                if (!iso) continue;
+                const d = new Date(iso);
+                if (Number.isNaN(d.getTime())) continue;
+                const dayKey = getLocalDateKey(d);
+                perDay.set(dayKey, (perDay.get(dayKey) || 0) + 1);
+                const h = d.getHours();
+                if (h >= 1 && h < 6) nightOwlInShow += 1;
+                if (h >= 0 && h < 2) midnightInShow += 1;
+                if (h >= 6 && h < 9) earlyInShow += 1;
+            }
+            historicalNightOwls = Math.max(historicalNightOwls, nightOwlInShow);
+            historicalMidnight = Math.max(historicalMidnight, midnightInShow);
+            historicalEarly = Math.max(historicalEarly, earlyInShow);
+            for (const c of perDay.values()) {
+                if (c > maxHistoricalBinge) maxHistoricalBinge = c;
+            }
+        }
+    }
+
+    let maxListSize = 0;
+    for (const lst of lists) {
+        const len = Array.isArray(lst?.itemIds) ? lst.itemIds.length : 0;
+        if (len > maxListSize) maxListSize = len;
+    }
+
+    // Sincronizar también selectorCompletedKeys si un título ganador del Selector ya estaba completado
+    const winSet = new Set(g.counters.selectorWins || []);
+    const completedWinSet = new Set(g.counters.selectorCompletedKeys || []);
+    for (const key of winSet) {
+        const [tipo, idStr] = key.split(':');
+        const item = getLibraryItem(tipo, Number(idStr));
+        if (item && normalizeStatus(item.estado) === 'completed') {
+            completedWinSet.add(key);
+        }
+    }
+
+    return {
+        watchedMovies,
+        classicMoviesCount,
+        goldenAgeMoviesCount,
+        pre1960MoviesCount,
+        shortMoviesCount,
+        longMoviesCount,
+        epicRuntimeMoviesCount,
+        movieDecadesCount: movieDecades.size,
+        movieHoursWatched: Math.floor(movieMinutesWatched / 60),
+        totalHoursWatched: Math.floor((movieMinutesWatched + seriesMinutesWatched) / 60),
+        genreCounts,
+        watchedEpisodes,
+        skippedEpisodesCount,
+        completedShows,
+        miniSeriesCompleted,
+        longCompletedShows,
+        epicCompletedShows,
+        watchingShowsCount,
+        standbyShowsCount,
+        droppedShowsCount,
+        reviewsWritten,
+        longReviewsCount,
+        ratedItems,
+        tenRatingsCount,
+        brutalRatingsCount,
+        highRatingsCount,
+        lowRatingsCount,
+        guiltyPleasureCount,
+        contrarianCount,
+        favoritesCount,
+        pendingItemsCount,
+        customLists: lists.length,
+        maxListSize,
+        distinctWatchedGenres: genreSet.size,
+        maxSameDayBinge: maxHistoricalBinge,
+        nightOwlCount: historicalNightOwls,
+        midnightSnackCount: historicalMidnight,
+        earlyBirdCount: historicalEarly,
+        selectorPoolSize: (AppState.selectorItems || []).length,
+        selectorSpins: Math.max(0, Number(g.counters.selectorSpins) || 0),
+        selectorCompletedCount: completedWinSet.size,
+        twoExtremesAchieved: Boolean(g.counters.twoExtremesAchieved),
+    };
+}
+
+function getXpGapForLevel(level) {
+    const l = Math.max(1, Number(level) || 1);
+    return 160 + (l - 1) * 45 + Math.round(Math.pow(l - 1, 1.32) * 8);
+}
+
+function computeGamificationSummary(metrics = computeGamificationMetrics()) {
+    const g = getGamificationState();
+    const unlocked = g.unlockedAchievements || {};
+
+    let achievementXp = 0;
+    for (const ach of ACHIEVEMENTS_CATALOG) {
+        if (unlocked[ach.id]) {
+            achievementXp += ach.xp;
+        }
+    }
+
+    const breakdown = {
+        episodes: metrics.watchedEpisodes * 10,
+        movies: metrics.watchedMovies * 30,
+        completedShows: metrics.completedShows * 100,
+        reviews: metrics.reviewsWritten * 15,
+        ratings: metrics.ratedItems * 10,
+        lists: metrics.customLists * 25,
+        achievements: achievementXp,
+    };
+
+    const totalXp = Object.values(breakdown).reduce((sum, v) => sum + v, 0);
+
+    let level = 1;
+    let remaining = totalXp;
+    let nextLevelXp = getXpGapForLevel(level);
+    while (remaining >= nextLevelXp && level < 250) {
+        remaining -= nextLevelXp;
+        level += 1;
+        nextLevelXp = getXpGapForLevel(level);
+    }
+
+    let rank = GAMIFICATION_RANKS[0];
+    let nextRank = null;
+    for (let i = 0; i < GAMIFICATION_RANKS.length; i += 1) {
+        const candidate = GAMIFICATION_RANKS[i];
+        if (level >= candidate.minLevel) {
+            rank = candidate;
+            nextRank = GAMIFICATION_RANKS[i + 1] || null;
+        }
+    }
+
+    const pct = nextLevelXp > 0 ? Math.min(100, Math.round((remaining / nextLevelXp) * 100)) : 100;
+    const animal = {
+        id: rank.animalId,
+        name: rank.animalName,
+        icon: rank.animalIcon,
+    };
+
+    return {
+        totalXp,
+        level,
+        rank: rank.title,
+        rankMinLevel: rank.minLevel,
+        nextRank,
+        frameTier: rank.frame,
+        animal,
+        currentLevelXp: remaining,
+        nextLevelXp,
+        xpToNext: Math.max(0, nextLevelXp - remaining),
+        pct,
+        breakdown,
+        metrics,
+    };
+}
+
+const gamificationToastQueue = [];
+let gamificationToastActive = false;
+let gamificationToastHideTimer = null;
+let gamificationToastGapTimer = null;
+
+function clearGamificationToastQueue() {
+    gamificationToastQueue.length = 0;
+    gamificationToastActive = false;
+    clearTimeout(gamificationToastHideTimer);
+    clearTimeout(gamificationToastGapTimer);
+    const toast = document.getElementById('gamif-toast');
+    if (toast) {
+        toast.classList.add('hidden');
+        toast.classList.remove('is-visible', 'is-leaving', 'is-celebrate', 'is-levelup');
+    }
+}
+
+function queueGamificationToast(payload) {
+    if (!isGamificationEnabled()) return;
+    gamificationToastQueue.push(payload);
+    if (!gamificationToastActive) {
+        drainGamificationToastQueue();
+    }
+}
+
+function drainGamificationToastQueue() {
+    if (!isGamificationEnabled() || !gamificationToastQueue.length) {
+        gamificationToastActive = false;
+        return;
+    }
+    gamificationToastActive = true;
+    const item = gamificationToastQueue.shift();
+    const toast = document.getElementById('gamif-toast');
+    const iconEl = document.getElementById('gamif-toast-icon');
+    const kickerEl = document.getElementById('gamif-toast-kicker');
+    const titleEl = document.getElementById('gamif-toast-title');
+    const subEl = document.getElementById('gamif-toast-sub');
+    if (!toast || !iconEl || !kickerEl || !titleEl || !subEl) {
+        gamificationToastActive = false;
+        return;
+    }
+
+    iconEl.innerHTML = item.iconHtml || GAMIFICATION_BADGE_ICONS.trophy;
+    kickerEl.textContent = item.kicker || 'Logro desbloqueado';
+    titleEl.textContent = item.title || '';
+    subEl.textContent = item.subtitle || '';
+
+    toast.classList.remove('hidden', 'is-visible', 'is-leaving', 'is-celebrate', 'is-levelup');
+    if (item.kind === 'level') toast.classList.add('is-levelup');
+    if (areCelebrationEffectsEnabled()) toast.classList.add('is-celebrate');
+
+    requestAnimationFrame(() => {
+        toast.classList.add('is-visible');
+    });
+
+    clearTimeout(gamificationToastHideTimer);
+    gamificationToastHideTimer = setTimeout(() => {
+        toast.classList.add('is-leaving');
+        setTimeout(() => {
+            toast.classList.add('hidden');
+            toast.classList.remove('is-visible', 'is-leaving', 'is-celebrate', 'is-levelup');
+            gamificationToastGapTimer = setTimeout(() => {
+                drainGamificationToastQueue();
+            }, 260);
+        }, 220);
+    }, 3900);
+}
+
+function onGamificationToastClick() {
+    clearTimeout(gamificationToastHideTimer);
+    const toast = document.getElementById('gamif-toast');
+    if (toast) {
+        toast.classList.add('hidden');
+        toast.classList.remove('is-visible', 'is-leaving', 'is-celebrate', 'is-levelup');
+    }
+    gamificationToastActive = false;
+    if (gamificationToastQueue.length) {
+        gamificationToastGapTimer = setTimeout(drainGamificationToastQueue, 200);
+    }
+    if (isGamificationEnabled()) {
+        AppState.currentProfileTab = 'achievements';
+        switchTab('profile');
+    }
+}
+
+function getEffectiveGamificationTheme(summary = computeGamificationSummary()) {
+    if (!isGamificationEnabled()) return 'default';
+    const desired = getPreferences().gamificationTheme || 'default';
+    const unlocked = getGamificationState().unlockedAchievements || {};
+    const themeObj = GAMIFICATION_THEMES.find(t => t.id === desired);
+    if (themeObj && themeObj.isUnlocked(summary, unlocked)) {
+        return themeObj.id;
+    }
+    return 'default';
+}
+
+function getEffectivePosterStyle(summary = computeGamificationSummary()) {
+    if (!isGamificationEnabled()) return 'default';
+    const desired = getPreferences().posterStyle || 'default';
+    const unlocked = getGamificationState().unlockedAchievements || {};
+    const styleObj = GAMIFICATION_POSTER_STYLES.find(s => s.id === desired);
+    if (styleObj && styleObj.isUnlocked(summary, unlocked)) {
+        return styleObj.id;
+    }
+    return 'default';
+}
+
+function applyGamificationAppearance() {
+    const summary = computeGamificationSummary();
+    const themeId = getEffectiveGamificationTheme(summary);
+    const posterStyleId = getEffectivePosterStyle(summary);
+    const root = document.documentElement;
+
+    if (themeId === 'default') root.removeAttribute('data-theme');
+    else root.setAttribute('data-theme', themeId);
+
+    if (posterStyleId === 'default') root.removeAttribute('data-poster-style');
+    else root.setAttribute('data-poster-style', posterStyleId);
+
+    root.removeAttribute('data-detail-style');
+
+    const themeObj = GAMIFICATION_THEMES.find(t => t.id === themeId) || GAMIFICATION_THEMES[0];
+    const metaTheme = document.querySelector('meta[name="theme-color"]');
+    if (metaTheme && themeObj?.metaColor) {
+        metaTheme.setAttribute('content', themeObj.metaColor);
+    }
+    applySelectorSkinClass();
+}
+
+function applySelectorSkinClass() {
+    const pickerEl = document.getElementById('profile-picker-content');
+    if (!pickerEl) return;
+    pickerEl.removeAttribute('data-selector-skin');
+    pickerEl.classList.toggle('is-celebrating', areCelebrationEffectsEnabled());
+}
+
+function evaluateGamification(options = {}) {
+    const silent = Boolean(options.silent);
+    const skipSave = Boolean(options.skipSave);
+    const g = getGamificationState();
+    const metrics = computeGamificationMetrics();
+    const prevSummary = computeGamificationSummary(metrics);
+    const prevUnlockedThemes = new Set(
+        GAMIFICATION_THEMES.filter(t => t.isUnlocked(prevSummary, g.unlockedAchievements)).map(t => t.id),
+    );
+    const prevUnlockedPosters = new Set(
+        GAMIFICATION_POSTER_STYLES.filter(p => p.isUnlocked(prevSummary, g.unlockedAchievements)).map(p => p.id),
+    );
+
+    const newlyUnlocked = [];
+    const ts = nowIso();
+    for (const ach of ACHIEVEMENTS_CATALOG) {
+        if (g.unlockedAchievements[ach.id]) continue;
+        const val = ach.value(metrics);
+        if (val >= ach.target) {
+            g.unlockedAchievements[ach.id] = ts;
+            newlyUnlocked.push(ach);
+        }
+    }
+
+    const nextSummary = computeGamificationSummary(metrics);
+    const prevLevel = Math.max(1, Number(g.lastKnownLevel) || 1);
+    const leveledUp = nextSummary.level > prevLevel;
+
+    if (newlyUnlocked.length > 0 || nextSummary.level !== g.lastKnownLevel) {
+        g.lastKnownLevel = nextSummary.level;
+        g.updatedAt = ts;
+        if (!skipSave) {
+            saveLocalData();
+        }
+    }
+
+    if (!silent && isGamificationEnabled()) {
+        for (const ach of newlyUnlocked) {
+            queueGamificationToast({
+                kind: 'achievement',
+                iconHtml: GAMIFICATION_BADGE_ICONS[ach.icon] || GAMIFICATION_BADGE_ICONS.trophy,
+                kicker: `Logro desbloqueado · +${ach.xp} XP`,
+                title: ach.title,
+                subtitle: ach.desc,
+            });
+        }
+
+        if (leveledUp) {
+            const newTheme = GAMIFICATION_THEMES.find(
+                t => !prevUnlockedThemes.has(t.id) && t.isUnlocked(nextSummary, g.unlockedAchievements),
+            );
+            const newPoster = GAMIFICATION_POSTER_STYLES.find(
+                p => !prevUnlockedPosters.has(p.id) && p.isUnlocked(nextSummary, g.unlockedAchievements),
+            );
+            const animalChanged = nextSummary.animal?.id !== prevSummary.animal?.id;
+            const rewardNote = animalChanged
+                ? `Nuevo rango y bestia: ${nextSummary.animal.name}`
+                : (newTheme
+                    ? `Nuevo tema: ${newTheme.label}`
+                    : (newPoster
+                        ? `Nuevo acabado de pósters: ${newPoster.label}`
+                        : nextSummary.rank));
+
+            queueGamificationToast({
+                kind: 'level',
+                iconHtml: nextSummary.animal?.icon || GAMIFICATION_BADGE_ICONS.star,
+                kicker: `Nivel ${nextSummary.level} · ${nextSummary.animal?.name || ''}`,
+                title: nextSummary.rank,
+                subtitle: rewardNote,
+            });
+        }
+    }
+
+    if (AppState.currentTab === 'profile' && AppState.currentProfileTab === 'achievements' && isGamificationEnabled()) {
+        renderProfileAchievements();
+    }
+    return nextSummary;
+}
+
+function selectGamificationTheme(themeId) {
+    if (!isGamificationEnabled()) return;
+    const summary = computeGamificationSummary();
+    const unlocked = getGamificationState().unlockedAchievements || {};
+    const themeObj = GAMIFICATION_THEMES.find(t => t.id === themeId);
+    if (!themeObj) return;
+    if (!themeObj.isUnlocked(summary, unlocked)) {
+        showToast(`Se desbloquea con: ${themeObj.unlockLabel}`, 'info');
+        return;
+    }
+    updatePreference('gamificationTheme', themeObj.id);
+    showToast(`Tema aplicado: ${themeObj.label}`, 'success');
+}
+
+function selectPosterStyle(styleId) {
+    if (!isGamificationEnabled()) return;
+    const summary = computeGamificationSummary();
+    const unlocked = getGamificationState().unlockedAchievements || {};
+    const styleObj = GAMIFICATION_POSTER_STYLES.find(s => s.id === styleId);
+    if (!styleObj) return;
+    if (!styleObj.isUnlocked(summary, unlocked)) {
+        showToast(`Se desbloquea con: ${styleObj.unlockLabel}`, 'info');
+        return;
+    }
+    updatePreference('posterStyle', styleObj.id);
+    showToast(`Acabado de pósters: ${styleObj.label}`, 'success');
+}
+
+function setAchievementsFilter(filter) {
+    const valid = filter === 'unlocked' || filter === 'locked' ? filter : 'all';
+    AppState.achievementsFilter = valid;
+    AppState.achievementsExpanded = false;
+    renderProfileAchievements();
+}
+
+function setAchievementsCategory(category) {
+    const valid = ['all', 'movies', 'tv', 'critic', 'habits'].includes(category) ? category : 'all';
+    AppState.achievementsCategory = valid;
+    AppState.achievementsExpanded = false;
+    renderProfileAchievements();
+}
+
+function toggleAchievementsExpanded() {
+    AppState.achievementsExpanded = !Boolean(AppState.achievementsExpanded);
+    renderProfileAchievements();
+}
+
+function toggleRewardsExpanded() {
+    AppState.rewardsExpanded = !Boolean(AppState.rewardsExpanded);
+    if (AppState.currentTab === 'profile' && AppState.currentProfileTab === 'achievements') {
+        renderProfileAchievements();
+    }
+    if (AppState.currentTab === 'profile' && AppState.currentProfileTab === 'settings') {
+        renderSettings();
+    }
+}
+
+function isGamificationDesktopViewport() {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return true;
+    return window.matchMedia('(min-width: 768px)').matches;
+}
+
+function getPreviewRewardsSlice(items, activeId, limit, expanded) {
+    if (expanded || items.length <= limit) {
+        return { visible: items, hidden: 0 };
+    }
+    const activeIdx = items.findIndex(item => item.id === activeId);
+    const visible = activeIdx >= limit
+        ? [...items.slice(0, Math.max(0, limit - 1)), items[activeIdx]]
+        : items.slice(0, limit);
+    return {
+        visible,
+        hidden: Math.max(0, items.length - visible.length),
+    };
+}
+
+function renderRewardSwatchesHtml(summary, unlockedMap, options = {}) {
+    const activeTheme = getEffectiveGamificationTheme(summary);
+    const activePoster = getEffectivePosterStyle(summary);
+    const expanded = Boolean(options.expanded ?? AppState.rewardsExpanded);
+    const perGroupLimit = isGamificationDesktopViewport() ? 4 : 2;
+
+    const themeSlice = getPreviewRewardsSlice(GAMIFICATION_THEMES, activeTheme, perGroupLimit, expanded);
+    const posterSlice = getPreviewRewardsSlice(GAMIFICATION_POSTER_STYLES, activePoster, perGroupLimit, expanded);
+
+    const themeCards = themeSlice.visible.map((t) => {
+        const unlocked = t.isUnlocked(summary, unlockedMap);
+        const active = activeTheme === t.id;
+        return `
+            <button type="button"
+                class="tvst-reward-tile${active ? ' is-active' : ''}${!unlocked ? ' is-locked' : ''}"
+                onclick="selectGamificationTheme('${t.id}')"
+                aria-pressed="${active ? 'true' : 'false'}">
+                <span class="tvst-reward-swatch" style="--swatch-bg:${t.bgSwatch}; --swatch-accent:${t.swatch}"></span>
+                <span class="tvst-reward-copy">
+                    <span class="tvst-reward-name">${escapeHtml(t.label)}</span>
+                    <span class="tvst-reward-meta">${unlocked ? (active ? 'Activo' : 'Disponible') : escapeHtml(t.unlockLabel)}</span>
+                </span>
+            </button>
+        `;
+    }).join('');
+
+    const posterCards = posterSlice.visible.map((p) => {
+        const unlocked = p.isUnlocked(summary, unlockedMap);
+        const active = activePoster === p.id;
+        return `
+            <button type="button"
+                class="tvst-reward-tile${active ? ' is-active' : ''}${!unlocked ? ' is-locked' : ''}"
+                onclick="selectPosterStyle('${p.id}')"
+                aria-pressed="${active ? 'true' : 'false'}">
+                <span class="tvst-reward-swatch is-poster-preview" style="--swatch-accent:${p.swatch}"></span>
+                <span class="tvst-reward-copy">
+                    <span class="tvst-reward-name">${escapeHtml(p.label)}</span>
+                    <span class="tvst-reward-meta">${unlocked ? (active ? 'Activo' : 'Disponible') : escapeHtml(p.unlockLabel)}</span>
+                </span>
+            </button>
+        `;
+    }).join('');
+
+    const hiddenCount = themeSlice.hidden + posterSlice.hidden;
+    const totalCount = GAMIFICATION_THEMES.length + GAMIFICATION_POSTER_STYLES.length;
+    const hasMore = hiddenCount > 0 || (expanded && totalCount > perGroupLimit * 2);
+
+    return { themeCards, posterCards, hiddenCount, hasMore };
+}
+
+function renderSettingsGamificationRewardsRows() {
+    const summary = computeGamificationSummary();
+    const unlockedMap = getGamificationState().unlockedAchievements || {};
+    const expanded = Boolean(AppState.rewardsExpanded);
+    const { themeCards, posterCards, hiddenCount, hasMore } = renderRewardSwatchesHtml(summary, unlockedMap, { expanded });
+    return `
+        <div class="tvst-setting-row is-stacked">
+            <div class="tvst-setting-copy">
+                <span class="tvst-setting-label">Tema visual de la app</span>
+                <p class="tvst-setting-hint">Nivel ${summary.level} · ${escapeHtml(summary.rank)}</p>
+            </div>
+            <div class="tvst-reward-grid">${themeCards}</div>
+        </div>
+        <div class="tvst-setting-row is-stacked">
+            <div class="tvst-setting-copy">
+                <span class="tvst-setting-label">Acabado de pósters</span>
+                <p class="tvst-setting-hint">Aplica marcos y brillos sutiles a tus carátulas según tu nivel.</p>
+            </div>
+            <div class="tvst-reward-grid">${posterCards}</div>
+            ${hasMore ? `
+                <button type="button" class="tvst-gamif-expand-btn" onclick="toggleRewardsExpanded()">
+                    ${expanded
+                        ? 'Mostrar menos recompensas'
+                        : `Ver todas las recompensas (${hiddenCount} más)`}
+                </button>
+            ` : ''}
+        </div>
+    `;
+}
+
+function renderProfileAchievements() {
+    const root = document.getElementById('profile-achievements-root');
+    if (!root) return;
+
+    if (!isGamificationEnabled()) {
+        root.innerHTML = '';
+        return;
+    }
+
+    const g = getGamificationState();
+    const metrics = computeGamificationMetrics();
+    const summary = computeGamificationSummary(metrics);
+    const unlockedMap = g.unlockedAchievements || {};
+    const totalCount = ACHIEVEMENTS_CATALOG.length;
+    const unlockedCount = ACHIEVEMENTS_CATALOG.filter(a => Boolean(unlockedMap[a.id])).length;
+    const filter = AppState.achievementsFilter === 'unlocked' || AppState.achievementsFilter === 'locked'
+        ? AppState.achievementsFilter
+        : 'all';
+    const category = ['all', 'movies', 'tv', 'critic', 'habits'].includes(AppState.achievementsCategory)
+        ? AppState.achievementsCategory
+        : 'all';
+
+    const filteredAchievements = ACHIEVEMENTS_CATALOG.filter((ach) => {
+        if (category !== 'all' && ach.category !== category) return false;
+        const isUnlocked = Boolean(unlockedMap[ach.id]);
+        if (filter === 'unlocked') return isUnlocked;
+        if (filter === 'locked') return !isUnlocked;
+        return true;
+    }).sort((a, b) => {
+        const aUnl = unlockedMap[a.id] ? 1 : 0;
+        const bUnl = unlockedMap[b.id] ? 1 : 0;
+        if (filter === 'all' && aUnl !== bUnl) return bUnl - aUnl;
+        if (aUnl === 0 && bUnl === 0) {
+            const aRatio = Math.min(1, (Number(a.value(metrics)) || 0) / a.target);
+            const bRatio = Math.min(1, (Number(b.value(metrics)) || 0) / b.target);
+            if (bRatio !== aRatio) return bRatio - aRatio;
+        }
+        return 0;
+    });
+
+    const isDesktop = isGamificationDesktopViewport();
+    const badgesPreviewLimit = isDesktop ? 6 : 4;
+    const badgesExpanded = Boolean(AppState.achievementsExpanded);
+    const visibleAchievements = badgesExpanded
+        ? filteredAchievements
+        : filteredAchievements.slice(0, badgesPreviewLimit);
+    const hiddenBadgesCount = Math.max(0, filteredAchievements.length - visibleAchievements.length);
+
+    const rewardsExpanded = Boolean(AppState.rewardsExpanded);
+    const { themeCards, posterCards, hiddenCount: hiddenRewardsCount, hasMore: hasMoreRewards } = renderRewardSwatchesHtml(
+        summary,
+        unlockedMap,
+        { expanded: rewardsExpanded },
+    );
+
+    const nextRankNote = summary.nextRank
+        ? `Próximo rango: ${summary.nextRank.title} · ${summary.nextRank.animalName} (Nivel ${summary.nextRank.minLevel})`
+        : 'Rango y bestia máximos alcanzados · Maestría continua hasta Nivel 250';
+
+    const totalRewardsCount = GAMIFICATION_THEMES.length + GAMIFICATION_POSTER_STYLES.length;
+    const unlockedRewardsCount =
+        GAMIFICATION_THEMES.filter(t => t.isUnlocked(summary, unlockedMap)).length +
+        GAMIFICATION_POSTER_STYLES.filter(p => p.isUnlocked(summary, unlockedMap)).length;
+
+    const categoryTabs = [
+        { id: 'all', label: 'Todas' },
+        { id: 'movies', label: 'Cine' },
+        { id: 'tv', label: 'Series' },
+        { id: 'critic', label: 'Colección' },
+        { id: 'habits', label: 'Hábitos' },
+    ];
+
+    root.innerHTML = `
+        <section class="tvst-section-card tvst-gamif-hero is-frame-${summary.frameTier}">
+            <div class="tvst-gamif-hero-top">
+                <div class="tvst-gamif-emblem is-frame-${summary.frameTier}" aria-hidden="true">
+                    <span class="tvst-gamif-emblem-animal">${summary.animal?.icon || GAMIFICATION_BADGE_ICONS.trophy}</span>
+                    <span class="tvst-gamif-emblem-lv">${summary.level}</span>
+                </div>
+                <div class="tvst-gamif-hero-copy">
+                    <span class="tvst-gamif-kicker">Nivel ${summary.level} · ${escapeHtml(summary.animal?.name || '')} · ${unlockedCount}/${totalCount} logros</span>
+                    <h2 class="tvst-gamif-rank">${escapeHtml(summary.rank)}</h2>
+                    <p class="tvst-gamif-xp-meta">${summary.totalXp.toLocaleString('es-ES')} XP totales · faltan ${summary.xpToNext.toLocaleString('es-ES')} XP para Nivel ${summary.level + 1}</p>
+                </div>
+            </div>
+            <div class="tvst-gamif-xp-bar" role="progressbar" aria-valuenow="${summary.pct}" aria-valuemin="0" aria-valuemax="100">
+                <div class="tvst-gamif-xp-fill" style="width:${summary.pct}%"></div>
+            </div>
+            <div class="tvst-gamif-xp-sources">
+                <span>Episodios ${summary.breakdown.episodes.toLocaleString('es-ES')} XP</span>
+                <span>·</span>
+                <span>Películas ${summary.breakdown.movies.toLocaleString('es-ES')} XP</span>
+                <span>·</span>
+                <span>Logros ${summary.breakdown.achievements.toLocaleString('es-ES')} XP</span>
+            </div>
+            <div class="tvst-gamif-next-rank">${escapeHtml(nextRankNote)}</div>
+            <details class="tvst-gamif-ranks-details">
+                <summary class="tvst-gamif-ranks-summary">Escalafón y bestiario (${GAMIFICATION_RANKS.length})</summary>
+                <div class="tvst-gamif-ranks-grid">
+                    ${GAMIFICATION_RANKS.map((r) => {
+                        const reached = summary.level >= r.minLevel;
+                        const current = summary.rankMinLevel === r.minLevel;
+                        return `
+                            <div class="tvst-gamif-rank-chip${reached ? ' is-reached' : ''}${current ? ' is-current' : ''}">
+                                <span class="tvst-gamif-animal-mini" aria-hidden="true">${r.animalIcon}</span>
+                                <div class="tvst-gamif-rank-copy">
+                                    <div class="tvst-gamif-rank-top">
+                                        <span class="tvst-gamif-rank-lv">Nv.${r.minLevel}</span>
+                                        <span class="tvst-gamif-rank-beast">${escapeHtml(r.animalName)}</span>
+                                    </div>
+                                    <span class="tvst-gamif-rank-name">${escapeHtml(r.title)}</span>
+                                </div>
+                            </div>
+                        `;
+                    }).join('')}
+                </div>
+            </details>
+        </section>
+
+        <section class="tvst-section-card tvst-gamif-rewards-card">
+            <div class="tvst-gamif-section-head">
+                <h3 class="tvst-gamif-section-title">Recompensas desbloqueables (${unlockedRewardsCount}/${totalRewardsCount})</h3>
+            </div>
+            <div class="tvst-gamif-reward-group">
+                <span class="tvst-gamif-group-label">Tema de la app</span>
+                <div class="tvst-reward-grid">${themeCards}</div>
+            </div>
+            <div class="tvst-gamif-reward-group">
+                <span class="tvst-gamif-group-label">Acabado de pósters</span>
+                <div class="tvst-reward-grid">${posterCards}</div>
+            </div>
+            ${hasMoreRewards ? `
+                <button type="button" class="tvst-gamif-expand-btn" onclick="toggleRewardsExpanded()">
+                    ${rewardsExpanded
+                        ? 'Mostrar menos recompensas'
+                        : `Ver todas las recompensas (${hiddenRewardsCount} más)`}
+                </button>
+            ` : ''}
+        </section>
+
+        <section class="tvst-gamif-badges-section">
+            <div class="tvst-gamif-section-head">
+                <h3 class="tvst-lists-title">Insignias (${unlockedCount}/${totalCount})</h3>
+                <div class="tvst-picker-type-pills" role="tablist" aria-label="Filtrar estado de logros">
+                    <button type="button" class="tvst-picker-pill${filter === 'all' ? ' is-active' : ''}" onclick="setAchievementsFilter('all')">Todos</button>
+                    <button type="button" class="tvst-picker-pill${filter === 'unlocked' ? ' is-active' : ''}" onclick="setAchievementsFilter('unlocked')">Conseguidos</button>
+                    <button type="button" class="tvst-picker-pill${filter === 'locked' ? ' is-active' : ''}" onclick="setAchievementsFilter('locked')">Pendientes</button>
+                </div>
+            </div>
+            <div class="tvst-gamif-cat-row" role="tablist" aria-label="Filtrar categoría de logros">
+                ${categoryTabs.map(c => `
+                    <button type="button"
+                        class="tvst-gamif-cat-pill${category === c.id ? ' is-active' : ''}"
+                        onclick="setAchievementsCategory('${c.id}')">${escapeHtml(c.label)}</button>
+                `).join('')}
+            </div>
+            <div class="tvst-gamif-badges-grid">
+                ${visibleAchievements.length
+                    ? visibleAchievements.map((ach) => {
+                        const unlockedAt = unlockedMap[ach.id];
+                        const isUnlocked = Boolean(unlockedAt);
+                        const rawCurrent = Math.max(0, Number(ach.value(metrics)) || 0);
+                        const current = isUnlocked ? ach.target : Math.min(ach.target, rawCurrent);
+                        const pct = Math.min(100, Math.round((current / ach.target) * 100));
+                        const iconSvg = GAMIFICATION_BADGE_ICONS[ach.icon] || GAMIFICATION_BADGE_ICONS.trophy;
+                        return `
+                            <article class="tvst-badge-card${isUnlocked ? ' is-unlocked' : ' is-locked'}">
+                                <div class="tvst-badge-icon">${iconSvg}</div>
+                                <div class="tvst-badge-body">
+                                    <div class="tvst-badge-head">
+                                        <h4 class="tvst-badge-title">${escapeHtml(ach.title)}</h4>
+                                        <span class="tvst-badge-xp">+${ach.xp} XP</span>
+                                    </div>
+                                    <p class="tvst-badge-desc">${escapeHtml(ach.desc)}</p>
+                                    <div class="tvst-badge-foot">
+                                        <div class="tvst-badge-track">
+                                            <div class="tvst-badge-fill" style="width:${pct}%"></div>
+                                        </div>
+                                        <span class="tvst-badge-progress">${isUnlocked ? 'Completado' : `${current}/${ach.target}`}</span>
+                                    </div>
+                                </div>
+                            </article>
+                        `;
+                    }).join('')
+                    : `<p class="tvst-gamif-empty-msg">No hay logros en esta categoría todavía.</p>`}
+            </div>
+            ${filteredAchievements.length > badgesPreviewLimit ? `
+                <button type="button" class="tvst-gamif-expand-btn" onclick="toggleAchievementsExpanded()">
+                    ${badgesExpanded
+                        ? 'Mostrar menos insignias'
+                        : `Ver todas las insignias (${hiddenBadgesCount} más)`}
+                </button>
+            ` : ''}
+        </section>
+    `;
+}
+
+// ============================================
 // EXPORTACIONES
 // ============================================
 
@@ -9767,5 +12174,12 @@ window.addToSelectorFromSearch = addToSelectorFromSearch;
 window.removeFromSelector = removeFromSelector;
 window.clearSelectorItems = clearSelectorItems;
 window.toggleItemInSelector = toggleItemInSelector;
+window.selectGamificationTheme = selectGamificationTheme;
+window.selectPosterStyle = selectPosterStyle;
+window.setAchievementsFilter = setAchievementsFilter;
+window.setAchievementsCategory = setAchievementsCategory;
+window.toggleAchievementsExpanded = toggleAchievementsExpanded;
+window.toggleRewardsExpanded = toggleRewardsExpanded;
+window.onGamificationToastClick = onGamificationToastClick;
 
 console.log('[App] app.js cargado');

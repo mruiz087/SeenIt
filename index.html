@@ -112,6 +112,7 @@
                     <button type="button" onclick="switchProfileTab('series')" id="profile-tab-series" class="tvst-profile-tab is-active">Series</button>
                     <button type="button" onclick="switchProfileTab('movies')" id="profile-tab-movies" class="tvst-profile-tab">Películas</button>
                     <button type="button" onclick="switchProfileTab('picker')" id="profile-tab-picker" class="tvst-profile-tab">Selector</button>
+                    <button type="button" onclick="switchProfileTab('achievements')" id="profile-tab-achievements" class="tvst-profile-tab">Logros</button>
                 </nav>
 
                 <div id="profile-series-content">
@@ -335,6 +336,12 @@
                             </div>
                             <div id="picker-pool-grid" class="tvst-picker-pool-grid"></div>
                         </section>
+                    </div>
+                </div>
+
+                <div id="profile-achievements-content" class="hidden">
+                    <div id="profile-achievements-root" class="tvst-gamif-page">
+                        <!-- filled by JS -->
                     </div>
                 </div>
 
@@ -584,6 +591,15 @@
 
     <div id="toast" class="tvst-toast hidden" role="status" aria-live="polite">
         <span id="toast-message">Mensaje</span>
+    </div>
+
+    <div id="gamif-toast" class="tvst-gamif-toast hidden" role="status" aria-live="polite" onclick="onGamificationToastClick()">
+        <div id="gamif-toast-icon" class="tvst-gamif-toast-icon" aria-hidden="true"></div>
+        <div class="tvst-gamif-toast-body">
+            <span id="gamif-toast-kicker" class="tvst-gamif-toast-kicker">Logro desbloqueado</span>
+            <strong id="gamif-toast-title" class="tvst-gamif-toast-title"></strong>
+            <span id="gamif-toast-sub" class="tvst-gamif-toast-sub"></span>
+        </div>
     </div>
 
     <!-- Diálogo de confirmación / entrada integrado -->

@@ -1,0 +1,6 @@
+# ads.txt para SeenIt
+# Cuando te des de alta en una red de anuncios (ej. Google AdSense, Adsterra, etc.),
+# añade aquí la línea que te proporcionen.
+#
+# Ejemplo para Google AdSense:
+# google.com, pub-XXXXXXXXXXXXXXXX, DIRECT, f08c47fec0942fa0
