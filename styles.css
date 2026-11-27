@@ -3556,6 +3556,12 @@ textarea:focus-visible {
     display: none;
 }
 
+.tvst-drive-gate-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 0.65rem;
+}
+
 .tvst-drive-gate-btn {
     width: 100%;
     min-height: 2.95rem;
@@ -3574,6 +3580,18 @@ textarea:focus-visible {
     gap: 0.55rem;
     box-shadow: 0 8px 24px rgba(250, 204, 21, 0.22);
     transition: background-color 0.16s ease, transform 0.14s ease;
+}
+
+.tvst-drive-gate-btn.is-secondary {
+    background: var(--tvst-surface-elevated);
+    border: 1px solid var(--tvst-border-strong);
+    color: var(--tvst-text);
+    box-shadow: none;
+}
+
+.tvst-drive-gate-btn.is-secondary:hover:not(:disabled) {
+    background: var(--tvst-surface-hover);
+    border-color: rgba(255, 255, 255, 0.25);
 }
 
 .tvst-drive-gate-btn:hover:not(:disabled) {
@@ -3952,6 +3970,25 @@ textarea:focus-visible {
 .tvst-settings-section {
     margin-top: 0.9rem;
     padding-bottom: 2.5rem;
+}
+
+.tvst-settings-panel {
+    display: flex;
+    flex-direction: column;
+}
+
+.tvst-info-doc-card .tvst-settings-desc {
+    margin-bottom: 0.8rem;
+    line-height: 1.48;
+}
+
+.tvst-info-doc-card .tvst-compat-meta code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 0.7rem;
+    padding: 0.08rem 0.34rem;
+    border-radius: 0.32rem;
+    background: rgba(255, 255, 255, 0.07);
+    color: var(--tvst-text);
 }
 
 .tvst-settings-card-title {
@@ -6279,8 +6316,9 @@ textarea:focus-visible {
 }
 
 @media (max-width: 420px) {
-    .tvst-profile-tab {
-        padding: 0.76rem 0.4rem;
+    .tvst-profile-tab,
+    .tvst-settings-subnav .tvst-subnav-tab {
+        padding: 0.76rem 0.45rem;
         font-size: 0.7rem;
         letter-spacing: 0.04em;
     }

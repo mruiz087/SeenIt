@@ -21,6 +21,7 @@ const AppState = {
     currentSubTab: 'pending-list',
     currentMoviesSubTab: 'pending-list',
     currentProfileTab: 'series',
+    currentSettingsSubTab: 'general',
     currentFilter: 'all',
     profileSeriesFilter: 'all',
     profileMoviesFilter: 'all',
@@ -485,6 +486,17 @@ async function enterAppAfterDrive() {
         prefetchTimelineSeasons().catch(() => {});
         scheduleCollectibleMetaHydration();
     });
+}
+
+function continueWithoutDrive() {
+    setDriveGateStatus('Iniciando en modo local…');
+    setDriveGateVisible(false);
+    loadLocalData();
+    switchTab(getValidStartTab());
+    applyGamificationAppearance();
+    void renderCurrentView();
+    scheduleSyncMobileChromeHeights();
+    showToast('Modo local activado (sin sincronización en nube)', 'info');
 }
 
 async function connectDriveFromGate() {
@@ -1847,9 +1859,13 @@ function syncMobileChromeHeights() {
 
     const subnavSeries = document.querySelector('#content-series .tvst-subnav');
     const subnavMovies = document.querySelector('#content-movies .tvst-subnav');
+    const subnavSettings = document.querySelector('#content-settings .tvst-subnav');
     const moviesVisible = !document.getElementById('content-movies')?.classList.contains('hidden');
     const seriesVisible = !document.getElementById('content-series')?.classList.contains('hidden');
-    const activeSubnav = moviesVisible ? subnavMovies : (seriesVisible ? subnavSeries : (subnavSeries || subnavMovies));
+    const settingsVisible = !document.getElementById('content-settings')?.classList.contains('hidden');
+    const activeSubnav = moviesVisible
+        ? subnavMovies
+        : (settingsVisible ? subnavSettings : (seriesVisible ? subnavSeries : (subnavSeries || subnavMovies || subnavSettings)));
     const profileTabs = document.querySelector('.tvst-profile-tabs');
     const bottomNav = document.querySelector('.tvst-bottom-nav');
 
@@ -1970,6 +1986,26 @@ function switchProfileTab(tab) {
         scheduleSyncMobileChromeHeights();
         setScrollTop(0, 'auto');
     });
+}
+
+function syncSettingsSubTabDom(subTab = AppState.currentSettingsSubTab) {
+    const valid = subTab === 'guide' || subTab === 'legal' ? subTab : 'general';
+    AppState.currentSettingsSubTab = valid;
+
+    document.querySelectorAll('#content-settings .tvst-subnav-tab').forEach(btn => btn.classList.remove('is-active'));
+    document.getElementById(`settings-subtab-${valid}`)?.classList.add('is-active');
+
+    document.querySelectorAll('#content-settings .tvst-settings-panel').forEach(el => el.classList.add('hidden'));
+    document.getElementById(`settings-subtab-content-${valid}`)?.classList.remove('hidden');
+}
+
+function switchSettingsSubTab(subTab) {
+    syncSettingsSubTabDom(subTab);
+    if (AppState.currentSettingsSubTab === 'general') {
+        renderSettings();
+    }
+    scheduleSyncMobileChromeHeights();
+    setScrollTop(0, 'auto');
 }
 
 // ============================================
@@ -7149,6 +7185,8 @@ function clearTmdbCachesFromSettings() {
 }
 
 function renderSettings() {
+    syncSettingsSubTabDom(AppState.currentSettingsSubTab);
+
     if (typeof window.isAuthenticated === 'function') {
         updateDriveStatus(window.isAuthenticated());
     }
@@ -14623,6 +14661,7 @@ window.App = {
     switchSubTab,
     switchMoviesSubTab,
     switchProfileTab,
+    switchSettingsSubTab,
     scrollToNowAnchor,
     switchDetailTab,
     openDetail,
@@ -14643,6 +14682,7 @@ window.switchTab = switchTab;
 window.switchSubTab = switchSubTab;
 window.switchMoviesSubTab = switchMoviesSubTab;
 window.switchProfileTab = switchProfileTab;
+window.switchSettingsSubTab = switchSettingsSubTab;
 window.toggleProfileExpanded = toggleProfileExpanded;
 window.renderProfileView = renderProfileView;
 window.onProfileSearchInput = onProfileSearchInput;
@@ -14684,6 +14724,7 @@ window.addItem = addItem;
 window.addFromDetail = addFromDetail;
 window.connectDrive = connectDrive;
 window.connectDriveFromGate = connectDriveFromGate;
+window.continueWithoutDrive = continueWithoutDrive;
 window.disconnectDrive = disconnectDrive;
 window.exportData = exportData;
 window.importData = importData;
