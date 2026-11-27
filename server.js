@@ -278,6 +278,43 @@ app.get(/^\/api\/tmdb(\/.*)$/, async (req, res) => {
     }
 });
 
+const ALLOWED_TMDB_IMAGE_SIZES = new Set(['w500', 'w780', 'w1280', 'original']);
+const SAFE_TMDB_IMAGE_PATH_RE = /^\/[A-Za-z0-9_-]+\.(jpg|jpeg|png|webp)$/i;
+
+app.get('/api/tmdb-image', async (req, res) => {
+    const rawPath = String(req.query?.path || '').trim();
+    const rawSize = String(req.query?.size || 'w1280').trim();
+    const size = ALLOWED_TMDB_IMAGE_SIZES.has(rawSize) ? rawSize : 'w1280';
+
+    if (!SAFE_TMDB_IMAGE_PATH_RE.test(rawPath)) {
+        return res.status(400).json({ error: 'Ruta de imagen TMDB no válida' });
+    }
+
+    const upstreamUrl = `https://image.tmdb.org/t/p/${size}${rawPath}`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10000);
+    try {
+        const upstreamRes = await fetch(upstreamUrl, { signal: controller.signal });
+        if (!upstreamRes.ok) {
+            return res.status(upstreamRes.status).end();
+        }
+        const contentType = upstreamRes.headers.get('content-type') || 'image/jpeg';
+        if (!contentType.startsWith('image/')) {
+            return res.status(502).json({ error: 'Tipo de contenido no válido' });
+        }
+        const buffer = Buffer.from(await upstreamRes.arrayBuffer());
+        res.setHeader('Content-Type', contentType);
+        res.setHeader('Cache-Control', 'public, max-age=86400');
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        return res.send(buffer);
+    } catch (error) {
+        const status = error?.name === 'AbortError' ? 504 : 502;
+        return res.status(status).json({ error: 'No se pudo cargar la imagen' });
+    } finally {
+        clearTimeout(timer);
+    }
+});
+
 app.use(express.static(ROOT_DIR, {
     dotfiles: 'ignore',
     index: 'index.html',

@@ -1018,6 +1018,9 @@
             }
             if (normalizeStatus(existing.estado) === 'pending' && rec.status === 'completed') {
                 existing.estado = 'completed';
+                existing.fecha_visto = rec.watchedAt || existing.fecha_visto || nowIso();
+            } else if (rec.status === 'completed' && rec.watchedAt && !existing.fecha_visto) {
+                existing.fecha_visto = rec.watchedAt;
             }
             if ((!existing.puntuacion || Number(existing.puntuacion) <= 0) && rec.rating10 > 0) {
                 existing.puntuacion = rec.rating10;
@@ -1034,6 +1037,7 @@
 
         const details = await getMovieDetails(idTmdb);
         details.estado = rec.status === 'completed' ? 'completed' : 'pending';
+        details.fecha_visto = details.estado === 'completed' ? (rec.watchedAt || nowIso()) : null;
         details.puntuacion = rec.rating10 > 0 ? rec.rating10 : 0;
         details.critica = rec.review || '';
         details.favorito = Boolean(rec.favorite);
@@ -1510,7 +1514,8 @@
             } else {
                 const r10 = Number(m.puntuacion) || 0;
                 const rating5 = r10 > 0 ? String(Math.round(r10) / 2) : '';
-                const watchedDate = m.updatedAt ? String(m.updatedAt).slice(0, 10) : '';
+                const watchStamp = m.fecha_visto || m.updatedAt;
+                const watchedDate = watchStamp ? String(watchStamp).slice(0, 10) : '';
                 const tags = m.favorito ? 'favorite' : '';
                 lines.push([
                     m.titulo || '',
@@ -1539,7 +1544,7 @@
                 year,
                 ids: { tmdb: Number(m.id_tmdb) },
                 plays: watched ? 1 : 0,
-                last_watched_at: watched ? (m.updatedAt || nowIso()) : undefined,
+                last_watched_at: watched ? (m.fecha_visto || m.updatedAt || nowIso()) : undefined,
                 rating: Number(m.puntuacion) > 0 ? Number(m.puntuacion) : undefined,
                 watchlist: !watched,
             };

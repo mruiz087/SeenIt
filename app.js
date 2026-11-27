@@ -81,6 +81,7 @@ const AppState = {
     achievementsExpanded: false,
     rewardsExpanded: false,
     ticketsExpanded: false,
+    wrappedExpanded: false,
     ticketsGenreFilter: 'all',
     ticketsStatusFilter: 'all',
     collectibleModalState: null,
@@ -89,7 +90,7 @@ const AppState = {
 const VALID_START_TABS = new Set(['series', 'movies', 'explore', 'profile']);
 const VALID_INACTIVITY_DAYS = new Set([7, 14, 30, 60]);
 const VALID_PREV_EP_RULES = new Set(['ask', 'always', 'never']);
-const VALID_GAMIF_THEMES = new Set(['default', 'oled', 'cinema', 'neon', 'emerald', 'crimson', 'royal', 'solaris', 'platinum', 'imperial']);
+const VALID_GAMIF_THEMES = new Set(['default', 'oled', 'cinema', 'neon', 'emerald', 'terracotta', 'crimson', 'royal', 'solaris', 'platinum', 'imperial']);
 const VALID_POSTER_STYLES = new Set([
     'default',
     'glass',
@@ -885,6 +886,9 @@ function normalizeStoredMovie(movie) {
             }
             : null;
     }
+    normalized.fecha_visto = typeof normalized.fecha_visto === 'string' && normalized.fecha_visto
+        ? normalized.fecha_visto
+        : null;
     normalized.updatedAt = normalized.updatedAt || normalized.lastModified || nowIso();
     return normalized;
 }
@@ -1498,6 +1502,9 @@ async function updateStatus(type, id_tmdb, status) {
         const movie = AppState.movies.find(m => m.id_tmdb === id_tmdb);
         if (movie) {
             movie.estado = normalizedStatus;
+            movie.fecha_visto = normalizedStatus === 'completed'
+                ? (movie.fecha_visto || nowIso())
+                : null;
             touchUpdatedAt(movie);
         }
     } else if (type === 'tv') {
@@ -2100,6 +2107,7 @@ async function toggleMovieWatched(id_tmdb) {
 
     const isCompleted = normalizeStatus(movie.estado) === 'completed';
     movie.estado = isCompleted ? 'pending' : 'completed';
+    movie.fecha_visto = isCompleted ? null : nowIso();
     touchUpdatedAt(movie);
     if (!isCompleted) {
         recordGamificationCompletion('movie', id_tmdb);
@@ -9872,6 +9880,10 @@ function setupEventListeners() {
             }
             return;
         }
+        if (!document.getElementById('wrapped-modal')?.classList.contains('hidden')) {
+            closeWrappedModal();
+            return;
+        }
         if (!document.getElementById('collectible-modal')?.classList.contains('hidden')) {
             closeCollectibleModal();
             return;
@@ -11150,8 +11162,8 @@ const GAMIFICATION_THEMES = [
         swatch: '#facc15',
         bgSwatch: '#000000',
         metaColor: '#000000',
-        unlockLabel: 'Nivel 5',
-        isUnlocked: (summary) => summary.level >= 5,
+        unlockLabel: 'Nivel 10',
+        isUnlocked: (summary) => summary.level >= 10,
     },
     {
         id: 'cinema',
@@ -11159,8 +11171,8 @@ const GAMIFICATION_THEMES = [
         swatch: '#e5b869',
         bgSwatch: '#0d0a08',
         metaColor: '#0d0a08',
-        unlockLabel: 'Nivel 10 o Arqueólogo',
-        isUnlocked: (summary, unlocked) => summary.level >= 10 || Boolean(unlocked.classic_archaeologist),
+        unlockLabel: 'Nivel 20',
+        isUnlocked: (summary) => summary.level >= 20,
     },
     {
         id: 'neon',
@@ -11168,8 +11180,8 @@ const GAMIFICATION_THEMES = [
         swatch: '#38bdf8',
         bgSwatch: '#060912',
         metaColor: '#060912',
-        unlockLabel: 'Nivel 15 o Noctámbulo',
-        isUnlocked: (summary, unlocked) => summary.level >= 15 || Boolean(unlocked.night_owl),
+        unlockLabel: 'Nivel 30',
+        isUnlocked: (summary) => summary.level >= 30,
     },
     {
         id: 'emerald',
@@ -11177,8 +11189,17 @@ const GAMIFICATION_THEMES = [
         swatch: '#34d399',
         bgSwatch: '#050b09',
         metaColor: '#050b09',
-        unlockLabel: 'Nivel 20 o Omnívoro',
-        isUnlocked: (summary, unlocked) => summary.level >= 20 || Boolean(unlocked.genre_master),
+        unlockLabel: 'Nivel 40',
+        isUnlocked: (summary) => summary.level >= 40,
+    },
+    {
+        id: 'terracotta',
+        label: 'Ámbar Terracota',
+        swatch: '#fb923c',
+        bgSwatch: '#0f0805',
+        metaColor: '#0f0805',
+        unlockLabel: 'Nivel 50',
+        isUnlocked: (summary) => summary.level >= 50,
     },
     {
         id: 'crimson',
@@ -11186,8 +11207,8 @@ const GAMIFICATION_THEMES = [
         swatch: '#fb7185',
         bgSwatch: '#0e0609',
         metaColor: '#0e0609',
-        unlockLabel: 'Nivel 30 o 250 pelis',
-        isUnlocked: (summary, unlocked) => summary.level >= 30 || Boolean(unlocked.twofifty_movies),
+        unlockLabel: 'Nivel 60',
+        isUnlocked: (summary) => summary.level >= 60,
     },
     {
         id: 'royal',
@@ -11195,8 +11216,8 @@ const GAMIFICATION_THEMES = [
         swatch: '#a78bfa',
         bgSwatch: '#080612',
         metaColor: '#080612',
-        unlockLabel: 'Nivel 40 o 30 logros',
-        isUnlocked: (summary, unlocked) => summary.level >= 40 || Object.keys(unlocked || {}).length >= 30,
+        unlockLabel: 'Nivel 70',
+        isUnlocked: (summary) => summary.level >= 70,
     },
     {
         id: 'solaris',
@@ -11204,8 +11225,8 @@ const GAMIFICATION_THEMES = [
         swatch: '#fbbf24',
         bgSwatch: '#0b0905',
         metaColor: '#0b0905',
-        unlockLabel: 'Nivel 50 o 45 logros',
-        isUnlocked: (summary, unlocked) => summary.level >= 50 || Object.keys(unlocked || {}).length >= 45,
+        unlockLabel: 'Nivel 80',
+        isUnlocked: (summary) => summary.level >= 80,
     },
     {
         id: 'platinum',
@@ -11213,8 +11234,8 @@ const GAMIFICATION_THEMES = [
         swatch: '#bae6fd',
         bgSwatch: '#06090e',
         metaColor: '#06090e',
-        unlockLabel: 'Nivel 75 o 55 logros',
-        isUnlocked: (summary, unlocked) => summary.level >= 75 || Object.keys(unlocked || {}).length >= 55,
+        unlockLabel: 'Nivel 90',
+        isUnlocked: (summary) => summary.level >= 90,
     },
     {
         id: 'imperial',
@@ -11222,8 +11243,8 @@ const GAMIFICATION_THEMES = [
         swatch: '#f5c478',
         bgSwatch: '#09060b',
         metaColor: '#09060b',
-        unlockLabel: 'Nivel 100 o 65 logros',
-        isUnlocked: (summary, unlocked) => summary.level >= 100 || Object.keys(unlocked || {}).length >= 65,
+        unlockLabel: 'Nivel 100',
+        isUnlocked: (summary) => summary.level >= 100,
     },
 ];
 
@@ -12359,6 +12380,9 @@ function evaluateGamification(options = {}) {
     const prevUnlockedPosters = new Set(
         GAMIFICATION_POSTER_STYLES.filter(p => p.isUnlocked(prevSummary, g.unlockedAchievements)).map(p => p.id),
     );
+    const prevUnlockedWrapped = new Set(
+        WRAPPED_STYLE_TIERS.filter(w => w.isUnlocked(prevSummary)).map(w => w.id),
+    );
 
     const prevSagaSet = new Set(g.counters.completedSagas || []);
     const newlyCompletedSagas = [];
@@ -12438,6 +12462,9 @@ function evaluateGamification(options = {}) {
             const newPoster = GAMIFICATION_POSTER_STYLES.find(
                 p => !prevUnlockedPosters.has(p.id) && p.isUnlocked(nextSummary, g.unlockedAchievements),
             );
+            const newWrapped = WRAPPED_STYLE_TIERS.find(
+                w => !prevUnlockedWrapped.has(w.id) && w.isUnlocked(nextSummary),
+            );
             const animalChanged = nextSummary.animal?.id !== prevSummary.animal?.id;
             const rewardNote = animalChanged
                 ? `Nuevo rango y bestia: ${nextSummary.animal.name}`
@@ -12445,7 +12472,9 @@ function evaluateGamification(options = {}) {
                     ? `Nuevo tema: ${newTheme.label}`
                     : (newPoster
                         ? `Nuevo acabado de pósters: ${newPoster.label}`
-                        : nextSummary.rank));
+                        : (newWrapped
+                            ? `Nuevo estilo Wrapped: ${newWrapped.label}`
+                            : nextSummary.rank)));
 
             queueGamificationToast({
                 kind: 'level',
@@ -12523,6 +12552,1411 @@ function toggleRewardsExpanded() {
 function toggleTicketsExpanded() {
     AppState.ticketsExpanded = !Boolean(AppState.ticketsExpanded);
     renderProfileAchievements();
+}
+
+function toggleWrappedExpanded() {
+    AppState.wrappedExpanded = !Boolean(AppState.wrappedExpanded);
+    renderProfileAchievements();
+}
+
+function openWrappedSectionFromStats() {
+    openWrappedGenerator({ focus: 'overview' });
+}
+
+// ── ESTUDIOS Y NIVELES DE PERSONALIZACIÓN WRAPPED ──
+const WRAPPED_STYLE_TIERS = [
+    {
+        id: 'simple',
+        label: 'Esencial',
+        kicker: 'Diseño simple',
+        desc: 'Fondo oscuro limpio, tipografía clara y cifras directas.',
+        minLevel: 1,
+        unlockLabel: 'Incluido',
+        supportsBanner: false,
+        swatch: { bg1: '#111216', bg2: '#0c0d10', accent: '#e4e4e7', accent2: '#71717a' },
+        isUnlocked: () => true,
+    },
+    {
+        id: 'editorial',
+        label: 'Editorial',
+        kicker: 'Doble tono',
+        desc: 'Cabecera enmarcada, acento de color y bloques simétricos.',
+        minLevel: 15,
+        unlockLabel: 'Nivel 15',
+        supportsBanner: false,
+        swatch: { bg1: '#161b26', bg2: '#0b0e14', accent: '#38bdf8', accent2: '#94a3b8' },
+        isUnlocked: summary => summary.level >= 15,
+    },
+    {
+        id: 'kinetic',
+        label: 'Cinético',
+        kicker: 'Estilo festival',
+        desc: 'Curvas dinámicas, focos radiales y trama de puntos.',
+        minLevel: 30,
+        unlockLabel: 'Nivel 30',
+        supportsBanner: false,
+        swatch: { bg1: '#1a0814', bg2: '#310f28', accent: '#fb7185', accent2: '#c084fc' },
+        isUnlocked: summary => summary.level >= 30,
+    },
+    {
+        id: 'prisma',
+        label: 'Prisma',
+        kicker: 'Cristal aurora',
+        desc: 'Degradado multicapa brillante con paneles translúcidos.',
+        minLevel: 50,
+        unlockLabel: 'Nivel 50',
+        supportsBanner: false,
+        swatch: { bg1: '#051a16', bg2: '#131036', accent: '#34d399', accent2: '#38bdf8' },
+        isUnlocked: summary => summary.level >= 50,
+    },
+    {
+        id: 'banner',
+        label: 'Cine Banner',
+        kicker: 'Fondo personalizado',
+        desc: 'Coloca el banner oficial de tu serie o película favorita.',
+        minLevel: 70,
+        unlockLabel: 'Nivel 70',
+        supportsBanner: true,
+        swatch: { bg1: '#1c1008', bg2: '#2c150c', accent: '#fbbf24', accent2: '#fb7185' },
+        isUnlocked: summary => summary.level >= 70,
+    },
+    {
+        id: 'legend_banner',
+        label: 'Edición Leyenda',
+        kicker: 'Banner + Oro',
+        desc: 'Banner cinematográfico con doble marco oro y platino.',
+        minLevel: 100,
+        unlockLabel: 'Nivel 100',
+        supportsBanner: true,
+        swatch: { bg1: '#120b1d', bg2: '#241738', accent: '#f5c478', accent2: '#bae6fd' },
+        isUnlocked: summary => summary.level >= 100,
+    },
+];
+
+const WRAPPED_FOCUS_OPTIONS = [
+    { id: 'overview', label: 'Resumen', title: 'Tu Resumen en Pantalla', kicker: 'Resumen general' },
+    { id: 'series', label: 'Series', title: 'Modo Maratón', kicker: 'Universo series' },
+    { id: 'cinema', label: 'Cine', title: 'Gran Pantalla', kicker: 'Tu filmoteca' },
+    { id: 'genres', label: 'Géneros', title: 'ADN Cinéfilo', kicker: 'Géneros y épocas' },
+    { id: 'critic', label: 'Crítica', title: 'Paladar de Crítico', kicker: 'Criterio y gustos' },
+    { id: 'legend', label: 'Trayectoria', title: 'Edición Leyenda', kicker: 'Progreso y logros' },
+];
+
+const WRAPPED_PALETTES = [
+    { id: 'graphite', label: 'Grafito', minLevel: 1, bg1: '#121318', bg2: '#090a0d', accent: '#f4f4f5', accent2: '#a1a1aa' },
+    { id: 'lime', label: 'Lima', minLevel: 1, bg1: '#0b140d', bg2: '#152a16', accent: '#bef264', accent2: '#22c55e' },
+    { id: 'crimson', label: 'Carmesí', minLevel: 15, bg1: '#1a0814', bg2: '#310f28', accent: '#fb7185', accent2: '#c084fc' },
+    { id: 'electric', label: 'Eléctrico', minLevel: 15, bg1: '#061120', bg2: '#0b2540', accent: '#38bdf8', accent2: '#2dd4bf' },
+    { id: 'emerald', label: 'Esmeralda', minLevel: 30, bg1: '#051510', bg2: '#0a2920', accent: '#34d399', accent2: '#a3e635' },
+    { id: 'imperial', label: 'Oro Real', minLevel: 50, bg1: '#0e0918', bg2: '#221536', accent: '#f5c478', accent2: '#bae6fd' },
+];
+
+let activeWrappedModalState = null;
+const wrappedImageCache = new Map();
+const wrappedBannerCandidatesMap = new Map();
+let wrappedBannerSearchTimer = null;
+let wrappedRenderSeq = 0;
+
+function extractTmdbImagePath(url) {
+    const raw = String(url || '').trim();
+    if (!raw) return '';
+    const match = raw.match(/https?:\/\/image\.tmdb\.org\/t\/p\/(?:w\d+|original)(\/[A-Za-z0-9_-]+\.(?:jpg|jpeg|png|webp))/i);
+    if (match) return match[1];
+    if (/^\/[A-Za-z0-9_-]+\.(jpg|jpeg|png|webp)$/i.test(raw)) return raw;
+    return '';
+}
+
+function getWrappedBannerProxyUrl(rawUrl, size = 'w1280') {
+    const tmdbPath = extractTmdbImagePath(rawUrl);
+    if (tmdbPath) {
+        return `/api/tmdb-image?path=${encodeURIComponent(tmdbPath)}&size=${encodeURIComponent(size)}`;
+    }
+    return safeUrl(rawUrl);
+}
+
+function loadWrappedBannerImage(bannerObj) {
+    const rawUrl = bannerObj?.backdrop || bannerObj?.portada || '';
+    if (!rawUrl) return Promise.resolve(null);
+    const preferredSize = bannerObj?.backdrop ? 'w1280' : 'w780';
+    const proxyUrl = getWrappedBannerProxyUrl(rawUrl, preferredSize);
+    if (!proxyUrl) return Promise.resolve(null);
+
+    if (wrappedImageCache.has(proxyUrl)) {
+        return wrappedImageCache.get(proxyUrl);
+    }
+
+    const loadSingle = (src, useCors) => new Promise((resolve) => {
+        const img = new Image();
+        if (useCors) img.crossOrigin = 'anonymous';
+        const timer = setTimeout(() => resolve(null), 9000);
+        img.onload = () => {
+            clearTimeout(timer);
+            resolve(img.naturalWidth > 0 ? img : null);
+        };
+        img.onerror = () => {
+            clearTimeout(timer);
+            resolve(null);
+        };
+        img.src = src;
+    });
+
+    const promise = (async () => {
+        const proxied = await loadSingle(proxyUrl, false);
+        if (proxied) return proxied;
+        const directUrl = safeUrl(rawUrl);
+        if (directUrl && directUrl !== proxyUrl) {
+            return loadSingle(directUrl, true);
+        }
+        return null;
+    })();
+
+    wrappedImageCache.set(proxyUrl, promise);
+    return promise;
+}
+
+function drawCoverImage(ctx, img, dx, dy, dw, dh) {
+    const iw = img.naturalWidth || img.width;
+    const ih = img.naturalHeight || img.height;
+    if (!iw || !ih) return;
+    const targetRatio = dw / dh;
+    const imgRatio = iw / ih;
+    let sx = 0;
+    let sy = 0;
+    let sw = iw;
+    let sh = ih;
+    if (imgRatio > targetRatio) {
+        sw = ih * targetRatio;
+        sx = (iw - sw) / 2;
+    } else {
+        sh = iw / targetRatio;
+        sy = (ih - sh) * 0.35;
+    }
+    ctx.drawImage(img, sx, sy, sw, sh, dx, dy, dw, dh);
+}
+
+function getWrappedLibraryBannerCandidates(query = '') {
+    const q = normalizeSearchText(query);
+    const combined = [
+        ...(AppState.shows || []).map(item => ({ ...item, tipo: 'tv' })),
+        ...(AppState.movies || []).map(item => ({ ...item, tipo: 'movie' })),
+    ];
+
+    const list = [];
+    for (const item of combined) {
+        const img = item.backdrop || item.portada;
+        if (!img) continue;
+        const title = String(item.titulo || item.nombre || '').trim();
+        if (!title) continue;
+        if (q && !normalizeSearchText(title).includes(q)) continue;
+        const st = normalizeStatus(item.estado);
+        const score = (item.favorito ? 100 : 0)
+            + (item.backdrop ? 40 : 0)
+            + (Number(item.puntuacion) || 0) * 3
+            + (st === 'completed' || st === 'watching' ? 15 : 0);
+        const key = `${item.tipo}:${item.id_tmdb}`;
+        const entry = {
+            key,
+            id_tmdb: Number(item.id_tmdb),
+            tipo: item.tipo,
+            title,
+            backdrop: item.backdrop || null,
+            portada: item.portada || null,
+            thumb: getWrappedBannerProxyUrl(item.backdrop || item.portada, 'w500') || safeUrl(item.backdrop || item.portada),
+            score,
+            source: 'library',
+        };
+        wrappedBannerCandidatesMap.set(key, entry);
+        list.push(entry);
+    }
+
+    list.sort((a, b) => b.score - a.score || a.title.localeCompare(b.title, 'es'));
+    return list;
+}
+
+function isIsoDateInYear(iso, targetYear) {
+    if (!iso) return false;
+    const d = new Date(iso);
+    return !Number.isNaN(d.getTime()) && d.getFullYear() === targetYear;
+}
+
+function computeWrappedStatsData(period = 'year') {
+    const normalizedPeriod = period === 'all' ? 'all' : 'year';
+    const isYearMode = normalizedPeriod === 'year';
+    const metrics = computeGamificationMetrics();
+    const summary = computeGamificationSummary(metrics);
+    const unlockedMap = getGamificationState().unlockedAchievements || {};
+    const unlockedBadges = ACHIEVEMENTS_CATALOG.filter(a => Boolean(unlockedMap[a.id])).length;
+    const totalBadges = ACHIEVEMENTS_CATALOG.length;
+    const now = new Date();
+    const curYear = now.getFullYear();
+
+    let seriesMinutes = 0;
+    let watchedEpisodes = 0;
+    let epsThisYear = 0;
+    let completedShows = 0;
+    let activeShowsCount = 0;
+    let maxSameDayBingeThisYear = 0;
+    const bingeDayCounts = new Map();
+
+    let watchedMovies = 0;
+    const watchedMovieIdsInPeriod = new Set();
+    let movieMinutes = 0;
+    let movieRuntimeSum = 0;
+    let movieRuntimeCount = 0;
+
+    let scoreSum = 0;
+    let scoreCount = 0;
+    let ratedItems = 0;
+    let tenRatingsCount = 0;
+    let reviewsWritten = 0;
+    let favoritesCount = 0;
+
+    const genreCounts = new Map();
+    const decadeCounts = new Map();
+
+    const addGenres = (rawList) => {
+        for (const g of (Array.isArray(rawList) ? rawList : [])) {
+            const name = String(g?.name || g || '').trim();
+            if (!name) continue;
+            genreCounts.set(name, (genreCounts.get(name) || 0) + 1);
+        }
+    };
+
+    const tallyCriticStats = (item) => {
+        const sc = Number(item.puntuacion);
+        if (Number.isFinite(sc) && sc > 0) {
+            scoreSum += sc;
+            scoreCount += 1;
+            ratedItems += 1;
+            if (sc >= 10) tenRatingsCount += 1;
+        }
+        if (String(item.critica || '').trim()) {
+            reviewsWritten += 1;
+        }
+        if (item.favorito) {
+            favoritesCount += 1;
+        }
+    };
+
+    for (const s of (AppState.shows || [])) {
+        const eps = Array.isArray(s.capitulos_vistos) ? s.capitulos_vistos : [];
+        const datesMap = (s.capitulos_vistos_fecha && typeof s.capitulos_vistos_fecha === 'object')
+            ? s.capitulos_vistos_fecha
+            : {};
+        const datedKeys = Object.keys(datesMap);
+        const hasEpisodeDates = datedKeys.length > 0;
+        const runtime = getShowEpisodeRuntimeMinutes(s);
+        const isShowCompleted = normalizeStatus(s.estado) === 'completed';
+
+        let epsInCurYearForShow = 0;
+        let latestEpMs = 0;
+
+        if (hasEpisodeDates) {
+            for (const epId of eps) {
+                const iso = datesMap[epId];
+                if (!iso) continue;
+                const d = new Date(iso);
+                const ms = d.getTime();
+                if (Number.isNaN(ms)) continue;
+                if (ms > latestEpMs) latestEpMs = ms;
+                if (d.getFullYear() === curYear) {
+                    epsInCurYearForShow += 1;
+                    epsThisYear += 1;
+                    const dayKey = getLocalDateKey(d);
+                    if (dayKey) {
+                        const nextCount = (bingeDayCounts.get(dayKey) || 0) + 1;
+                        bingeDayCounts.set(dayKey, nextCount);
+                        if (nextCount > maxSameDayBingeThisYear) {
+                            maxSameDayBingeThisYear = nextCount;
+                        }
+                    }
+                }
+            }
+        } else if (eps.length > 0 && isIsoDateInYear(s.updatedAt, curYear)) {
+            epsInCurYearForShow = eps.length;
+            epsThisYear += eps.length;
+        }
+
+        const epsCount = isYearMode ? epsInCurYearForShow : eps.length;
+        watchedEpisodes += epsCount;
+        seriesMinutes += epsCount * runtime;
+
+        const completedInCurYear = isShowCompleted && (
+            hasEpisodeDates
+                ? (latestEpMs > 0 ? new Date(latestEpMs).getFullYear() === curYear : isIsoDateInYear(s.updatedAt, curYear))
+                : isIsoDateInYear(s.updatedAt, curYear)
+        );
+        const showCompletedInPeriod = isYearMode ? completedInCurYear : isShowCompleted;
+        if (showCompletedInPeriod) completedShows += 1;
+
+        const showActiveInPeriod = !isYearMode
+            ? (isShowCompleted || eps.length > 0)
+            : (epsInCurYearForShow > 0 || completedInCurYear);
+
+        if (showActiveInPeriod) {
+            activeShowsCount += 1;
+            addGenres(s.generos);
+        }
+
+        if (!isYearMode || showActiveInPeriod || isIsoDateInYear(s.updatedAt, curYear)) {
+            tallyCriticStats(s);
+        }
+    }
+
+    for (const m of (AppState.movies || [])) {
+        const isCompleted = normalizeStatus(m.estado) === 'completed';
+        const watchIso = m.fecha_visto || m.updatedAt;
+        const watchedInPeriod = isCompleted && (!isYearMode || isIsoDateInYear(watchIso, curYear));
+
+        if (watchedInPeriod) {
+            watchedMovies += 1;
+            if (Number(m.id_tmdb) > 0) watchedMovieIdsInPeriod.add(Number(m.id_tmdb));
+            const rt = Number(m.runtime);
+            movieMinutes += rt > 0 ? rt : 100;
+            if (rt > 0) {
+                movieRuntimeSum += rt;
+                movieRuntimeCount += 1;
+            }
+            addGenres(m.generos);
+            const yNum = Number(getItemYearString(m));
+            if (Number.isFinite(yNum) && yNum >= 1900) {
+                const dec = Math.floor(yNum / 10) * 10;
+                decadeCounts.set(dec, (decadeCounts.get(dec) || 0) + 1);
+            }
+        }
+
+        if (!isYearMode || watchedInPeriod || isIsoDateInYear(m.updatedAt, curYear)) {
+            tallyCriticStats(m);
+        }
+    }
+
+    let completedSagasCount = metrics.completedSagasCount;
+    if (isYearMode) {
+        const { completedTickets } = computeVintageTicketsProgress();
+        completedSagasCount = (completedTickets || []).filter(ticket =>
+            (ticket.parts || []).some(part => watchedMovieIdsInPeriod.has(Number(part.id_tmdb))),
+        ).length;
+    }
+
+    const totalMinutes = seriesMinutes + movieMinutes;
+    const totalHours = Math.floor(totalMinutes / 60);
+    const movieHours = Math.floor(movieMinutes / 60);
+    const seriesHours = Math.floor(seriesMinutes / 60);
+    const avgMovieRuntime = movieRuntimeCount > 0
+        ? Math.round(movieRuntimeSum / movieRuntimeCount)
+        : (watchedMovies > 0 ? Math.round(movieMinutes / watchedMovies) : 0);
+
+    const topGenres = [...genreCounts.entries()]
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'es'))
+        .slice(0, 4);
+    const topGenreName = topGenres[0]?.[0] || '';
+    const topDecadeEntry = [...decadeCounts.entries()].sort((a, b) => b[1] - a[1] || b[0] - a[0])[0];
+    const topDecadeLabel = topDecadeEntry ? `${topDecadeEntry[0]}s` : '';
+    const avgRatingLabel = scoreCount > 0 ? (scoreSum / scoreCount).toFixed(1) : '';
+    const maxSameDayBinge = isYearMode ? maxSameDayBingeThisYear : metrics.maxSameDayBinge;
+
+    return {
+        year: curYear,
+        period: normalizedPeriod,
+        totalHours,
+        totalDays: Math.max(0, Math.round(totalHours / 24)),
+        totalDurationLabel: formatWatchDuration(totalMinutes),
+        movieHours,
+        seriesHours,
+        watchedMovies,
+        watchedEpisodes,
+        completedShows,
+        activeShowsCount,
+        epsThisYear,
+        maxSameDayBinge,
+        avgMovieRuntime,
+        completedSagasCount,
+        topGenres,
+        topGenreName,
+        topDecadeLabel,
+        distinctGenres: isYearMode ? genreCounts.size : metrics.distinctWatchedGenres,
+        avgRatingLabel,
+        ratedItems,
+        reviewsWritten,
+        favoritesCount,
+        tenRatingsCount,
+        level: summary.level,
+        rank: summary.rank,
+        animalName: summary.animal?.name || '',
+        totalXp: summary.totalXp,
+        unlockedBadges,
+        totalBadges,
+    };
+}
+
+function drawRoundedRectPath(ctx, x, y, w, h, r) {
+    const rad = Math.min(r, w / 2, h / 2);
+    ctx.beginPath();
+    ctx.moveTo(x + rad, y);
+    ctx.arcTo(x + w, y, x + w, y + h, rad);
+    ctx.arcTo(x + w, y + h, x, y + h, rad);
+    ctx.arcTo(x, y + h, x, y, rad);
+    ctx.arcTo(x, y, x + w, y, rad);
+    ctx.closePath();
+}
+
+function fitCanvasFontSize(ctx, text, maxWidth, startSize, minSize, weight = '800', family = '"Plus Jakarta Sans", system-ui, sans-serif') {
+    let size = startSize;
+    while (size > minSize) {
+        ctx.font = `${weight} ${size}px ${family}`;
+        if (ctx.measureText(text).width <= maxWidth) return size;
+        size -= 4;
+    }
+    return minSize;
+}
+
+function buildWrappedContentPayload(focusId, data) {
+    const focus = WRAPPED_FOCUS_OPTIONS.find(f => f.id === focusId) || WRAPPED_FOCUS_OPTIONS[0];
+    const isYear = data.period !== 'all';
+    const scopeTag = isYear ? `en ${data.year}` : 'en total';
+    let heroText = '';
+    let heroLabel = '';
+    let rows = [];
+    let genreBars = null;
+
+    if (focus.id === 'overview') {
+        heroText = `${data.totalHours.toLocaleString('es-ES')} h`;
+        heroLabel = isYear
+            ? `En pantalla en ${data.year} (${data.totalDays} días completos)`
+            : `En pantalla (${data.totalDays} días completos viendo cine y series)`;
+        rows = [
+            { label: 'Películas vistas', val: `${data.watchedMovies.toLocaleString('es-ES')}` },
+            { label: 'Episodios vistos', val: `${data.watchedEpisodes.toLocaleString('es-ES')}` },
+            { label: 'Series completadas', val: `${data.completedShows.toLocaleString('es-ES')}` },
+            { label: 'Experiencia acumulada', val: `${data.totalXp.toLocaleString('es-ES')} XP` },
+        ];
+    } else if (focus.id === 'genres') {
+        heroText = data.topGenreName || 'Sin datos';
+        heroLabel = `Tu género #1 ${scopeTag} · ${data.distinctGenres} géneros explorados`;
+        genreBars = data.topGenres;
+        rows = [
+            { label: 'Década favorita', val: data.topDecadeLabel || 'Variada' },
+            { label: 'Colecciones completadas', val: `${data.completedSagasCount}` },
+        ];
+    } else if (focus.id === 'series') {
+        heroText = `${data.watchedEpisodes.toLocaleString('es-ES')}`;
+        heroLabel = `Episodios vistos ${scopeTag} · ${data.seriesHours.toLocaleString('es-ES')} horas en series`;
+        rows = [
+            { label: 'Series completadas al 100%', val: `${data.completedShows}` },
+            isYear
+                ? { label: `Series vistas en ${data.year}`, val: `${data.activeShowsCount}` }
+                : { label: `Episodios vistos en ${data.year}`, val: `${data.epsThisYear.toLocaleString('es-ES')}` },
+            { label: 'Récord en un solo día', val: `${data.maxSameDayBinge} ep.` },
+            { label: 'Tiempo dedicado', val: `${data.seriesHours.toLocaleString('es-ES')} h` },
+        ];
+    } else if (focus.id === 'cinema') {
+        heroText = `${data.watchedMovies.toLocaleString('es-ES')}`;
+        heroLabel = `Películas vistas ${scopeTag} · ${data.movieHours.toLocaleString('es-ES')} horas de cine`;
+        rows = [
+            { label: 'Duración media', val: data.avgMovieRuntime > 0 ? `${data.avgMovieRuntime} min` : '—' },
+            { label: 'Colecciones completadas', val: `${data.completedSagasCount}` },
+            { label: 'Década predilecta', val: data.topDecadeLabel || '—' },
+            { label: 'Horas de proyección', val: `${data.movieHours.toLocaleString('es-ES')} h` },
+        ];
+    } else if (focus.id === 'critic') {
+        heroText = data.avgRatingLabel ? `${data.avgRatingLabel} ★` : '—';
+        heroLabel = isYear
+            ? `Tu nota media en ${data.year} entre películas y series`
+            : 'Tu nota media global entre películas y series';
+        rows = [
+            { label: 'Títulos puntuados', val: `${data.ratedItems}` },
+            { label: 'Obras maestras (10★)', val: `${data.tenRatingsCount}` },
+            { label: 'Reseñas y notas escritas', val: `${data.reviewsWritten}` },
+            { label: 'Favoritos guardados', val: `${data.favoritesCount}` },
+        ];
+    } else {
+        heroText = `Nivel ${data.level}`;
+        heroLabel = `${data.rank} · ${data.animalName}`;
+        rows = [
+            { label: isYear ? `Horas en pantalla (${data.year})` : 'Horas totales en pantalla', val: `${data.totalHours.toLocaleString('es-ES')} h` },
+            { label: 'Insignias desbloqueadas', val: `${data.unlockedBadges}/${data.totalBadges}` },
+            { label: isYear ? `Películas + Series (${data.year})` : 'Películas + Series cerradas', val: `${data.watchedMovies + data.completedShows}` },
+            { label: 'Puntos de experiencia', val: `${data.totalXp.toLocaleString('es-ES')} XP` },
+        ];
+    }
+
+    return { focus, heroText, heroLabel, rows, genreBars };
+}
+
+async function renderWrappedCardCanvas(options, data) {
+    const W = 1080;
+    const H = 1440;
+    const canvas = document.createElement('canvas');
+    canvas.width = W;
+    canvas.height = H;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return canvas;
+
+    const styleTier = WRAPPED_STYLE_TIERS.find(s => s.id === options.styleId) || WRAPPED_STYLE_TIERS[0];
+    const palette = WRAPPED_PALETTES.find(p => p.id === options.paletteId) || WRAPPED_PALETTES[0];
+    const { focus, heroText, heroLabel, rows, genreBars } = buildWrappedContentPayload(options.focusId, data);
+    const fontSans = '"Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+    const fontMono = '"JetBrains Mono", ui-monospace, monospace';
+
+    const styleId = styleTier.id;
+    const isSimple = styleId === 'simple';
+    const isEditorial = styleId === 'editorial';
+    const isKinetic = styleId === 'kinetic';
+    const isPrisma = styleId === 'prisma';
+    const isBannerStyle = styleTier.supportsBanner;
+    const isLegendBanner = styleId === 'legend_banner';
+
+    let bannerImg = null;
+    if (isBannerStyle && options.banner) {
+        bannerImg = await loadWrappedBannerImage(options.banner);
+    }
+
+    // ── 1. BACKGROUND LAYER (evoluciona drásticamente del nivel 1 al 100) ──
+    if (isSimple) {
+        ctx.fillStyle = palette.id === 'lime' ? '#0b120c' : '#111216';
+        ctx.fillRect(0, 0, W, H);
+    } else if (isEditorial) {
+        const g = ctx.createLinearGradient(0, 0, 0, H);
+        g.addColorStop(0, palette.bg1);
+        g.addColorStop(1, '#09090c');
+        ctx.fillStyle = g;
+        ctx.fillRect(0, 0, W, H);
+    } else {
+        const g = ctx.createLinearGradient(0, 0, W, H);
+        g.addColorStop(0, palette.bg1);
+        g.addColorStop(0.55, palette.bg2);
+        g.addColorStop(1, '#070709');
+        ctx.fillStyle = g;
+        ctx.fillRect(0, 0, W, H);
+    }
+
+    // Visual effects by tier
+    if (isKinetic || isPrisma) {
+        ctx.save();
+        const orb1 = ctx.createRadialGradient(W * 0.85, H * 0.16, 40, W * 0.85, H * 0.16, 560);
+        orb1.addColorStop(0, palette.accent);
+        orb1.addColorStop(1, 'transparent');
+        ctx.globalAlpha = isPrisma ? 0.34 : 0.26;
+        ctx.fillStyle = orb1;
+        ctx.fillRect(0, 0, W, H);
+
+        const orb2 = ctx.createRadialGradient(W * 0.14, H * 0.78, 30, W * 0.14, H * 0.78, 540);
+        orb2.addColorStop(0, palette.accent2);
+        orb2.addColorStop(1, 'transparent');
+        ctx.globalAlpha = isPrisma ? 0.3 : 0.22;
+        ctx.fillStyle = orb2;
+        ctx.fillRect(0, 0, W, H);
+
+        // Sweeping Bezier curves
+        ctx.globalAlpha = isPrisma ? 0.2 : 0.16;
+        ctx.strokeStyle = palette.accent;
+        ctx.lineWidth = isPrisma ? 54 : 44;
+        ctx.beginPath();
+        ctx.moveTo(-80, H * 0.34);
+        ctx.bezierCurveTo(W * 0.32, H * 0.14, W * 0.65, H * 0.56, W + 80, H * 0.32);
+        ctx.stroke();
+
+        ctx.globalAlpha = isPrisma ? 0.16 : 0.12;
+        ctx.strokeStyle = palette.accent2;
+        ctx.lineWidth = 28;
+        ctx.beginPath();
+        ctx.moveTo(-80, H * 0.72);
+        ctx.bezierCurveTo(W * 0.38, H * 0.88, W * 0.62, H * 0.58, W + 80, H * 0.76);
+        ctx.stroke();
+        ctx.restore();
+
+        // Dot matrix
+        ctx.save();
+        ctx.fillStyle = palette.accent;
+        ctx.globalAlpha = 0.16;
+        for (let gx = 740; gx <= 990; gx += 30) {
+            for (let gy = 86; gy <= 236; gy += 30) {
+                ctx.beginPath();
+                ctx.arc(gx, gy, 3, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+        ctx.restore();
+    }
+
+    if (isPrisma) {
+        // Angled translucent aurora shards
+        ctx.save();
+        ctx.translate(W * 0.5, H * 0.42);
+        ctx.rotate(-0.28);
+        const prismGrad = ctx.createLinearGradient(-600, -180, 600, 180);
+        prismGrad.addColorStop(0, 'rgba(255,255,255,0)');
+        prismGrad.addColorStop(0.5, 'rgba(255,255,255,0.09)');
+        prismGrad.addColorStop(1, 'rgba(255,255,255,0)');
+        ctx.fillStyle = prismGrad;
+        ctx.fillRect(-750, -140, 1500, 280);
+        ctx.restore();
+    }
+
+    // Banner layer (Nv. 70 & Nv. 100)
+    if (isBannerStyle) {
+        const bannerMode = options.bannerLayout === 'full' ? 'full' : 'hero';
+        if (bannerImg) {
+            ctx.save();
+            if (bannerMode === 'full') {
+                drawCoverImage(ctx, bannerImg, 0, 0, W, H);
+                const fullScrim = ctx.createLinearGradient(0, 0, 0, H);
+                fullScrim.addColorStop(0, 'rgba(7, 7, 10, 0.52)');
+                fullScrim.addColorStop(0.45, 'rgba(7, 7, 10, 0.72)');
+                fullScrim.addColorStop(1, 'rgba(7, 7, 10, 0.94)');
+                ctx.fillStyle = fullScrim;
+                ctx.fillRect(0, 0, W, H);
+            } else {
+                const heroStageH = Math.round(H * 0.52);
+                drawCoverImage(ctx, bannerImg, 0, 0, W, heroStageH);
+                const stageScrim = ctx.createLinearGradient(0, 0, 0, heroStageH + 40);
+                stageScrim.addColorStop(0, 'rgba(7, 7, 10, 0.48)');
+                stageScrim.addColorStop(0.42, 'rgba(7, 7, 10, 0.58)');
+                stageScrim.addColorStop(0.86, palette.bg1);
+                stageScrim.addColorStop(1, palette.bg1);
+                ctx.fillStyle = stageScrim;
+                ctx.fillRect(0, 0, W, heroStageH + 44);
+            }
+            ctx.restore();
+        } else {
+            // Subtle atmospheric theater glow when banner is empty/fallback
+            ctx.save();
+            const curtain = ctx.createRadialGradient(W * 0.5, H * 0.22, 40, W * 0.5, H * 0.22, 620);
+            curtain.addColorStop(0, palette.accent);
+            curtain.addColorStop(1, 'transparent');
+            ctx.globalAlpha = 0.22;
+            ctx.fillStyle = curtain;
+            ctx.fillRect(0, 0, W, H);
+            ctx.restore();
+        }
+
+        if (isLegendBanner) {
+            // Luminous gold/platinum halo + radial sheen
+            ctx.save();
+            const halo = ctx.createRadialGradient(W * 0.5, H * 0.34, 40, W * 0.5, H * 0.34, 640);
+            halo.addColorStop(0, 'rgba(245, 196, 120, 0.2)');
+            halo.addColorStop(0.6, 'rgba(186, 230, 253, 0.08)');
+            halo.addColorStop(1, 'transparent');
+            ctx.fillStyle = halo;
+            ctx.fillRect(0, 0, W, H);
+            ctx.restore();
+        }
+    }
+
+    // ── 2. FRAME LAYER ──
+    if (isLegendBanner) {
+        ctx.save();
+        ctx.strokeStyle = 'rgba(245, 196, 120, 0.68)';
+        ctx.lineWidth = 3;
+        drawRoundedRectPath(ctx, 32, 32, W - 64, H - 64, 40);
+        ctx.stroke();
+
+        ctx.strokeStyle = 'rgba(186, 230, 253, 0.32)';
+        ctx.lineWidth = 1.5;
+        drawRoundedRectPath(ctx, 48, 48, W - 96, H - 96, 30);
+        ctx.stroke();
+        ctx.restore();
+    } else if (!isSimple) {
+        ctx.save();
+        ctx.strokeStyle = isBannerStyle ? 'rgba(255, 255, 255, 0.18)' : 'rgba(255, 255, 255, 0.12)';
+        ctx.lineWidth = 2;
+        drawRoundedRectPath(ctx, 36, 36, W - 72, H - 72, 42);
+        ctx.stroke();
+        ctx.restore();
+    } else {
+        ctx.save();
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
+        ctx.lineWidth = 2;
+        drawRoundedRectPath(ctx, 28, 28, W - 56, H - 56, 28);
+        ctx.stroke();
+        ctx.restore();
+    }
+
+    const padX = 88;
+    const innerW = W - padX * 2;
+    const accentColor = isLegendBanner ? '#f5c478' : palette.accent;
+
+    // ── 3. HEADER ROW ──
+    ctx.fillStyle = isSimple ? 'rgba(255, 255, 255, 0.65)' : accentColor;
+    ctx.font = `800 26px ${fontMono}`;
+    ctx.fillText('SEENIT WRAPPED', padX, 118);
+
+    ctx.textAlign = 'right';
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.78)';
+    ctx.font = `700 26px ${fontMono}`;
+    ctx.fillText(data.period === 'year' ? String(data.year) : 'HISTÓRICO', W - padX, 118);
+    ctx.textAlign = 'left';
+
+    // Kicker & Title
+    ctx.fillStyle = isSimple ? 'rgba(255, 255, 255, 0.56)' : 'rgba(255, 255, 255, 0.78)';
+    ctx.font = `700 28px ${fontSans}`;
+    ctx.fillText(focus.kicker.toUpperCase(), padX, 204);
+
+    const titleSize = fitCanvasFontSize(ctx, focus.title, innerW, 64, 42, '800', fontSans);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = `800 ${titleSize}px ${fontSans}`;
+    ctx.fillText(focus.title, padX, 276);
+
+    if (!isSimple) {
+        ctx.fillStyle = accentColor;
+        ctx.fillRect(padX, 314, isEditorial ? 90 : 128, 6);
+    } else {
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.14)';
+        ctx.fillRect(padX, 314, innerW, 2);
+    }
+
+    // ── 4. HERO METRIC ──
+    const heroFontSize = fitCanvasFontSize(ctx, heroText, innerW, isSimple ? 116 : 138, 60, '800', fontSans);
+    ctx.fillStyle = isSimple ? '#ffffff' : accentColor;
+    ctx.font = `800 ${heroFontSize}px ${fontSans}`;
+    ctx.fillText(heroText, padX, 492);
+
+    ctx.fillStyle = 'rgba(244, 244, 245, 0.86)';
+    ctx.font = `600 30px ${fontSans}`;
+    ctx.fillText(heroLabel, padX, 554, innerW);
+
+    // ── 5. GENRE BARS & STAT BLOCKS ──
+    let cursorY = 630;
+    if (genreBars && genreBars.length) {
+        const maxVal = Math.max(1, genreBars[0][1]);
+        for (let i = 0; i < genreBars.length; i += 1) {
+            const [gName, gCount] = genreBars[i];
+            const ratio = Math.max(0.14, gCount / maxVal);
+            ctx.fillStyle = isSimple ? 'rgba(255, 255, 255, 0.05)' : 'rgba(255, 255, 255, 0.09)';
+            drawRoundedRectPath(ctx, padX, cursorY, innerW, 74, isSimple ? 10 : 18);
+            ctx.fill();
+
+            ctx.fillStyle = isSimple
+                ? (i === 0 ? 'rgba(255, 255, 255, 0.22)' : 'rgba(255, 255, 255, 0.1)')
+                : (i === 0 ? accentColor : palette.accent2);
+            ctx.globalAlpha = isSimple ? 1 : (i === 0 ? 0.92 : 0.72);
+            drawRoundedRectPath(ctx, padX, cursorY, Math.round(innerW * ratio), 74, isSimple ? 10 : 18);
+            ctx.fill();
+            ctx.globalAlpha = 1;
+
+            ctx.fillStyle = (!isSimple && i === 0) ? '#070709' : '#ffffff';
+            ctx.font = `800 28px ${fontSans}`;
+            ctx.fillText(`${i + 1}. ${gName}`, padX + 26, cursorY + 47, innerW - 180);
+
+            ctx.textAlign = 'right';
+            ctx.fillStyle = '#ffffff';
+            ctx.font = `800 28px ${fontMono}`;
+            ctx.fillText(`${gCount}`, padX + innerW - 24, cursorY + 47);
+            ctx.textAlign = 'left';
+
+            cursorY += 94;
+        }
+        cursorY += 18;
+    }
+
+    if (isSimple) {
+        // Clean flat list rows (deliberately simple at Level 1)
+        const listRowH = genreBars ? 92 : 128;
+        for (let i = 0; i < rows.length; i += 1) {
+            const ry = cursorY + i * listRowH;
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.68)';
+            ctx.font = `600 26px ${fontSans}`;
+            ctx.fillText(rows[i].label, padX, ry + 54, innerW * 0.56);
+
+            ctx.textAlign = 'right';
+            ctx.fillStyle = '#ffffff';
+            ctx.font = `800 40px ${fontSans}`;
+            ctx.fillText(rows[i].val, W - padX, ry + 58, innerW * 0.42);
+            ctx.textAlign = 'left';
+
+            if (i < rows.length - 1) {
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.1)';
+                ctx.fillRect(padX, ry + listRowH - 18, innerW, 1.5);
+            }
+        }
+    } else {
+        const cardGap = 24;
+        const colW = (innerW - cardGap) / 2;
+        const rowH = genreBars ? 140 : 182;
+
+        for (let i = 0; i < rows.length; i += 1) {
+            const col = i % 2;
+            const row = Math.floor(i / 2);
+            const rx = padX + col * (colW + cardGap);
+            const ry = cursorY + row * (rowH + cardGap);
+
+            ctx.save();
+            ctx.fillStyle = isBannerStyle
+                ? 'rgba(10, 10, 14, 0.68)'
+                : (isPrisma ? 'rgba(255, 255, 255, 0.085)' : 'rgba(255, 255, 255, 0.06)');
+            ctx.strokeStyle = isLegendBanner
+                ? 'rgba(245, 196, 120, 0.36)'
+                : (isPrisma ? 'rgba(255, 255, 255, 0.2)' : 'rgba(255, 255, 255, 0.13)');
+            ctx.lineWidth = 2;
+            drawRoundedRectPath(ctx, rx, ry, colW, rowH, isEditorial ? 16 : 24);
+            ctx.fill();
+            ctx.stroke();
+
+            if (isPrisma || isLegendBanner) {
+                ctx.fillStyle = isLegendBanner ? 'rgba(245, 196, 120, 0.4)' : 'rgba(255, 255, 255, 0.28)';
+                ctx.fillRect(rx + 28, ry + 2, colW - 56, 2);
+            }
+            ctx.restore();
+
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.72)';
+            ctx.font = `600 24px ${fontSans}`;
+            ctx.fillText(rows[i].label, rx + 28, ry + 54, colW - 56);
+
+            const valSize = fitCanvasFontSize(ctx, rows[i].val, colW - 56, 52, 30, '800', fontSans);
+            ctx.fillStyle = '#ffffff';
+            ctx.font = `800 ${valSize}px ${fontSans}`;
+            ctx.fillText(rows[i].val, rx + 28, ry + (genreBars ? 110 : 132), colW - 56);
+        }
+    }
+
+    // ── 6. FOOTER STRIP ──
+    const footerTopY = H - 154;
+    ctx.strokeStyle = isLegendBanner ? 'rgba(245, 196, 120, 0.32)' : 'rgba(255, 255, 255, 0.14)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(padX, footerTopY);
+    ctx.lineTo(W - padX, footerTopY);
+    ctx.stroke();
+
+    if (isBannerStyle && options.banner?.title) {
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.74)';
+        ctx.font = `600 22px ${fontSans}`;
+        ctx.fillText(`Con fondo de ${options.banner.title}`, padX, H - 178, innerW);
+    }
+
+    ctx.fillStyle = isSimple ? 'rgba(255, 255, 255, 0.85)' : accentColor;
+    ctx.font = `800 28px ${fontSans}`;
+    ctx.fillText(`Nivel ${data.level} · ${data.rank}`, padX, H - 96, innerW - 240);
+
+    ctx.textAlign = 'right';
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.76)';
+    ctx.font = `800 26px ${fontMono}`;
+    ctx.fillText('seenit.app', W - padX, H - 96);
+    ctx.textAlign = 'left';
+
+    return canvas;
+}
+
+function getHighestUnlockedWrappedStyleId(summary) {
+    for (let i = WRAPPED_STYLE_TIERS.length - 1; i >= 0; i -= 1) {
+        if (WRAPPED_STYLE_TIERS[i].isUnlocked(summary)) {
+            return WRAPPED_STYLE_TIERS[i].id;
+        }
+    }
+    return WRAPPED_STYLE_TIERS[0].id;
+}
+
+function getEffectiveWrappedPaletteId(desiredId, summary) {
+    const found = WRAPPED_PALETTES.find(p => p.id === desiredId);
+    if (found && summary.level >= found.minLevel) return found.id;
+    const unlocked = WRAPPED_PALETTES.filter(p => summary.level >= p.minLevel);
+    return unlocked[unlocked.length - 1]?.id || 'graphite';
+}
+
+function renderWrappedStudioControls() {
+    const container = document.getElementById('wrapped-studio-controls');
+    if (!container || !activeWrappedModalState) return;
+
+    const { summary, data, period, focusId, styleId, paletteId, banner, bannerLayout, bannerQuery, tmdbBannerResults, bannerSearchLoading } = activeWrappedModalState;
+    const currentStyle = WRAPPED_STYLE_TIERS.find(s => s.id === styleId) || WRAPPED_STYLE_TIERS[0];
+    const bannerTierUnlocked = summary.level >= 70;
+    const showBannerPicker = bannerTierUnlocked && currentStyle.supportsBanner;
+
+    const localCandidates = getWrappedLibraryBannerCandidates(bannerQuery).slice(0, 12);
+    const localKeys = new Set(localCandidates.map(c => c.key));
+    const mergedCandidates = [
+        ...localCandidates,
+        ...(tmdbBannerResults || []).filter(t => !localKeys.has(t.key)),
+    ].slice(0, 16);
+
+    container.innerHTML = `
+        <div class="tvst-wrapped-control-group">
+            <div class="tvst-wrapped-control-head">
+                <span class="tvst-wrapped-control-label">Periodo</span>
+                <span class="tvst-wrapped-control-meta">${period === 'year' ? `Solo contenido de ${data.year}` : 'Toda tu biblioteca'}</span>
+            </div>
+            <div class="tvst-wrapped-chip-row" role="tablist" aria-label="Periodo del Wrapped">
+                <button type="button"
+                    class="tvst-wrapped-chip${period === 'year' ? ' is-active' : ''}"
+                    onclick="setWrappedStudioPeriod('year')">Este año (${data.year})</button>
+                <button type="button"
+                    class="tvst-wrapped-chip${period === 'all' ? ' is-active' : ''}"
+                    onclick="setWrappedStudioPeriod('all')">Histórico</button>
+            </div>
+        </div>
+
+        <div class="tvst-wrapped-control-group">
+            <div class="tvst-wrapped-control-head">
+                <span class="tvst-wrapped-control-label">Contenido</span>
+                <span class="tvst-wrapped-control-meta">Qué estadística destacar</span>
+            </div>
+            <div class="tvst-wrapped-chip-row" role="tablist" aria-label="Contenido de tarjeta Wrapped">
+                ${WRAPPED_FOCUS_OPTIONS.map(opt => `
+                    <button type="button"
+                        class="tvst-wrapped-chip${focusId === opt.id ? ' is-active' : ''}"
+                        onclick="setWrappedStudioFocus('${opt.id}')">${escapeHtml(opt.label)}</button>
+                `).join('')}
+            </div>
+        </div>
+
+        <div class="tvst-wrapped-control-group">
+            <div class="tvst-wrapped-control-head">
+                <span class="tvst-wrapped-control-label">Estilo por nivel</span>
+                <span class="tvst-wrapped-control-meta">Nivel actual: ${summary.level}</span>
+            </div>
+            <div class="tvst-wrapped-tier-row">
+                ${WRAPPED_STYLE_TIERS.map(tier => {
+                    const unlocked = tier.isUnlocked(summary);
+                    const isSelected = styleId === tier.id;
+                    return `
+                        <button type="button"
+                            class="tvst-wrapped-tier-btn${isSelected ? ' is-active' : ''}${unlocked ? '' : ' is-locked'}"
+                            onclick="setWrappedStudioStyle('${tier.id}')">
+                            <span class="tvst-wrapped-tier-dot" style="--s-bg1:${tier.swatch.bg1};--s-bg2:${tier.swatch.bg2};--s-accent:${tier.swatch.accent};"></span>
+                            <span class="tvst-wrapped-tier-copy">
+                                <strong>${escapeHtml(tier.label)}</strong>
+                                <small>${unlocked ? escapeHtml(tier.kicker) : escapeHtml(tier.unlockLabel)}</small>
+                            </span>
+                            ${unlocked ? '' : `<svg class="tvst-wrapped-tier-lock" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>`}
+                        </button>
+                    `;
+                }).join('')}
+            </div>
+        </div>
+
+        <div class="tvst-wrapped-control-group">
+            <div class="tvst-wrapped-control-head">
+                <span class="tvst-wrapped-control-label">Paleta de color</span>
+                <span class="tvst-wrapped-control-meta">${summary.level < 15 ? 'Más colores en Nivel 15' : 'Desbloqueadas'}</span>
+            </div>
+            <div class="tvst-wrapped-palette-row">
+                ${WRAPPED_PALETTES.map(pal => {
+                    const unlocked = summary.level >= pal.minLevel;
+                    const isSelected = paletteId === pal.id;
+                    return `
+                        <button type="button"
+                            class="tvst-wrapped-palette-btn${isSelected ? ' is-active' : ''}${unlocked ? '' : ' is-locked'}"
+                            title="${escapeHtml(pal.label)}${unlocked ? '' : ` (Nivel ${pal.minLevel})`}"
+                            onclick="setWrappedStudioPalette('${pal.id}')">
+                            <span class="tvst-wrapped-palette-swatch" style="background:linear-gradient(135deg, ${pal.bg1} 0%, ${pal.accent} 100%);"></span>
+                            <span>${escapeHtml(pal.label)}${unlocked ? '' : ` · Nv.${pal.minLevel}`}</span>
+                        </button>
+                    `;
+                }).join('')}
+            </div>
+        </div>
+
+        <div class="tvst-wrapped-control-group">
+            <div class="tvst-wrapped-control-head">
+                <span class="tvst-wrapped-control-label">Banner de serie o película</span>
+                <span class="tvst-wrapped-control-meta">${bannerTierUnlocked ? 'Disponible' : 'Se desbloquea en Nivel 70'}</span>
+            </div>
+            ${!bannerTierUnlocked ? `
+                <div class="tvst-wrapped-banner-locked">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+                    <span>Alcanza el <strong>Nivel 70</strong> para poner el banner oficial de cualquier serie o película en tu Wrapped.</span>
+                </div>
+            ` : (!showBannerPicker ? `
+                <div class="tvst-wrapped-banner-locked">
+                    <span>Selecciona el estilo <strong>Cine Banner</strong> o <strong>Edición Leyenda</strong> para activar el fondo de serie o película.</span>
+                </div>
+            ` : `
+                <div class="tvst-wrapped-banner-tools">
+                    <input type="text"
+                        id="wrapped-banner-search-input"
+                        class="tvst-wrapped-banner-search"
+                        value="${escapeHtml(bannerQuery || '')}"
+                        placeholder="Buscar serie o película…"
+                        oninput="onWrappedBannerSearchInput(this.value)"
+                        autocomplete="off">
+                    <button type="button" class="tvst-wrapped-mini-btn" onclick="pickRandomWrappedBanner()">Aleatorio</button>
+                    ${banner ? `<button type="button" class="tvst-wrapped-mini-btn" onclick="clearWrappedStudioBanner()">Quitar</button>` : ''}
+                </div>
+                <div class="tvst-wrapped-banner-layout-row">
+                    <button type="button" class="tvst-wrapped-chip${bannerLayout === 'hero' ? ' is-active' : ''}" onclick="setWrappedBannerLayout('hero')">Panorámico</button>
+                    <button type="button" class="tvst-wrapped-chip${bannerLayout === 'full' ? ' is-active' : ''}" onclick="setWrappedBannerLayout('full')">Fondo completo</button>
+                    ${banner?.title ? `<span class="tvst-wrapped-banner-selected">Fondo: <strong>${escapeHtml(banner.title)}</strong></span>` : ''}
+                </div>
+                <div class="tvst-wrapped-banner-rail">
+                    ${mergedCandidates.length ? mergedCandidates.map(item => {
+                        const isSel = banner?.key === item.key;
+                        return `
+                            <button type="button"
+                                class="tvst-wrapped-banner-thumb${isSel ? ' is-active' : ''}"
+                                onclick="selectWrappedBannerByKey('${escapeHtml(item.key)}')">
+                                ${item.thumb
+                                    ? `<img src="${escapeHtml(item.thumb)}" alt="${escapeHtml(item.title)}" loading="lazy">`
+                                    : `<span class="tvst-wrapped-banner-thumb-fallback"></span>`}
+                                <span class="tvst-wrapped-banner-thumb-title">${escapeHtml(item.title)}</span>
+                            </button>
+                        `;
+                    }).join('') : `<p class="tvst-wrapped-banner-empty">${bannerSearchLoading ? 'Buscando en TMDB…' : 'Añade series o películas o busca un título arriba.'}</p>`}
+                </div>
+            `)}
+        </div>
+    `;
+}
+
+async function refreshWrappedStudioPreview() {
+    if (!activeWrappedModalState) return;
+    const seq = ++wrappedRenderSeq;
+    const loadingEl = document.getElementById('wrapped-preview-loading');
+    const imgEl = document.getElementById('wrapped-preview-img');
+    const titleEl = document.getElementById('wrapped-modal-title');
+    const subEl = document.getElementById('wrapped-modal-subtitle');
+
+    if (loadingEl) loadingEl.classList.remove('hidden');
+
+    const { focusId, styleId, paletteId, banner, bannerLayout, data, summary } = activeWrappedModalState;
+    const styleObj = WRAPPED_STYLE_TIERS.find(s => s.id === styleId) || WRAPPED_STYLE_TIERS[0];
+    const focusObj = WRAPPED_FOCUS_OPTIONS.find(f => f.id === focusId) || WRAPPED_FOCUS_OPTIONS[0];
+    const periodLabel = data.period === 'year' ? String(data.year) : 'Histórico';
+    if (titleEl) titleEl.textContent = focusObj.title;
+    if (subEl) subEl.textContent = `${periodLabel} · Estilo ${styleObj.label} · Nivel ${summary.level}`;
+
+    const canvas = await renderWrappedCardCanvas({
+        focusId,
+        styleId,
+        paletteId,
+        banner,
+        bannerLayout,
+    }, data);
+
+    if (seq !== wrappedRenderSeq || !activeWrappedModalState) return;
+    const dataUrl = canvas.toDataURL('image/png');
+    activeWrappedModalState.canvas = canvas;
+    activeWrappedModalState.dataUrl = dataUrl;
+
+    if (imgEl) {
+        imgEl.src = dataUrl;
+        imgEl.alt = `SeenIt Wrapped ${periodLabel} — ${focusObj.title}`;
+    }
+    if (loadingEl) loadingEl.classList.add('hidden');
+}
+
+function openWrappedGenerator(options = {}) {
+    if (!isGamificationEnabled()) {
+        showToast('Activa la gamificación en Ajustes para generar tu Wrapped', 'info');
+        return;
+    }
+    const period = options.period === 'all' ? 'all' : 'year';
+    const summary = computeGamificationSummary();
+    const data = computeWrappedStatsData(period);
+
+    const focusId = WRAPPED_FOCUS_OPTIONS.some(f => f.id === options.focus)
+        ? options.focus
+        : 'overview';
+
+    const requestedStyle = WRAPPED_STYLE_TIERS.find(s => s.id === options.styleId);
+    const styleId = (requestedStyle && requestedStyle.isUnlocked(summary))
+        ? requestedStyle.id
+        : getHighestUnlockedWrappedStyleId(summary);
+
+    const paletteId = getEffectiveWrappedPaletteId(options.paletteId || 'lime', summary);
+    const defaultCandidates = getWrappedLibraryBannerCandidates('');
+    const initialBanner = summary.level >= 70 ? (defaultCandidates[0] || null) : null;
+
+    activeWrappedModalState = {
+        summary,
+        data,
+        period,
+        focusId,
+        styleId,
+        paletteId,
+        banner: initialBanner,
+        bannerLayout: 'hero',
+        bannerQuery: '',
+        tmdbBannerResults: [],
+        bannerSearchLoading: false,
+        canvas: null,
+        dataUrl: '',
+    };
+
+    const modal = document.getElementById('wrapped-modal');
+    const shareBtn = document.getElementById('wrapped-share-btn');
+    if (!modal) return;
+
+    if (shareBtn) {
+        const supportsShare = typeof navigator !== 'undefined' && typeof navigator.share === 'function' && typeof navigator.canShare === 'function';
+        shareBtn.classList.toggle('hidden', !supportsShare);
+    }
+
+    renderWrappedStudioControls();
+    modal.classList.remove('hidden');
+    refreshWrappedStudioPreview();
+}
+
+function openWrappedCardModal(styleOrCardId) {
+    const isStyle = WRAPPED_STYLE_TIERS.some(s => s.id === styleOrCardId);
+    if (isStyle) {
+        const style = WRAPPED_STYLE_TIERS.find(s => s.id === styleOrCardId);
+        const summary = computeGamificationSummary();
+        if (style && !style.isUnlocked(summary)) {
+            showToast(`Estilo ${style.label}: se desbloquea en el ${style.unlockLabel}`, 'info');
+            return;
+        }
+        openWrappedGenerator({ styleId: styleOrCardId });
+        return;
+    }
+    openWrappedGenerator({ focus: 'overview' });
+}
+
+function setWrappedStudioPeriod(period) {
+    if (!activeWrappedModalState) return;
+    const nextPeriod = period === 'all' ? 'all' : 'year';
+    if (activeWrappedModalState.period === nextPeriod) return;
+    activeWrappedModalState.period = nextPeriod;
+    activeWrappedModalState.data = computeWrappedStatsData(nextPeriod);
+    renderWrappedStudioControls();
+    refreshWrappedStudioPreview();
+}
+
+function setWrappedStudioFocus(focusId) {
+    if (!activeWrappedModalState) return;
+    if (!WRAPPED_FOCUS_OPTIONS.some(f => f.id === focusId)) return;
+    activeWrappedModalState.focusId = focusId;
+    renderWrappedStudioControls();
+    refreshWrappedStudioPreview();
+}
+
+function setWrappedStudioStyle(styleId) {
+    if (!activeWrappedModalState) return;
+    const tier = WRAPPED_STYLE_TIERS.find(t => t.id === styleId);
+    if (!tier) return;
+    if (!tier.isUnlocked(activeWrappedModalState.summary)) {
+        showToast(`Se desbloquea al alcanzar el ${tier.unlockLabel}`, 'info');
+        return;
+    }
+    activeWrappedModalState.styleId = tier.id;
+    if (tier.supportsBanner && !activeWrappedModalState.banner) {
+        const candidates = getWrappedLibraryBannerCandidates('');
+        activeWrappedModalState.banner = candidates[0] || null;
+    }
+    renderWrappedStudioControls();
+    refreshWrappedStudioPreview();
+}
+
+function setWrappedStudioPalette(paletteId) {
+    if (!activeWrappedModalState) return;
+    const pal = WRAPPED_PALETTES.find(p => p.id === paletteId);
+    if (!pal) return;
+    if (activeWrappedModalState.summary.level < pal.minLevel) {
+        showToast(`Paleta ${pal.label}: se desbloquea en el Nivel ${pal.minLevel}`, 'info');
+        return;
+    }
+    activeWrappedModalState.paletteId = pal.id;
+    renderWrappedStudioControls();
+    refreshWrappedStudioPreview();
+}
+
+async function selectWrappedBannerByKey(key) {
+    if (!activeWrappedModalState) return;
+    const entry = wrappedBannerCandidatesMap.get(key);
+    if (!entry) return;
+    activeWrappedModalState.banner = entry;
+    renderWrappedStudioControls();
+    refreshWrappedStudioPreview();
+
+    // Si es de la biblioteca y no tenía backdrop widescreen guardado, intentar resolverlo vía detalle TMDB
+    if (!entry.backdrop && hasTmdbConfig()) {
+        try {
+            const detail = entry.tipo === 'movie'
+                ? await getMovieDetails(entry.id_tmdb)
+                : await getTVDetails(entry.id_tmdb);
+            if (detail?.backdrop && activeWrappedModalState?.banner?.key === key) {
+                entry.backdrop = detail.backdrop;
+                entry.thumb = getWrappedBannerProxyUrl(detail.backdrop, 'w500') || detail.backdrop;
+                refreshWrappedStudioPreview();
+            }
+        } catch (_) {
+            // Mantener portada como respaldo
+        }
+    }
+}
+
+function clearWrappedStudioBanner() {
+    if (!activeWrappedModalState) return;
+    activeWrappedModalState.banner = null;
+    renderWrappedStudioControls();
+    refreshWrappedStudioPreview();
+}
+
+function pickRandomWrappedBanner() {
+    if (!activeWrappedModalState) return;
+    const list = getWrappedLibraryBannerCandidates('');
+    if (!list.length) {
+        showToast('Añade alguna serie o película para elegir un banner aleatorio', 'info');
+        return;
+    }
+    const pool = list.filter(item => item.key !== activeWrappedModalState.banner?.key);
+    const chosen = (pool.length ? pool : list)[Math.floor(Math.random() * (pool.length ? pool.length : list.length))];
+    if (chosen) {
+        selectWrappedBannerByKey(chosen.key);
+    }
+}
+
+function setWrappedBannerLayout(layout) {
+    if (!activeWrappedModalState) return;
+    activeWrappedModalState.bannerLayout = layout === 'full' ? 'full' : 'hero';
+    renderWrappedStudioControls();
+    refreshWrappedStudioPreview();
+}
+
+function onWrappedBannerSearchInput(rawVal) {
+    if (!activeWrappedModalState) return;
+    const query = String(rawVal || '');
+    activeWrappedModalState.bannerQuery = query;
+
+    clearTimeout(wrappedBannerSearchTimer);
+    const trimmed = query.trim();
+
+    if (trimmed.length < 2 || !hasTmdbConfig()) {
+        activeWrappedModalState.tmdbBannerResults = [];
+        activeWrappedModalState.bannerSearchLoading = false;
+        renderWrappedStudioControls();
+        const inp = document.getElementById('wrapped-banner-search-input');
+        if (inp) {
+            inp.focus();
+            inp.setSelectionRange(inp.value.length, inp.value.length);
+        }
+        return;
+    }
+
+    activeWrappedModalState.bannerSearchLoading = true;
+    renderWrappedStudioControls();
+    const inp = document.getElementById('wrapped-banner-search-input');
+    if (inp) {
+        inp.focus();
+        inp.setSelectionRange(inp.value.length, inp.value.length);
+    }
+
+    wrappedBannerSearchTimer = setTimeout(async () => {
+        if (!activeWrappedModalState || activeWrappedModalState.bannerQuery.trim() !== trimmed) return;
+        try {
+            const results = await searchMulti(trimmed);
+            const mapped = [];
+            for (const r of (Array.isArray(results) ? results : [])) {
+                const tipo = r.media_type === 'movie' || r.tipo === 'movie' ? 'movie' : (r.media_type === 'tv' || r.tipo === 'tv' ? 'tv' : '');
+                if (!tipo) continue;
+                const backdrop = r.backdrop_path ? getImageUrl(r.backdrop_path, 'w780') : (r.backdrop || null);
+                const portada = r.poster_path ? getImageUrl(r.poster_path, 'w500') : (r.portada || null);
+                if (!backdrop && !portada) continue;
+                const key = `${tipo}:${r.id}`;
+                const entry = {
+                    key,
+                    id_tmdb: Number(r.id),
+                    tipo,
+                    title: String(r.title || r.name || r.titulo || 'Título').trim(),
+                    backdrop,
+                    portada,
+                    thumb: getWrappedBannerProxyUrl(backdrop || portada, 'w500') || safeUrl(backdrop || portada),
+                    score: 0,
+                    source: 'tmdb',
+                };
+                wrappedBannerCandidatesMap.set(key, entry);
+                mapped.push(entry);
+                if (mapped.length >= 10) break;
+            }
+            if (activeWrappedModalState && activeWrappedModalState.bannerQuery.trim() === trimmed) {
+                activeWrappedModalState.tmdbBannerResults = mapped;
+            }
+        } catch (_) {
+            if (activeWrappedModalState) activeWrappedModalState.tmdbBannerResults = [];
+        } finally {
+            if (activeWrappedModalState) {
+                activeWrappedModalState.bannerSearchLoading = false;
+                renderWrappedStudioControls();
+                const focusInp = document.getElementById('wrapped-banner-search-input');
+                if (focusInp) {
+                    focusInp.focus();
+                    focusInp.setSelectionRange(focusInp.value.length, focusInp.value.length);
+                }
+            }
+        }
+    }, 320);
+}
+
+function closeWrappedModal() {
+    clearTimeout(wrappedBannerSearchTimer);
+    wrappedRenderSeq += 1;
+    document.getElementById('wrapped-modal')?.classList.add('hidden');
+    activeWrappedModalState = null;
+}
+
+function getWrappedCanvasBlob(canvas) {
+    return new Promise((resolve, reject) => {
+        if (!canvas || typeof canvas.toBlob !== 'function') {
+            reject(new Error('Canvas no disponible'));
+            return;
+        }
+        canvas.toBlob((blob) => {
+            if (blob) resolve(blob);
+            else reject(new Error('No se pudo generar la imagen PNG'));
+        }, 'image/png');
+    });
+}
+
+async function copyWrappedImage() {
+    if (!activeWrappedModalState?.canvas) return;
+    try {
+        const blob = await getWrappedCanvasBlob(activeWrappedModalState.canvas);
+        if (navigator.clipboard && typeof navigator.clipboard.write === 'function' && typeof ClipboardItem === 'function') {
+            await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+            showToast('Imagen copiada al portapapeles', 'success');
+            return;
+        }
+    } catch (_) {
+        // Fallback to download if clipboard image write is blocked
+    }
+    downloadWrappedImage(true);
+}
+
+async function downloadWrappedImage(fromClipboardFallback = false) {
+    if (!activeWrappedModalState?.canvas) return;
+    try {
+        const blob = await getWrappedCanvasBlob(activeWrappedModalState.canvas);
+        const url = URL.createObjectURL(blob);
+        const periodTag = activeWrappedModalState.data.period === 'year' ? activeWrappedModalState.data.year : 'historico';
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `seenit-wrapped-${activeWrappedModalState.focusId}-${activeWrappedModalState.styleId}-${periodTag}.png`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1500);
+        showToast(
+            fromClipboardFallback
+                ? 'Tu navegador restringe copiar imágenes: tarjeta descargada en PNG'
+                : 'Tarjeta guardada en PNG',
+            'success',
+        );
+    } catch (_) {
+        showToast('No se pudo exportar la imagen', 'error');
+    }
+}
+
+async function shareWrappedImage() {
+    if (!activeWrappedModalState?.canvas) return;
+    try {
+        const blob = await getWrappedCanvasBlob(activeWrappedModalState.canvas);
+        const periodTag = activeWrappedModalState.data.period === 'year' ? activeWrappedModalState.data.year : 'historico';
+        const periodTitle = activeWrappedModalState.data.period === 'year' ? String(activeWrappedModalState.data.year) : 'Histórico';
+        const file = new File(
+            [blob],
+            `seenit-wrapped-${activeWrappedModalState.focusId}-${periodTag}.png`,
+            { type: 'image/png' },
+        );
+        if (navigator.canShare && navigator.canShare({ files: [file] })) {
+            await navigator.share({
+                title: `SeenIt Wrapped ${periodTitle}`,
+                files: [file],
+            });
+            return;
+        }
+    } catch (err) {
+        if (err && err.name === 'AbortError') return;
+    }
+    downloadWrappedImage(false);
 }
 
 function setTicketsGenreFilter(genre) {
@@ -13092,6 +14526,19 @@ function renderProfileAchievements() {
             </div>
         </section>
 
+        <section id="wrapped-stats-section" class="tvst-section-card tvst-wrapped-section-card">
+            <div class="tvst-gamif-section-head">
+                <div class="tvst-tickets-head-copy">
+                    <h3 class="tvst-gamif-section-title">Generador de Wrapped</h3>
+                    <p class="tvst-gamif-card-sub">Crea tu tarjeta personalizada según tu nivel (Nv. ${summary.level})</p>
+                </div>
+                <button type="button" class="tvst-wrapped-trigger-btn" onclick="openWrappedGenerator({ focus: 'overview' })">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M8 16v-4"/><path d="M12 16V8"/><path d="M16 16v-6"/></svg>
+                    <span>Generar Wrapped</span>
+                </button>
+            </div>
+        </section>
+
         <section class="tvst-gamif-badges-section${badgesExpanded ? ' is-expanded' : ''}">
             <div class="tvst-gamif-badges-sticky${badgesExpanded ? ' is-sticky' : ''}">
                 <div class="tvst-gamif-section-head">
@@ -13299,6 +14746,23 @@ window.setAchievementsCategory = setAchievementsCategory;
 window.toggleAchievementsExpanded = toggleAchievementsExpanded;
 window.toggleRewardsExpanded = toggleRewardsExpanded;
 window.toggleTicketsExpanded = toggleTicketsExpanded;
+window.toggleWrappedExpanded = toggleWrappedExpanded;
+window.openWrappedSectionFromStats = openWrappedSectionFromStats;
+window.openWrappedGenerator = openWrappedGenerator;
+window.openWrappedCardModal = openWrappedCardModal;
+window.setWrappedStudioPeriod = setWrappedStudioPeriod;
+window.setWrappedStudioFocus = setWrappedStudioFocus;
+window.setWrappedStudioStyle = setWrappedStudioStyle;
+window.setWrappedStudioPalette = setWrappedStudioPalette;
+window.selectWrappedBannerByKey = selectWrappedBannerByKey;
+window.clearWrappedStudioBanner = clearWrappedStudioBanner;
+window.pickRandomWrappedBanner = pickRandomWrappedBanner;
+window.setWrappedBannerLayout = setWrappedBannerLayout;
+window.onWrappedBannerSearchInput = onWrappedBannerSearchInput;
+window.closeWrappedModal = closeWrappedModal;
+window.copyWrappedImage = copyWrappedImage;
+window.downloadWrappedImage = downloadWrappedImage;
+window.shareWrappedImage = shareWrappedImage;
 window.setTicketsGenreFilter = setTicketsGenreFilter;
 window.setTicketsStatusFilter = setTicketsStatusFilter;
 window.recheckVintageSagas = recheckVintageSagas;

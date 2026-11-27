@@ -166,6 +166,10 @@
                     <section class="tvst-stats-section">
                         <div class="tvst-lists-header">
                             <h2 class="tvst-lists-title">Estadísticas</h2>
+                            <button type="button" class="tvst-wrapped-trigger-btn" onclick="openWrappedGenerator({ focus: 'series' })">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M8 16v-4"/><path d="M12 16V8"/><path d="M16 16v-6"/></svg>
+                                <span>Generar Wrapped</span>
+                            </button>
                         </div>
                         <div class="tvst-section-card tvst-stats-card">
                             <div class="tvst-stats-grid tvst-stats-grid-4">
@@ -251,6 +255,10 @@
                     <section class="tvst-stats-section">
                         <div class="tvst-lists-header">
                             <h2 class="tvst-lists-title">Estadísticas</h2>
+                            <button type="button" class="tvst-wrapped-trigger-btn" onclick="openWrappedGenerator({ focus: 'cinema' })">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M8 16v-4"/><path d="M12 16V8"/><path d="M16 16v-6"/></svg>
+                                <span>Generar Wrapped</span>
+                            </button>
                         </div>
                         <div class="tvst-section-card tvst-stats-card">
                             <div class="tvst-stats-grid tvst-stats-grid-4">
@@ -658,6 +666,52 @@
                     <h2 id="collectible-modal-title" class="tvst-list-modal-title">Detalle</h2>
                 </header>
                 <div id="collectible-modal-body" class="tvst-collectible-body"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal Generador de Wrapped -->
+    <div id="wrapped-modal" class="tvst-modal tvst-modal-elevated hidden" role="dialog" aria-modal="true" aria-labelledby="wrapped-modal-title">
+        <div class="tvst-modal-backdrop" onclick="closeWrappedModal()"></div>
+        <div class="tvst-modal-sheet tvst-wrapped-sheet">
+            <div class="tvst-modal-scroll">
+                <header class="tvst-list-modal-header tvst-wrapped-modal-header">
+                    <button type="button" class="tvst-hero-close" onclick="closeWrappedModal()" aria-label="Cerrar">
+                        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+                    </button>
+                    <div class="tvst-wrapped-header-copy">
+                        <h2 id="wrapped-modal-title" class="tvst-list-modal-title">Generar Wrapped</h2>
+                        <p id="wrapped-modal-subtitle" class="tvst-wrapped-header-sub">Personaliza el diseño según tu nivel</p>
+                    </div>
+                </header>
+                <div class="tvst-wrapped-modal-body">
+                    <div class="tvst-wrapped-studio-layout">
+                        <div class="tvst-wrapped-preview-col">
+                            <div class="tvst-wrapped-preview-frame">
+                                <img id="wrapped-preview-img" class="tvst-wrapped-preview-img" alt="Vista previa de tu tarjeta Wrapped">
+                                <div id="wrapped-preview-loading" class="tvst-wrapped-preview-loading hidden" aria-hidden="true">Generando…</div>
+                            </div>
+                        </div>
+                        <div class="tvst-wrapped-controls-col">
+                            <div id="wrapped-studio-controls" class="tvst-wrapped-studio-controls"></div>
+                            <p id="wrapped-modal-hint" class="tvst-wrapped-modal-hint">Sube de nivel para desbloquear diseños más llamativos y banners de series o películas.</p>
+                            <div class="tvst-wrapped-modal-actions">
+                                <button type="button" id="wrapped-copy-btn" class="tvst-wrapped-action-btn is-primary" onclick="copyWrappedImage()">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                                    <span>Copiar imagen</span>
+                                </button>
+                                <button type="button" id="wrapped-download-btn" class="tvst-wrapped-action-btn" onclick="downloadWrappedImage()">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                                    <span>Guardar PNG</span>
+                                </button>
+                                <button type="button" id="wrapped-share-btn" class="tvst-wrapped-action-btn hidden" onclick="shareWrappedImage()">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+                                    <span>Compartir</span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
