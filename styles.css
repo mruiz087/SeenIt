@@ -7139,6 +7139,37 @@ html[data-poster-style="archive_gold"] :is(
     padding-top: 0.2rem;
 }
 
+.tvst-gamif-badges-sticky {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.tvst-gamif-badges-sticky.is-sticky {
+    position: sticky;
+    top: calc(var(--tvst-subnav-h, 3rem) - 1px);
+    z-index: 35;
+    margin: 0 -1rem;
+    padding: 0.65rem 1rem 0.55rem;
+    background: var(--tvst-glass);
+    backdrop-filter: blur(16px) saturate(140%);
+    -webkit-backdrop-filter: blur(16px) saturate(140%);
+    border-bottom: 1px solid var(--tvst-border);
+}
+
+@media (min-width: 768px) {
+    .tvst-gamif-badges-sticky.is-sticky {
+        margin: 0 -1.5rem;
+        padding: 0.7rem 1.5rem 0.6rem;
+    }
+}
+
+.tvst-gamif-badges-filters {
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+}
+
 .tvst-gamif-cat-row {
     display: flex;
     align-items: center;
@@ -7321,27 +7352,1223 @@ html[data-poster-style="archive_gold"] :is(
     grid-column: 1 / -1;
 }
 
-.tvst-gamif-expand-btn {
-    align-self: center;
-    width: 100%;
-    max-width: 24rem;
-    margin-top: 0.25rem;
-    padding: 0.65rem 1rem;
-    border-radius: 0.7rem;
+/* --------------------------------------------
+   COLECCIONES
+   -------------------------------------------- */
+
+.tvst-tickets-card {
+    display: flex;
+    flex-direction: column;
+    gap: 0.85rem;
+    position: relative;
+}
+
+.tvst-tickets-sticky-top,
+.tvst-gamif-card-sticky-head {
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+}
+
+.tvst-tickets-sticky-top.is-sticky,
+.tvst-gamif-card-sticky-head.is-sticky {
+    position: sticky;
+    top: calc(var(--tvst-subnav-h, 3rem) - 1px);
+    z-index: 35;
+    margin: -1.1rem -1.1rem 0;
+    padding: 0.72rem 1.1rem 0.65rem;
+    border-radius: 0.9rem 0.9rem 0 0;
+    background: color-mix(in srgb, var(--tvst-surface) 92%, transparent);
+    backdrop-filter: blur(16px) saturate(140%);
+    -webkit-backdrop-filter: blur(16px) saturate(140%);
+    border-bottom: 1px solid var(--tvst-border);
+}
+
+.tvst-tickets-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+}
+
+.tvst-tickets-head-copy {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.12rem;
+}
+
+.tvst-gamif-card-sub {
+    margin: 0;
+    font-size: 0.74rem;
+    color: var(--tvst-muted);
+    font-variant-numeric: tabular-nums;
+    line-height: 1.25;
+}
+
+.tvst-tickets-head-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-shrink: 0;
+}
+
+.tvst-tickets-toggle-btn {
+    height: 2rem;
+    padding: 0 0.62rem;
+    border-radius: 0.6rem;
     border: 1px solid var(--tvst-border);
     background: var(--tvst-surface-elevated);
     color: var(--tvst-text);
-    font-size: 0.78rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    font-size: 0.72rem;
     font-weight: 700;
-    text-align: center;
     cursor: pointer;
-    transition: border-color 0.16s ease, background-color 0.16s ease, color 0.16s ease;
+    white-space: nowrap;
+    flex-shrink: 0;
+    transition: border-color 0.16s ease, color 0.16s ease, background 0.16s ease;
 }
 
-.tvst-gamif-expand-btn:hover {
+.tvst-tickets-toggle-btn:hover {
+    border-color: var(--tvst-accent);
+    color: var(--tvst-accent);
+}
+
+.tvst-tickets-toggle-btn.is-expanded {
+    background: rgba(245, 196, 120, 0.12);
+    border-color: rgba(245, 196, 120, 0.45);
+    color: var(--tvst-accent);
+}
+
+.tvst-tickets-refresh-btn {
+    width: 2rem;
+    height: 2rem;
+    border-radius: 0.6rem;
+    border: 1px solid var(--tvst-border);
+    background: var(--tvst-surface-elevated);
+    color: var(--tvst-muted);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: border-color 0.16s ease, color 0.16s ease, background 0.16s ease;
+}
+
+.tvst-tickets-refresh-btn:hover {
+    border-color: var(--tvst-accent);
+    color: var(--tvst-text);
+}
+
+.tvst-tickets-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.78rem;
+}
+
+@media (min-width: 768px) {
+    .tvst-tickets-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0.9rem;
+    }
+}
+
+.tvst-ticket-stub {
+    position: relative;
+    display: flex;
+    align-items: stretch;
+    width: 100%;
+    min-height: 4.25rem;
+    padding: 0;
+    border-radius: 0.7rem;
+    border: 1px solid var(--tvst-border);
+    overflow: hidden;
+    text-align: left;
+    cursor: pointer;
+    transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+}
+
+.tvst-ticket-stub:hover {
+    transform: translateY(-1.5px);
+}
+
+.tvst-ticket-backdrop {
+    position: absolute;
+    inset: 0;
+    background-size: cover;
+    background-position: center right;
+    pointer-events: none;
+    z-index: 0;
+    opacity: 0.52;
+    filter: saturate(1.25) contrast(1.1);
+    transition: opacity 0.22s ease, transform 0.28s ease;
+}
+
+.tvst-ticket-stub:hover .tvst-ticket-backdrop {
+    opacity: 0.68;
+    transform: scale(1.025);
+}
+
+.tvst-ticket-scrim {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 0;
+}
+
+/* Colección completada: tiene el banner oficial con acabado cinematográfico de lujo */
+.tvst-ticket-stub.is-issued {
+    background: #0b0f17;
+    border-color: rgba(245, 196, 120, 0.45);
+    color: #ffffff;
+    box-shadow: 0 5px 16px rgba(0, 0, 0, 0.42), inset 0 0 0 1px rgba(245, 196, 120, 0.2);
+}
+
+.tvst-ticket-stub.is-issued .tvst-ticket-scrim {
+    background: linear-gradient(
+        90deg,
+        rgba(11, 15, 23, 0.96) 0%,
+        rgba(11, 15, 23, 0.88) 36%,
+        rgba(16, 21, 30, 0.55) 68%,
+        rgba(11, 15, 23, 0.32) 100%
+    );
+}
+
+.tvst-ticket-stub.is-issued .tvst-ticket-admit {
+    color: rgba(245, 196, 120, 0.8);
+}
+
+.tvst-ticket-stub.is-issued .tvst-ticket-serial {
+    color: var(--tvst-accent);
+}
+
+.tvst-ticket-stub.is-issued .tvst-ticket-tear {
+    border-left-color: rgba(245, 196, 120, 0.35);
+}
+
+.tvst-ticket-stub.is-issued .tvst-ticket-title {
+    color: #ffffff;
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.95);
+}
+
+.tvst-ticket-stub.is-issued .tvst-ticket-meta {
+    color: #e2e8f0;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9);
+}
+
+/* Sello COMPLETADA de alto contraste y brillo lacado */
+.tvst-ticket-stub.is-issued .tvst-ticket-ink-stamp {
+    position: absolute;
+    right: 0.55rem;
+    bottom: 0.35rem;
+    padding: 0.12rem 0.42rem;
+    border: 1.8px solid #f87171;
+    border-radius: 0.25rem;
+    background: rgba(185, 28, 28, 0.5);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+    font-family: var(--tvst-font-mono);
+    font-size: 0.54rem;
+    font-weight: 900;
+    letter-spacing: 0.1em;
+    color: #ffffff;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.95);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45), 0 0 10px rgba(239, 68, 68, 0.4);
+    transform: rotate(-6deg);
+    pointer-events: none;
+    z-index: 2;
+}
+
+/* Colección en curso: estilo entrada física vintage en pergamino dorado, con banner sutil */
+.tvst-ticket-stub.is-in-progress {
+    background: linear-gradient(90deg, #f7ebd0 0%, #ecd6ad 45%, #e0bd80 100%);
+    border: 1px dashed rgba(160, 115, 45, 0.65);
+    color: #21170d;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.22), inset 0 0 0 1px rgba(255, 250, 236, 0.55);
+}
+
+.tvst-ticket-stub.is-in-progress:hover {
+    border-color: rgba(140, 95, 30, 0.85);
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.28), inset 0 0 0 1px rgba(255, 250, 236, 0.65);
+}
+
+.tvst-ticket-stub.is-in-progress .tvst-ticket-backdrop {
+    opacity: 0.26;
+    filter: saturate(0.75) sepia(0.38) contrast(1.04);
+}
+
+.tvst-ticket-stub.is-in-progress:hover .tvst-ticket-backdrop {
+    opacity: 0.36;
+}
+
+.tvst-ticket-stub.is-in-progress .tvst-ticket-scrim {
+    background: linear-gradient(
+        90deg,
+        rgba(247, 235, 208, 0.96) 0%,
+        rgba(236, 214, 173, 0.88) 46%,
+        rgba(224, 189, 128, 0.58) 100%
+    );
+}
+
+.tvst-ticket-stub.is-in-progress .tvst-ticket-tear {
+    border-left: 1.5px dashed rgba(45, 30, 15, 0.32);
+}
+
+.tvst-ticket-stub.is-in-progress .tvst-ticket-admit {
+    color: #5c4323;
+}
+
+.tvst-ticket-stub.is-in-progress .tvst-ticket-serial {
+    color: #21170d;
+}
+
+.tvst-ticket-stub.is-in-progress .tvst-ticket-title {
+    color: #1a130b;
+}
+
+.tvst-ticket-stub.is-in-progress .tvst-ticket-meta {
+    color: #4a3823;
+}
+
+.tvst-ticket-stub.is-in-progress .tvst-ticket-progress-track {
+    margin-top: 0.16rem;
+    height: 0.25rem;
+    border-radius: 9999px;
+    background: rgba(45, 30, 15, 0.16);
+    overflow: hidden;
+    display: block;
+}
+
+.tvst-ticket-stub.is-in-progress .tvst-ticket-progress-fill {
+    display: block;
+    height: 100%;
+    border-radius: 9999px;
+    background: #854d0e;
+}
+
+/* Muescas circulares en los bordes laterales como talón perforado */
+.tvst-ticket-stub::before,
+.tvst-ticket-stub::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    width: 0.65rem;
+    height: 0.65rem;
+    border-radius: 9999px;
+    background: var(--tvst-surface);
+    transform: translateY(-50%);
+    z-index: 2;
+}
+
+.tvst-ticket-stub::before {
+    left: -0.35rem;
+}
+
+.tvst-ticket-stub::after {
+    right: -0.35rem;
+}
+
+.tvst-ticket-stub-left,
+.tvst-ticket-tear,
+.tvst-ticket-stub-main {
+    position: relative;
+    z-index: 1;
+}
+
+.tvst-ticket-stub-left {
+    width: 3.75rem;
+    padding: 0.5rem 0.35rem 0.5rem 0.65rem;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.15rem;
+    flex-shrink: 0;
+}
+
+.tvst-ticket-admit {
+    font-family: var(--tvst-font-mono);
+    font-size: 0.5rem;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    opacity: 0.72;
+    text-align: center;
+}
+
+.tvst-ticket-serial {
+    font-family: var(--tvst-font-mono);
+    font-size: 0.62rem;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+    font-variant-numeric: tabular-nums;
+}
+
+.tvst-ticket-tear {
+    width: 1px;
+    margin: 0.35rem 0;
+    flex-shrink: 0;
+}
+
+.tvst-ticket-stub-main {
+    flex: 1;
+    min-width: 0;
+    padding: 0.5rem 0.75rem 0.5rem 0.65rem;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 0.22rem;
+}
+
+.tvst-ticket-title {
+    margin: 0;
+    font-size: 0.84rem;
+    font-weight: 800;
+    line-height: 1.18;
+    letter-spacing: -0.01em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.tvst-ticket-meta {
+    margin: 0;
+    font-size: 0.68rem;
+    font-weight: 600;
+    opacity: 0.88;
+    font-variant-numeric: tabular-nums;
+}
+
+.tvst-ticket-ink-stamp {
+    position: absolute;
+    right: 0.55rem;
+    bottom: 0.35rem;
+    padding: 0.08rem 0.32rem;
+    border: 1.5px solid rgba(153, 27, 27, 0.85);
+    border-radius: 0.22rem;
+    font-family: var(--tvst-font-mono);
+    font-size: 0.5rem;
+    font-weight: 900;
+    letter-spacing: 0.08em;
+    color: rgba(153, 27, 27, 0.95);
+    transform: rotate(-5deg);
+    pointer-events: none;
+    z-index: 1;
+}
+
+/* Pestañas de género y filtros en colecciones */
+.tvst-tickets-filter-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 0.48rem;
+    padding: 0;
+}
+
+.tvst-tickets-genre-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.38rem;
+    overflow-x: auto;
+    padding-bottom: 0.25rem;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+}
+
+.tvst-tickets-genre-bar::-webkit-scrollbar {
+    display: none;
+}
+
+.tvst-tickets-genre-tab {
+    padding: 0.25rem 0.62rem;
+    border-radius: 0.5rem;
+    font-size: 0.72rem;
+    font-weight: 600;
+    white-space: nowrap;
+    border: 1px solid var(--tvst-border);
+    background: var(--tvst-surface-elevated);
+    color: var(--tvst-muted);
+    cursor: pointer;
+    transition: all 0.16s ease;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    flex-shrink: 0;
+}
+
+.tvst-tickets-genre-tab:hover {
+    color: var(--tvst-text);
+    border-color: rgba(255, 255, 255, 0.22);
+}
+
+.tvst-tickets-genre-tab.is-active {
+    background: var(--tvst-accent);
+    color: #121212;
+    border-color: var(--tvst-accent);
+    font-weight: 700;
+}
+
+.tvst-tickets-genre-tab .tvst-genre-count {
+    font-size: 0.62rem;
+    opacity: 0.82;
+    font-variant-numeric: tabular-nums;
+}
+
+.tvst-tickets-subfilter-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.tvst-tickets-status-pills {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.2rem;
+    padding: 0.16rem;
+    border-radius: 0.5rem;
+    background: var(--tvst-surface);
+    border: 1px solid var(--tvst-border);
+}
+
+.tvst-tickets-status-pill {
+    padding: 0.2rem 0.55rem;
+    border-radius: 0.38rem;
+    font-size: 0.68rem;
+    font-weight: 600;
+    color: var(--tvst-muted);
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    transition: all 0.14s ease;
+    white-space: nowrap;
+}
+
+.tvst-tickets-status-pill:hover {
+    color: var(--tvst-text);
+}
+
+.tvst-tickets-status-pill.is-active {
+    background: var(--tvst-surface-elevated);
+    color: var(--tvst-text);
+    font-weight: 700;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+}
+
+.tvst-tickets-count-note {
+    font-size: 0.72rem;
+    color: var(--tvst-muted);
+    font-variant-numeric: tabular-nums;
+}
+
+/* Modal entradas de cine vintage */
+
+.tvst-collectible-sheet {
+    max-width: 34rem;
+}
+
+.tvst-collectible-body {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    padding: 1rem 1.15rem 1.25rem;
+    max-height: 75vh;
+    overflow-y: auto;
+}
+
+.tvst-ticket-stub-modal {
+    cursor: default;
+}
+
+.tvst-ticket-stub-modal:hover {
+    transform: none;
+}
+
+.tvst-ticket-stub-modal::before,
+.tvst-ticket-stub-modal::after {
+    background: var(--tvst-bg);
+}
+
+.tvst-collectible-items-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+}
+
+.tvst-collectible-item-row {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.5rem 0.65rem;
+    border-radius: 0.72rem;
+    border: 1px solid var(--tvst-border);
+    background: var(--tvst-surface-elevated);
+    color: var(--tvst-text);
+    text-align: left;
+    cursor: pointer;
+    transition: border-color 0.16s ease, background-color 0.16s ease;
+}
+
+.tvst-collectible-item-row:hover {
     border-color: var(--tvst-accent);
     background: var(--tvst-surface-hover);
+}
+
+.tvst-collectible-item-poster,
+.tvst-collectible-item-fallback {
+    width: 2.55rem;
+    height: 3.7rem;
+    border-radius: 0.4rem;
+    object-fit: cover;
+    background: var(--tvst-surface);
+    flex-shrink: 0;
+}
+
+.tvst-collectible-item-fallback {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--tvst-subtle);
+}
+
+.tvst-collectible-item-meta {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.16rem;
+}
+
+.tvst-collectible-item-title {
+    font-size: 0.85rem;
+    font-weight: 700;
+    color: var(--tvst-text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.tvst-collectible-item-sub {
+    font-size: 0.74rem;
+    color: var(--tvst-muted);
+    font-variant-numeric: tabular-nums;
+}
+
+.tvst-collectible-item-badge {
+    font-size: 0.68rem;
+    font-weight: 700;
+    padding: 0.24rem 0.52rem;
+    border-radius: 0.45rem;
+    flex-shrink: 0;
+}
+
+.tvst-collectible-item-badge.is-done {
+    background: rgba(16, 185, 129, 0.16);
+    color: #34d399;
+    border: 1px solid rgba(16, 185, 129, 0.35);
+}
+
+.tvst-collectible-item-badge.is-pending {
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--tvst-muted);
+    border: 1px solid var(--tvst-border);
+}
+
+.tvst-saga-part-add-btn {
+    padding: 0.28rem 0.65rem;
+    border-radius: 0.45rem;
+    border: 1px solid rgba(245, 196, 120, 0.42);
+    background: rgba(245, 196, 120, 0.14);
     color: var(--tvst-accent);
+    font-size: 0.72rem;
+    font-weight: 700;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: background-color 0.16s ease, border-color 0.16s ease;
+}
+
+.tvst-saga-part-add-btn:hover {
+    background: var(--tvst-accent);
+    border-color: var(--tvst-accent);
+    color: #14120f;
+}
+
+.tvst-collectible-future-note {
+    padding: 0.6rem 0.75rem;
+    border-radius: 0.6rem;
+    border: 1px dashed var(--tvst-border);
+    font-size: 0.74rem;
+    color: var(--tvst-muted);
+    line-height: 1.4;
+}
+
+/* ============================================
+   IMPORTADOR Y EXPORTADOR UNIVERSAL
+   ============================================ */
+
+.tvst-migration-card {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+
+.tvst-migration-card .tvst-settings-desc {
+    margin: 0;
+}
+
+.tvst-compat-panel,
+.tvst-export-section {
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+}
+
+.tvst-compat-heading,
+.tvst-import-subhead {
+    margin: 0;
+    font-size: 0.72rem;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--tvst-muted);
+}
+
+.tvst-import-subhead.is-warn {
+    color: #fbbf24;
+}
+
+.tvst-compat-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    border-radius: 0.72rem;
+    border: 1px solid var(--tvst-border);
+    background: var(--tvst-surface-elevated);
+    overflow: hidden;
+}
+
+.tvst-compat-list.is-compact {
+    background: rgba(255, 255, 255, 0.02);
+}
+
+.tvst-compat-row {
+    padding: 0.62rem 0.85rem;
+    border-bottom: 1px solid var(--tvst-border);
+}
+
+.tvst-compat-row:last-child {
+    border-bottom: none;
+}
+
+.tvst-compat-main {
+    display: flex;
+    flex-direction: column;
+    gap: 0.16rem;
+    min-width: 0;
+}
+
+.tvst-compat-name {
+    font-size: 0.83rem;
+    font-weight: 700;
+    color: var(--tvst-text);
+}
+
+.tvst-compat-meta {
+    font-size: 0.74rem;
+    line-height: 1.38;
+    color: var(--tvst-muted);
+}
+
+.tvst-migration-primary-row {
+    align-items: center;
+}
+
+.tvst-migration-primary-row .tvst-settings-btn {
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.tvst-export-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0.55rem;
+}
+
+@media (min-width: 640px) {
+    .tvst-export-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+.tvst-export-btn {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: center;
+    gap: 0.18rem;
+    min-height: 52px;
+    padding: 0.68rem 0.85rem;
+    border-radius: 0.65rem;
+    border: 1px solid var(--tvst-border-strong);
+    background: var(--tvst-surface-elevated);
+    color: var(--tvst-text);
+    text-align: left;
+    cursor: pointer;
+    transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.tvst-export-btn:hover {
+    border-color: var(--tvst-accent);
+    background: var(--tvst-surface-hover);
+}
+
+.tvst-export-btn strong {
+    font-size: 0.82rem;
+    font-weight: 700;
+    color: var(--tvst-text);
+}
+
+.tvst-export-btn span {
+    font-size: 0.73rem;
+    line-height: 1.35;
+    color: var(--tvst-muted);
+}
+
+/* Modal Importador Universal */
+
+.tvst-import-sheet {
+    max-width: 38rem;
+}
+
+.tvst-import-body {
+    padding: 1rem 1.15rem 1.35rem;
+    max-height: 78vh;
+    overflow-y: auto;
+}
+
+.tvst-import-step {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+
+.tvst-import-dropzone {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.45rem;
+    min-height: 9.5rem;
+    padding: 1.25rem 1rem;
+    border-radius: 0.85rem;
+    border: 1.5px dashed var(--tvst-border-strong);
+    background: rgba(255, 255, 255, 0.025);
+    text-align: center;
+    cursor: pointer;
+    transition: border-color 0.16s ease, background-color 0.16s ease;
+}
+
+.tvst-import-dropzone:hover,
+.tvst-import-dropzone.is-dragover {
+    border-color: var(--tvst-accent);
+    background: var(--tvst-accent-soft);
+}
+
+.tvst-import-drop-icon {
+    width: 2.75rem;
+    height: 2.75rem;
+    border-radius: 9999px;
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--tvst-accent);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.tvst-import-drop-title {
+    font-size: 0.9rem;
+    font-weight: 700;
+    color: var(--tvst-text);
+}
+
+.tvst-import-drop-sub {
+    max-width: 26rem;
+    font-size: 0.75rem;
+    line-height: 1.4;
+    color: var(--tvst-muted);
+}
+
+.tvst-import-compat-box {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.tvst-import-detected,
+.tvst-import-progress-card {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    padding: 0.85rem 0.95rem;
+    border-radius: 0.75rem;
+    border: 1px solid var(--tvst-border);
+    background: var(--tvst-surface-elevated);
+}
+
+.tvst-import-kicker {
+    font-size: 0.68rem;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--tvst-accent);
+}
+
+.tvst-import-source,
+.tvst-import-progress-title {
+    font-size: 0.96rem;
+    font-weight: 800;
+    color: var(--tvst-text);
+    font-variant-numeric: tabular-nums;
+}
+
+.tvst-import-meta-line {
+    margin: 0;
+    font-size: 0.76rem;
+    line-height: 1.4;
+    color: var(--tvst-muted);
+    font-variant-numeric: tabular-nums;
+}
+
+.tvst-import-mapper {
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+    padding: 0.85rem 0.95rem;
+    border-radius: 0.75rem;
+    border: 1px solid var(--tvst-border);
+    background: rgba(255, 255, 255, 0.02);
+}
+
+.tvst-import-mapper-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0.65rem;
+}
+
+@media (min-width: 640px) {
+    .tvst-import-mapper-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+.tvst-mapper-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.28rem;
+    min-width: 0;
+}
+
+.tvst-mapper-field span {
+    font-size: 0.74rem;
+    font-weight: 600;
+    color: var(--tvst-muted);
+}
+
+.tvst-mapper-field .tvst-setting-select {
+    width: 100%;
+    min-height: 44px;
+}
+
+.tvst-import-mode-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.tvst-import-mode-options {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0.5rem;
+}
+
+@media (min-width: 640px) {
+    .tvst-import-mode-options {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+.tvst-import-mode-btn {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.22rem;
+    min-height: 44px;
+    padding: 0.72rem 0.85rem;
+    border-radius: 0.7rem;
+    border: 1px solid var(--tvst-border-strong);
+    background: var(--tvst-surface-elevated);
+    color: var(--tvst-text);
+    text-align: left;
+    cursor: pointer;
+    transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.tvst-import-mode-btn:hover {
+    border-color: rgba(255, 255, 255, 0.28);
+}
+
+.tvst-import-mode-btn.is-active {
+    border-color: var(--tvst-accent);
+    background: var(--tvst-accent-soft);
+}
+
+.tvst-import-mode-btn strong {
+    font-size: 0.82rem;
+    font-weight: 700;
+    color: var(--tvst-text);
+}
+
+.tvst-import-mode-btn span {
+    font-size: 0.73rem;
+    line-height: 1.38;
+    color: var(--tvst-muted);
+}
+
+.tvst-import-preview-box {
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+}
+
+.tvst-import-preview-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    border-radius: 0.7rem;
+    border: 1px solid var(--tvst-border);
+    background: var(--tvst-surface-elevated);
+    overflow: hidden;
+}
+
+.tvst-import-preview-row {
+    display: flex;
+    flex-direction: column;
+    gap: 0.12rem;
+    padding: 0.55rem 0.8rem;
+    border-bottom: 1px solid var(--tvst-border);
+}
+
+.tvst-import-preview-row:last-child {
+    border-bottom: none;
+}
+
+.tvst-import-preview-row strong {
+    font-size: 0.82rem;
+    font-weight: 700;
+    color: var(--tvst-text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.tvst-import-preview-row span {
+    font-size: 0.72rem;
+    color: var(--tvst-muted);
+}
+
+.tvst-import-prewarn {
+    margin: 0;
+    padding: 0.6rem 0.75rem;
+    border-radius: 0.6rem;
+    border: 1px solid rgba(251, 191, 36, 0.35);
+    background: rgba(251, 191, 36, 0.08);
+    font-size: 0.75rem;
+    line-height: 1.4;
+    color: #fde68a;
+}
+
+.tvst-import-kpi-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.5rem;
+    margin-top: 0.35rem;
+}
+
+.tvst-import-kpi-grid.is-four {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    margin-top: 0;
+}
+
+@media (min-width: 640px) {
+    .tvst-import-kpi-grid.is-four {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+}
+
+.tvst-import-kpi {
+    display: flex;
+    flex-direction: column;
+    gap: 0.14rem;
+    padding: 0.62rem 0.72rem;
+    border-radius: 0.65rem;
+    border: 1px solid var(--tvst-border);
+    background: rgba(255, 255, 255, 0.03);
+}
+
+.tvst-import-kpi span {
+    font-size: 0.7rem;
+    color: var(--tvst-muted);
+}
+
+.tvst-import-kpi strong {
+    font-size: 1.05rem;
+    font-weight: 800;
+    color: var(--tvst-text);
+    font-variant-numeric: tabular-nums;
+}
+
+.tvst-import-kpi.is-warn {
+    border-color: rgba(251, 191, 36, 0.4);
+    background: rgba(251, 191, 36, 0.08);
+}
+
+.tvst-import-kpi.is-warn strong {
+    color: #fbbf24;
+}
+
+.tvst-import-summary-banner {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    padding: 0.8rem 0.95rem;
+    border-radius: 0.75rem;
+    border: 1px solid rgba(34, 197, 94, 0.35);
+    background: rgba(34, 197, 94, 0.09);
+}
+
+.tvst-import-summary-banner.has-warnings {
+    border-color: rgba(251, 191, 36, 0.4);
+    background: rgba(251, 191, 36, 0.09);
+}
+
+.tvst-import-summary-banner strong {
+    font-size: 0.94rem;
+    font-weight: 800;
+    color: var(--tvst-text);
+}
+
+.tvst-import-summary-banner span {
+    font-size: 0.78rem;
+    line-height: 1.4;
+    color: var(--tvst-muted);
+}
+
+.tvst-import-issues-box {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+    padding: 0.85rem 0.95rem;
+    border-radius: 0.75rem;
+    border: 1px solid rgba(251, 191, 36, 0.35);
+    background: rgba(251, 191, 36, 0.04);
+}
+
+.tvst-import-issues-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+}
+
+.tvst-import-issues-tools {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+}
+
+.tvst-import-issues-tools .tvst-settings-btn {
+    min-height: 40px;
+    padding: 0.42rem 0.72rem;
+    font-size: 0.76rem;
+}
+
+.tvst-import-issues-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    max-height: 15rem;
+    overflow-y: auto;
+    border-radius: 0.65rem;
+    border: 1px solid var(--tvst-border);
+    background: var(--tvst-surface);
+}
+
+.tvst-import-issue-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.55rem;
+    padding: 0.62rem 0.78rem;
+    border-bottom: 1px solid var(--tvst-border);
+}
+
+.tvst-import-issue-row:last-child {
+    border-bottom: none;
+}
+
+.tvst-import-issue-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 0.12rem;
+    min-width: 0;
+    flex: 1 1 12rem;
+}
+
+.tvst-import-issue-copy strong {
+    font-size: 0.82rem;
+    font-weight: 700;
+    color: var(--tvst-text);
+    word-break: break-word;
+}
+
+.tvst-import-issue-copy span {
+    font-size: 0.73rem;
+    color: #fcd34d;
+}
+
+.tvst-issue-search-btn {
+    min-height: 44px;
+    padding: 0.45rem 0.78rem;
+    font-size: 0.76rem;
+    flex-shrink: 0;
+}
+
+.tvst-import-all-ok {
+    margin: 0;
+    font-size: 0.8rem;
+    color: var(--tvst-muted);
+}
+
+.tvst-import-footer-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 0.55rem;
+    padding-top: 0.25rem;
+}
+
+.tvst-import-footer-actions .tvst-settings-btn {
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
 }
 
 @media (prefers-reduced-motion: reduce) {

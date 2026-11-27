@@ -24,6 +24,7 @@ const ALLOWED_TMDB_PATH_PATTERNS = [
     /^\/movie\/\d+\/videos$/,
     /^\/movie\/\d+\/release_dates$/,
     /^\/movie\/\d+\/watch\/providers$/,
+    /^\/collection\/\d+$/,
     /^\/tv\/\d+$/,
     /^\/tv\/\d+\/videos$/,
     /^\/tv\/\d+\/season\/\d+$/,

@@ -8,7 +8,7 @@
     "dev": "node server.js",
     "start": "node server.js",
     "build": "node -e \"const fs=require('fs');if(!fs.existsSync('index.html'))process.exit(1);console.log('Static build ready');\"",
-    "lint": "node --check server.js && node --check app.js && node --check drive-service.js && node --check tmdb-service.js && node --check sw.js"
+    "lint": "node --check server.js && node --check app.js && node --check migration-service.js && node --check drive-service.js && node --check tmdb-service.js && node --check sw.js"
   },
   "dependencies": {
     "express": "^4.21.2"

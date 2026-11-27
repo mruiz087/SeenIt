@@ -48,6 +48,7 @@ const tvMetaCache = new Map();
 const movieDetailsCache = new Map();
 const movieFilterMetaCache = new Map();
 const tvDetailsCache = new Map();
+const collectionDetailsCache = new Map();
 const watchProvidersCache = new Map();
 const videosCache = new Map();
 const releaseDatesCache = new Map();
@@ -638,6 +639,8 @@ async function getMovieDetails(id) {
             id_tmdb: normalized.id_tmdb,
             generos: normalized.generos,
             runtime: normalized.runtime,
+            paises: normalized.paises,
+            coleccion: normalized.coleccion ?? null,
         }, 300);
         if (Array.isArray(normalized.watch_providers)) {
             setTimedCache(watchProvidersCache, `${country}:movie:${id}`, normalized.watch_providers, 300);
@@ -659,18 +662,21 @@ async function getMovieDetails(id) {
 }
 
 /**
- * Meta ligera de película (solo géneros y runtime, sin créditos ni recomendaciones).
+ * Meta ligera de película (géneros, runtime, países y saga/colección).
  * @param {number} id - ID de TMDB de la película
- * @returns {Promise<{id_tmdb:number, generos:string[], runtime:number|null}>}
+ * @returns {Promise<{id_tmdb:number, generos:string[], runtime:number|null, paises:string[], coleccion:Object|null}>}
  */
 async function getMovieFilterMeta(id) {
     const cacheKey = String(id);
-    const fromFull = getTimedCache(movieDetailsCache, cacheKey, SESSION_DETAIL_TTL_MS);
+    const country = getPreferredProviderCountryCode();
+    const fromFull = getTimedCache(movieDetailsCache, `${country}:${cacheKey}`, SESSION_DETAIL_TTL_MS);
     if (fromFull) {
         return {
             id_tmdb: fromFull.id_tmdb,
             generos: fromFull.generos || [],
             runtime: fromFull.runtime || null,
+            paises: fromFull.paises || [],
+            coleccion: fromFull.coleccion ?? null,
         };
     }
     const cached = getTimedCache(movieFilterMetaCache, cacheKey, SESSION_DETAIL_TTL_MS);
@@ -682,6 +688,8 @@ async function getMovieFilterMeta(id) {
             id_tmdb: response.id,
             generos: response.genres?.map(g => g.name) || [],
             runtime: Number(response.runtime) || null,
+            paises: extractCountryCodesFromTmdb(response),
+            coleccion: extractCollectionFromTmdb(response),
         };
         setTimedCache(movieFilterMetaCache, cacheKey, meta, 300);
         return meta;
@@ -757,6 +765,7 @@ async function getTVShowMeta(id, options = {}) {
         const meta = {
             id_tmdb: response.id,
             status: response.status || 'Unknown',
+            paises: extractCountryCodesFromTmdb(response),
             next_episode_to_air: slimNextEpisode(response.next_episode_to_air),
             temporadas: (response.seasons || []).map(s => ({
                 numero: s.season_number,
@@ -1051,6 +1060,34 @@ function extractRegionalReleaseDate(releaseDatesPayload, fallbackDate = null, co
     return normalizeDateStr(fallbackDate);
 }
 
+function extractCountryCodesFromTmdb(data) {
+    const codes = [];
+    const pushCode = (raw) => {
+        const code = String(raw || '').trim().toUpperCase();
+        if (/^[A-Z]{2}$/.test(code) && !codes.includes(code)) {
+            codes.push(code);
+        }
+    };
+    if (Array.isArray(data?.origin_country)) {
+        data.origin_country.forEach(pushCode);
+    }
+    if (Array.isArray(data?.production_countries)) {
+        data.production_countries.forEach(c => pushCode(c?.iso_3166_1));
+    }
+    return codes;
+}
+
+function extractCollectionFromTmdb(data) {
+    const col = data?.belongs_to_collection;
+    if (!col || !Number(col.id)) return null;
+    return {
+        id: Number(col.id),
+        name: String(col.name || '').trim(),
+        poster: getImageUrl(col.poster_path, 'w342'),
+        backdrop: getImageUrl(col.backdrop_path, 'w780'),
+    };
+}
+
 /**
  * Normaliza los datos de una película al formato de la app
  * @param {Object} data - Datos crudos de TMDB
@@ -1075,6 +1112,8 @@ function normalizeMovieData(data) {
         fecha_estreno: regionalDate,
         ...(data?.release_dates ? { release_date_country: country } : {}),
         generos: data.genres?.map(g => g.name) || [],
+        paises: extractCountryCodesFromTmdb(data),
+        coleccion: extractCollectionFromTmdb(data),
         overview: data.overview,
         vote_average: data.vote_average,
         runtime: data.runtime,
@@ -1121,6 +1160,7 @@ function normalizeTVData(data) {
         tipo: 'tv',
         fecha_estreno: data.first_air_date,
         generos: data.genres?.map(g => g.name) || [],
+        paises: extractCountryCodesFromTmdb(data),
         overview: data.overview,
         vote_average: data.vote_average,
         numero_temporadas: data.number_of_seasons,
@@ -1263,6 +1303,49 @@ function clearWatchProvidersCache() {
     releaseDatesCache.clear();
     movieDetailsCache.clear();
     tvDetailsCache.clear();
+    collectionDetailsCache.clear();
+}
+
+async function getCollectionDetails(collectionId) {
+    const safeId = Number(collectionId);
+    if (!Number.isFinite(safeId) || safeId <= 0) return null;
+    const cacheKey = String(safeId);
+    const cached = getTimedCache(collectionDetailsCache, cacheKey, SESSION_DETAIL_TTL_MS);
+    if (cached) return cached;
+
+    try {
+        const response = await fetchTMDB(`/collection/${safeId}`);
+        const parts = (Array.isArray(response?.parts) ? response.parts : [])
+            .map(p => ({
+                id_tmdb: Number(p.id),
+                titulo: p.title || p.original_title || 'Sin título',
+                fecha_estreno: p.release_date ? String(p.release_date).slice(0, 10) : null,
+                portada: getImageUrl(p.poster_path, 'w342'),
+            }))
+            .filter(p => Number.isFinite(p.id_tmdb) && p.id_tmdb > 0)
+            .sort((a, b) => {
+                const da = a.fecha_estreno || '9999-12-31';
+                const db = b.fecha_estreno || '9999-12-31';
+                return da.localeCompare(db) || (a.id_tmdb - b.id_tmdb);
+            });
+        const normalized = {
+            id: Number(response?.id || safeId),
+            name: String(response?.name || 'Colección').trim(),
+            poster: getImageUrl(response?.poster_path, 'w342'),
+            backdrop: getImageUrl(response?.backdrop_path, 'w780'),
+            parts,
+        };
+        setTimedCache(collectionDetailsCache, cacheKey, normalized, 150);
+        return normalized;
+    } catch (error) {
+        if (error?.status === 404) {
+            const empty = { id: safeId, name: '', poster: null, backdrop: null, parts: [] };
+            setTimedCache(collectionDetailsCache, cacheKey, empty, 150);
+            return empty;
+        }
+        console.warn('[TMDB] Error obteniendo colección:', safeId, error);
+        throw error;
+    }
 }
 
 const YOUTUBE_KEY_RE = /^[A-Za-z0-9_-]{6,20}$/;
@@ -1545,6 +1628,7 @@ window.TMDBService = {
     getWatchProviders,
     getMovieRegionalReleaseDate,
     extractRegionalReleaseDate,
+    getCollectionDetails,
     clearWatchProvidersCache,
     getTitleVideos,
     getPersonDetails,
@@ -1575,6 +1659,7 @@ window.normalizeSearchResult = normalizeSearchResult;
 window.getWatchProviders = getWatchProviders;
 window.getMovieRegionalReleaseDate = getMovieRegionalReleaseDate;
 window.extractRegionalReleaseDate = extractRegionalReleaseDate;
+window.getCollectionDetails = getCollectionDetails;
 window.clearWatchProvidersCache = clearWatchProvidersCache;
 window.getTitleVideos = getTitleVideos;
 window.getPersonDetails = getPersonDetails;

@@ -6,8 +6,8 @@
  * - APIs externas: red directa
  */
 
-const STATIC_CACHE = 'seenit-static-v93';
-const DYNAMIC_CACHE = 'seenit-dynamic-v93';
+const STATIC_CACHE = 'seenit-static-v102';
+const DYNAMIC_CACHE = 'seenit-dynamic-v102';
 
 const STATIC_FILES = [
     './',
@@ -15,6 +15,7 @@ const STATIC_FILES = [
     './manifest.json',
     './styles.css',
     './app.js',
+    './migration-service.js',
     './drive-service.js',
     './tmdb-service.js',
     './icons/icon.svg',

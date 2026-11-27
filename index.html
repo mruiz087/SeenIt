@@ -366,13 +366,77 @@
                             <button type="button" id="btn-sync-drive" onclick="loadFromDrive()" class="hidden tvst-settings-btn">Sincronizar</button>
                         </div>
                     </div>
-                    <div class="tvst-section-card">
-                        <h3 class="tvst-settings-card-title">Copia de seguridad</h3>
-                        <p class="tvst-settings-desc">Exporta o restaura tu biblioteca local en formato JSON.</p>
-                        <div class="tvst-settings-actions">
-                            <button type="button" onclick="exportData()" class="tvst-settings-btn">Exportar</button>
-                            <button type="button" onclick="importData()" class="tvst-settings-btn">Importar</button>
+                    <div class="tvst-section-card tvst-migration-card">
+                        <h3 class="tvst-settings-card-title">Importación, exportación y compatibilidad</h3>
+                        <p class="tvst-settings-desc">Importa tu historial desde otras plataformas sin borrar tus datos actuales o exporta tu biblioteca en varios formatos.</p>
+
+                        <div class="tvst-compat-panel">
+                            <span class="tvst-compat-heading">Plataformas compatibles con SeenIt</span>
+                            <ul class="tvst-compat-list">
+                                <li class="tvst-compat-row">
+                                    <div class="tvst-compat-main">
+                                        <span class="tvst-compat-name">SeenIt (.json)</span>
+                                        <span class="tvst-compat-meta">Importa y exporta · Copia completa (pelis, series, episodios, listas, selector y logros)</span>
+                                    </div>
+                                </li>
+                                <li class="tvst-compat-row">
+                                    <div class="tvst-compat-main">
+                                        <span class="tvst-compat-name">Letterboxd (.csv)</span>
+                                        <span class="tvst-compat-meta">Importa y exporta · Películas, año, valoración 0.5–5.0, crítica y fecha vista</span>
+                                    </div>
+                                </li>
+                                <li class="tvst-compat-row">
+                                    <div class="tvst-compat-main">
+                                        <span class="tvst-compat-name">Trakt.tv (.json / .csv)</span>
+                                        <span class="tvst-compat-meta">Importa y exporta · Películas, series, episodios exactos (S/E) y notas 1–10</span>
+                                    </div>
+                                </li>
+                                <li class="tvst-compat-row">
+                                    <div class="tvst-compat-main">
+                                        <span class="tvst-compat-name">IMDb (.csv)</span>
+                                        <span class="tvst-compat-meta">Importa directo / Exporta vía CSV Universal · ID tt…, notas 1–10 y fecha</span>
+                                    </div>
+                                </li>
+                                <li class="tvst-compat-row">
+                                    <div class="tvst-compat-main">
+                                        <span class="tvst-compat-name">TV Time (.csv / .json)</span>
+                                        <span class="tvst-compat-meta">Importa directo / Exporta vía CSV Universal · Series por tvdb_id y episodios exactos</span>
+                                    </div>
+                                </li>
+                                <li class="tvst-compat-row">
+                                    <div class="tvst-compat-main">
+                                        <span class="tvst-compat-name">Simkl / Excel / Otros (.csv o .json)</span>
+                                        <span class="tvst-compat-meta">Mapeador de columnas / Exporta CSV Universal · Compatible con hojas de cálculo</span>
+                                    </div>
+                                </li>
+                            </ul>
+                        </div>
+
+                        <div class="tvst-settings-actions tvst-migration-primary-row">
+                            <button type="button" onclick="openUniversalImportModal()" class="tvst-settings-btn is-primary">Importar archivo (.csv / .json)</button>
                             <button type="button" onclick="clearAllData()" class="tvst-settings-btn is-danger">Borrar todo</button>
+                        </div>
+
+                        <div class="tvst-export-section">
+                            <span class="tvst-compat-heading">Exportar biblioteca</span>
+                            <div class="tvst-export-grid">
+                                <button type="button" onclick="exportData()" class="tvst-export-btn">
+                                    <strong>Copia SeenIt (.json)</strong>
+                                    <span>Respaldo total con listas y logros</span>
+                                </button>
+                                <button type="button" onclick="exportUniversalCsv()" class="tvst-export-btn">
+                                    <strong>CSV Universal (.csv)</strong>
+                                    <span>Excel, Simkl y tabla completa con episodios</span>
+                                </button>
+                                <button type="button" onclick="exportLetterboxdCsv()" class="tvst-export-btn">
+                                    <strong>Letterboxd (.csv)</strong>
+                                    <span>Vistas, notas 0.5–5 y watchlist de cine</span>
+                                </button>
+                                <button type="button" onclick="exportTraktJson()" class="tvst-export-btn">
+                                    <strong>Esquema Trakt (.json)</strong>
+                                    <span>Películas, series y episodios por temporada</span>
+                                </button>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -582,6 +646,38 @@
         </div>
     </div>
 
+    <!-- Modal Detalle de Colección -->
+    <div id="collectible-modal" class="tvst-modal tvst-modal-elevated hidden" role="dialog" aria-modal="true" aria-labelledby="collectible-modal-title">
+        <div class="tvst-modal-backdrop" onclick="closeCollectibleModal()"></div>
+        <div class="tvst-modal-sheet tvst-collectible-sheet">
+            <div class="tvst-modal-scroll">
+                <header class="tvst-list-modal-header tvst-collectible-header">
+                    <button type="button" class="tvst-hero-close" onclick="closeCollectibleModal()" aria-label="Cerrar">
+                        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+                    </button>
+                    <h2 id="collectible-modal-title" class="tvst-list-modal-title">Detalle</h2>
+                </header>
+                <div id="collectible-modal-body" class="tvst-collectible-body"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal Importador Universal -->
+    <div id="universal-import-modal" class="tvst-modal tvst-modal-elevated hidden" role="dialog" aria-modal="true" aria-labelledby="universal-import-modal-title">
+        <div class="tvst-modal-backdrop" onclick="closeUniversalImportModal()"></div>
+        <div class="tvst-modal-sheet tvst-import-sheet">
+            <div class="tvst-modal-scroll">
+                <header class="tvst-list-modal-header tvst-import-header">
+                    <button type="button" class="tvst-hero-close" onclick="closeUniversalImportModal()" aria-label="Cerrar">
+                        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+                    </button>
+                    <h2 id="universal-import-modal-title" class="tvst-list-modal-title">Importar biblioteca</h2>
+                </header>
+                <div id="universal-import-modal-body" class="tvst-import-body"></div>
+            </div>
+        </div>
+    </div>
+
     <div id="loading-overlay" class="tvst-loading-overlay hidden" role="status" aria-live="polite">
         <div class="tvst-loading-card">
             <div class="tvst-loading-spinner"></div>
@@ -622,6 +718,7 @@
     <script src="tmdb-service.js"></script>
     <script src="drive-service.js"></script>
     <script src="app.js"></script>
+    <script src="migration-service.js"></script>
     <script>
         if (document.readyState === 'loading') {
             document.addEventListener('DOMContentLoaded', () => initApp());

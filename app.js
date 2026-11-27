@@ -80,6 +80,10 @@ const AppState = {
     achievementsCategory: 'all',
     achievementsExpanded: false,
     rewardsExpanded: false,
+    ticketsExpanded: false,
+    ticketsGenreFilter: 'all',
+    ticketsStatusFilter: 'all',
+    collectibleModalState: null,
 };
 
 const VALID_START_TABS = new Set(['series', 'movies', 'explore', 'profile']);
@@ -478,6 +482,7 @@ async function enterAppAfterDrive() {
     const idle = window.requestIdleCallback || ((cb) => setTimeout(cb, 800));
     idle(() => {
         prefetchTimelineSeasons().catch(() => {});
+        scheduleCollectibleMetaHydration();
     });
 }
 
@@ -734,6 +739,10 @@ function clearLibraryState() {
     AppState.preferences = normalizePreferences();
     AppState.gamification = normalizeGamificationState();
     AppState.achievementsFilter = 'all';
+    AppState.ticketsExpanded = false;
+    AppState.ticketsGenreFilter = 'all';
+    AppState.ticketsStatusFilter = 'all';
+    AppState.collectibleModalState = null;
     AppState.moviesPendingMySubsOnly = false;
     AppState.revealedSpoilerEpisodeKeys = {};
     AppState.selectedItem = null;
@@ -861,6 +870,21 @@ function normalizeStoredMovie(movie) {
     if (normalized.release_date_country) {
         normalized.release_date_country = String(normalized.release_date_country).trim().toUpperCase();
     }
+    if (Array.isArray(movie?.paises)) {
+        normalized.paises = [...new Set(
+            movie.paises.map(c => String(c || '').trim().toUpperCase()).filter(c => /^[A-Z]{2}$/.test(c)),
+        )];
+    }
+    if (movie && 'coleccion' in movie) {
+        normalized.coleccion = (movie.coleccion && typeof movie.coleccion === 'object' && Number(movie.coleccion.id) > 0)
+            ? {
+                id: Number(movie.coleccion.id),
+                name: String(movie.coleccion.name || 'Saga').trim(),
+                poster: movie.coleccion.poster || null,
+                backdrop: movie.coleccion.backdrop || null,
+            }
+            : null;
+    }
     normalized.updatedAt = normalized.updatedAt || normalized.lastModified || nowIso();
     return normalized;
 }
@@ -891,6 +915,11 @@ function normalizeStoredShow(show) {
         normalized.next_episode_to_air = show.next_episode_to_air && typeof show.next_episode_to_air === 'object'
             ? show.next_episode_to_air
             : null;
+    }
+    if (Array.isArray(show?.paises)) {
+        normalized.paises = [...new Set(
+            show.paises.map(c => String(c || '').trim().toUpperCase()).filter(c => /^[A-Z]{2}$/.test(c)),
+        )];
     }
     if (normalized.metaCheckedAt) {
         normalized.metaCheckedAt = String(normalized.metaCheckedAt);
@@ -1091,7 +1120,17 @@ function mergeMovieOrShow(localItem, remoteItem, kind) {
     const a = kind === 'movie' ? normalizeStoredMovie(localItem) : normalizeStoredShow(localItem);
     const b = kind === 'movie' ? normalizeStoredMovie(remoteItem) : normalizeStoredShow(remoteItem);
     const winner = pickNewerByUpdatedAt(a, b);
-    return kind === 'movie' ? normalizeStoredMovie({ ...winner }) : normalizeStoredShow({ ...winner });
+    const loser = winner === a ? b : a;
+    const merged = { ...winner };
+    if (kind === 'movie') {
+        if (!(merged.coleccion && Number(merged.coleccion.id) > 0) && loser.coleccion && Number(loser.coleccion.id) > 0) {
+            merged.coleccion = loser.coleccion;
+        }
+    }
+    if ((!Array.isArray(merged.paises) || !merged.paises.length) && Array.isArray(loser.paises) && loser.paises.length) {
+        merged.paises = loser.paises;
+    }
+    return kind === 'movie' ? normalizeStoredMovie(merged) : normalizeStoredShow(merged);
 }
 
 function mergeTombstoneLists(aList, bList) {
@@ -1390,6 +1429,7 @@ function removeMovie(id_tmdb) {
     recordItemTombstone('movie', id_tmdb);
     removeItemFromAllLists('movie', id_tmdb);
     saveLocalData();
+    evaluateGamification({ silent: true });
     syncToDrive();
     renderCurrentView();
     showToast('Película eliminada', 'success');
@@ -1832,6 +1872,9 @@ function switchTab(tab) {
     }
     if (!document.getElementById('person-modal')?.classList.contains('hidden')) {
         closePersonModal();
+    }
+    if (!document.getElementById('collectible-modal')?.classList.contains('hidden')) {
+        closeCollectibleModal();
     }
 
     AppState.currentTab = tab;
@@ -2820,6 +2863,14 @@ async function ensureMovieFilterMeta(pending) {
             }
             if (Number(details?.runtime) > 0 && !(Number(movie.runtime) > 0)) {
                 movie.runtime = Number(details.runtime);
+                changed = true;
+            }
+            if (Array.isArray(details?.paises) && !Array.isArray(movie.paises)) {
+                movie.paises = [...details.paises];
+                changed = true;
+            }
+            if (details && 'coleccion' in details && movie.coleccion === undefined) {
+                movie.coleccion = details.coleccion ?? null;
                 changed = true;
             }
             if (!Array.isArray(movie.generos)) movie.generos = [];
@@ -8469,6 +8520,12 @@ function mergeDetailItem(existingItem, freshDetails) {
         },
         recommendations: freshDetails.recommendations || existingItem.recommendations || [],
         videos: Array.isArray(freshDetails.videos) ? freshDetails.videos : (Array.isArray(existingItem.videos) ? existingItem.videos : []),
+        paises: Array.isArray(freshDetails?.paises)
+            ? freshDetails.paises
+            : (Array.isArray(existingItem.paises) ? existingItem.paises : undefined),
+        coleccion: freshDetails && 'coleccion' in freshDetails
+            ? (freshDetails.coleccion ?? null)
+            : existingItem.coleccion,
     };
 }
 
@@ -9141,7 +9198,8 @@ async function openDetail(type, id_tmdb) {
             && item.credits.cast.length > 0
             && !item.credits.cast.some(p => Number(p.id) > 0);
         const currentCountry = getPreferredProviderCountry();
-        const needsFreshDetails = !item?.overview || !item?.credits?.cast?.length || castMissingIds || !item?.recommendations?.length || !item?.backdrop;
+        const needsCollectibleFields = !Array.isArray(item?.paises) || (type === 'movie' && item?.coleccion === undefined);
+        const needsFreshDetails = !item?.overview || !item?.credits?.cast?.length || castMissingIds || !item?.recommendations?.length || !item?.backdrop || needsCollectibleFields;
         const needsProviders = !item?.watch_providers?.length;
         const needsVideos = areTrailersEnabled() && !Array.isArray(item?.videos);
         const needsReleaseDate = type === 'movie' && Boolean(libraryItem) && libraryItem.release_date_country !== currentCountry;
@@ -9534,6 +9592,10 @@ function exportData() {
  * Importa datos desde un archivo JSON
  */
 function importData() {
+    if (typeof window.openUniversalImportModal === 'function') {
+        window.openUniversalImportModal();
+        return;
+    }
     document.getElementById('import-file').click();
 }
 
@@ -9551,8 +9613,12 @@ function handleImport(event) {
             const data = JSON.parse(e.target.result);
 
             if (data.movies || data.shows || data.lists || data.selectorItems || data.preferences || data.gamification) {
+                if (typeof window.closeUniversalImportModal === 'function') {
+                    window.closeUniversalImportModal();
+                }
                 closeListPicker();
                 closeListModal();
+                closeCollectibleModal();
                 closeEpisodeModal();
                 closePersonModal();
                 closeModal();
@@ -9561,6 +9627,7 @@ function handleImport(event) {
                 AppState.selectedEpisode = null;
                 AppState.selectedPerson = null;
                 AppState.selectorWinnerKey = null;
+                AppState.ticketsExpanded = false;
                 failedProviderFetchKeys.clear();
                 attemptedMovieFilterMetaIds.clear();
 
@@ -9619,6 +9686,7 @@ async function clearAllData() {
 
     closeListPicker();
     closeListModal();
+    closeCollectibleModal();
     closeEpisodeModal();
     closePersonModal();
     closeModal();
@@ -9630,6 +9698,9 @@ async function clearAllData() {
     AppState.selectorWinnerKey = null;
     AppState.gamification = normalizeGamificationState();
     AppState.achievementsFilter = 'all';
+    AppState.ticketsExpanded = false;
+    AppState.ticketsGenreFilter = 'all';
+    AppState.ticketsStatusFilter = 'all';
     clearGamificationToastQueue();
     applyGamificationAppearance();
     AppState.selectedItem = null;
@@ -9792,6 +9863,39 @@ function setupEventListeners() {
             chromeResizeTimer = setTimeout(syncMobileChromeHeights, 100);
         });
     }
+    document.addEventListener('keydown', (e) => {
+        if (e.key !== 'Escape') return;
+        if (!document.getElementById('app-dialog-modal')?.classList.contains('hidden')) return;
+        if (!document.getElementById('universal-import-modal')?.classList.contains('hidden')) {
+            if (typeof window.closeUniversalImportModal === 'function') {
+                window.closeUniversalImportModal();
+            }
+            return;
+        }
+        if (!document.getElementById('collectible-modal')?.classList.contains('hidden')) {
+            closeCollectibleModal();
+            return;
+        }
+        if (!document.getElementById('list-picker-modal')?.classList.contains('hidden')) {
+            closeListPicker();
+            return;
+        }
+        if (!document.getElementById('list-modal')?.classList.contains('hidden')) {
+            closeListModal();
+            return;
+        }
+        if (!document.getElementById('episode-modal')?.classList.contains('hidden')) {
+            closeEpisodeModal();
+            return;
+        }
+        if (!document.getElementById('person-modal')?.classList.contains('hidden')) {
+            closePersonModal();
+            return;
+        }
+        if (!document.getElementById('detail-modal')?.classList.contains('hidden')) {
+            closeModal();
+        }
+    });
     console.log('[App] Event listeners configurados');
 }
 
@@ -9917,10 +10021,11 @@ const GAMIFICATION_BADGE_ICONS = {
     bookmark: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h12a1 1 0 011 1v17l-7-4-7 4V4a1 1 0 011-1z"/></svg>',
     coffee: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M17 8h1a4 4 0 110 8h-1"/><path d="M3 8h14v9a4 4 0 01-4 4H7a4 4 0 01-4-4V8z"/><path d="M6 2v3M10 2v3M14 2v3"/></svg>',
     sparkles: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.6 4.4L18 9l-4.4 1.6L12 15l-1.6-4.4L6 9l4.4-1.6L12 3z"/><path d="M5 16l.8 2.2L8 19l-2.2.8L5 22l-.8-2.2L2 19l2.2-.8L5 16z"/></svg>',
+    ticket: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.85" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9V7a2 2 0 012-2h14a2 2 0 012 2v2a2.5 2.5 0 000 5v2a2 2 0 01-2 2H5a2 2 0 01-2-2v-2a2.5 2.5 0 000-5z"/><path d="M15 5v2M15 11v2M15 17v2"/></svg>',
 };
 
 const ACHIEVEMENTS_CATALOG = [
-    // ── CINE (23) ──
+    // ── CINE (27) ──
     {
         id: 'first_movie',
         title: 'Primera sesión',
@@ -9928,7 +10033,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'movies',
         categoryLabel: 'Cine',
         icon: 'film',
-        xp: 30,
+        xp: 10,
         target: 1,
         value: m => m.watchedMovies,
     },
@@ -9939,7 +10044,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'movies',
         categoryLabel: 'Cine',
         icon: 'film',
-        xp: 50,
+        xp: 30,
         target: 10,
         value: m => m.watchedMovies,
     },
@@ -9950,7 +10055,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'movies',
         categoryLabel: 'Cine',
         icon: 'film',
-        xp: 70,
+        xp: 50,
         target: 25,
         value: m => m.watchedMovies,
     },
@@ -9961,7 +10066,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'movies',
         categoryLabel: 'Cine',
         icon: 'trophy',
-        xp: 95,
+        xp: 75,
         target: 50,
         value: m => m.watchedMovies,
     },
@@ -9972,7 +10077,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'movies',
         categoryLabel: 'Cine',
         icon: 'trophy',
-        xp: 140,
+        xp: 120,
         target: 100,
         value: m => m.watchedMovies,
     },
@@ -9983,7 +10088,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'movies',
         categoryLabel: 'Cine',
         icon: 'crown',
-        xp: 220,
+        xp: 200,
         target: 250,
         value: m => m.watchedMovies,
     },
@@ -9994,7 +10099,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'movies',
         categoryLabel: 'Cine',
         icon: 'crown',
-        xp: 340,
+        xp: 320,
         target: 500,
         value: m => m.watchedMovies,
     },
@@ -10005,7 +10110,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'movies',
         categoryLabel: 'Cine',
         icon: 'crown',
-        xp: 500,
+        xp: 480,
         target: 1000,
         value: m => m.watchedMovies,
     },
@@ -10016,7 +10121,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'movies',
         categoryLabel: 'Cine',
         icon: 'clock',
-        xp: 40,
+        xp: 20,
         target: 1,
         value: m => m.shortMoviesCount,
     },
@@ -10027,7 +10132,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'movies',
         categoryLabel: 'Cine',
         icon: 'hourglass',
-        xp: 80,
+        xp: 60,
         target: 5,
         value: m => m.longMoviesCount,
     },
@@ -10038,7 +10143,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'movies',
         categoryLabel: 'Cine',
         icon: 'hourglass',
-        xp: 75,
+        xp: 55,
         target: 1,
         value: m => m.epicRuntimeMoviesCount,
     },
@@ -10049,7 +10154,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'movies',
         categoryLabel: 'Cine',
         icon: 'clock',
-        xp: 65,
+        xp: 45,
         target: 5,
         value: m => m.classicMoviesCount,
     },
@@ -10060,7 +10165,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'movies',
         categoryLabel: 'Cine',
         icon: 'clock',
-        xp: 120,
+        xp: 100,
         target: 20,
         value: m => m.classicMoviesCount,
     },
@@ -10071,7 +10176,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'movies',
         categoryLabel: 'Cine',
         icon: 'film',
-        xp: 90,
+        xp: 70,
         target: 3,
         value: m => m.goldenAgeMoviesCount,
     },
@@ -10082,7 +10187,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'movies',
         categoryLabel: 'Cine',
         icon: 'film',
-        xp: 70,
+        xp: 50,
         target: 1,
         value: m => m.pre1960MoviesCount,
     },
@@ -10093,7 +10198,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'movies',
         categoryLabel: 'Cine',
         icon: 'compass',
-        xp: 90,
+        xp: 70,
         target: 4,
         value: m => m.movieDecadesCount,
     },
@@ -10104,7 +10209,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'movies',
         categoryLabel: 'Cine',
         icon: 'compass',
-        xp: 140,
+        xp: 120,
         target: 6,
         value: m => m.movieDecadesCount,
     },
@@ -10115,7 +10220,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'movies',
         categoryLabel: 'Cine',
         icon: 'hourglass',
-        xp: 130,
+        xp: 110,
         target: 100,
         value: m => m.movieHoursWatched,
     },
@@ -10126,7 +10231,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'movies',
         categoryLabel: 'Cine',
         icon: 'sparkles',
-        xp: 65,
+        xp: 45,
         target: 10,
         value: m => m.genreCounts.animation,
     },
@@ -10137,7 +10242,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'movies',
         categoryLabel: 'Cine',
         icon: 'moon',
-        xp: 65,
+        xp: 45,
         target: 10,
         value: m => m.genreCounts.horror,
     },
@@ -10148,7 +10253,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'movies',
         categoryLabel: 'Cine',
         icon: 'compass',
-        xp: 65,
+        xp: 45,
         target: 10,
         value: m => m.genreCounts.scifi,
     },
@@ -10159,7 +10264,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'movies',
         categoryLabel: 'Cine',
         icon: 'sparkles',
-        xp: 75,
+        xp: 55,
         target: 15,
         value: m => m.genreCounts.comedy,
     },
@@ -10170,12 +10275,56 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'movies',
         categoryLabel: 'Cine',
         icon: 'bookmark',
-        xp: 60,
+        xp: 40,
         target: 5,
         value: m => m.genreCounts.documentary,
     },
 
-    // ── SERIES (21) ──
+    {
+        id: 'action_fan',
+        title: 'Adrenalina pura',
+        desc: 'Disfruta de 10 títulos del género Acción.',
+        category: 'movies',
+        categoryLabel: 'Cine',
+        icon: 'flame',
+        xp: 45,
+        target: 10,
+        value: m => m.genreCounts.action || 0,
+    },
+    {
+        id: 'thriller_fan',
+        title: 'En vilo hasta los créditos',
+        desc: 'Ve 10 películas o títulos de Suspense o Misterio.',
+        category: 'movies',
+        categoryLabel: 'Cine',
+        icon: 'compass',
+        xp: 45,
+        target: 10,
+        value: m => m.genreCounts.thriller || 0,
+    },
+    {
+        id: 'cinema_hours_250',
+        title: 'Doble sesión perpetua',
+        desc: 'Acumula más de 250 horas dedicadas a ver cine.',
+        category: 'movies',
+        categoryLabel: 'Cine',
+        icon: 'clock',
+        xp: 110,
+        target: 250,
+        value: m => m.movieHoursWatched,
+    },
+    {
+        id: 'eight_decades',
+        title: 'Viajero del siglo',
+        desc: 'Mira películas estrenadas en al menos 8 décadas diferentes.',
+        category: 'movies',
+        categoryLabel: 'Cine',
+        icon: 'hourglass',
+        xp: 150,
+        target: 8,
+        value: m => m.movieDecadesCount,
+    },
+    // ── SERIES (26) ──
     {
         id: 'first_episode',
         title: 'Piloto aprobado',
@@ -10183,7 +10332,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'tv',
         categoryLabel: 'Series',
         icon: 'tv',
-        xp: 30,
+        xp: 10,
         target: 1,
         value: m => m.watchedEpisodes,
     },
@@ -10194,7 +10343,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'tv',
         categoryLabel: 'Series',
         icon: 'tv',
-        xp: 50,
+        xp: 30,
         target: 50,
         value: m => m.watchedEpisodes,
     },
@@ -10205,7 +10354,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'tv',
         categoryLabel: 'Series',
         icon: 'tv',
-        xp: 70,
+        xp: 50,
         target: 100,
         value: m => m.watchedEpisodes,
     },
@@ -10216,7 +10365,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'tv',
         categoryLabel: 'Series',
         icon: 'flame',
-        xp: 115,
+        xp: 95,
         target: 500,
         value: m => m.watchedEpisodes,
     },
@@ -10227,7 +10376,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'tv',
         categoryLabel: 'Series',
         icon: 'trophy',
-        xp: 185,
+        xp: 165,
         target: 1000,
         value: m => m.watchedEpisodes,
     },
@@ -10238,7 +10387,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'tv',
         categoryLabel: 'Series',
         icon: 'crown',
-        xp: 275,
+        xp: 255,
         target: 2500,
         value: m => m.watchedEpisodes,
     },
@@ -10249,7 +10398,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'tv',
         categoryLabel: 'Series',
         icon: 'crown',
-        xp: 400,
+        xp: 380,
         target: 5000,
         value: m => m.watchedEpisodes,
     },
@@ -10260,7 +10409,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'tv',
         categoryLabel: 'Series',
         icon: 'crown',
-        xp: 550,
+        xp: 530,
         target: 10000,
         value: m => m.watchedEpisodes,
     },
@@ -10271,7 +10420,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'tv',
         categoryLabel: 'Series',
         icon: 'flame',
-        xp: 60,
+        xp: 40,
         target: 5,
         value: m => m.maxSameDayBinge,
     },
@@ -10282,7 +10431,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'tv',
         categoryLabel: 'Series',
         icon: 'flame',
-        xp: 115,
+        xp: 95,
         target: 10,
         value: m => m.maxSameDayBinge,
     },
@@ -10293,7 +10442,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'tv',
         categoryLabel: 'Series',
         icon: 'tv',
-        xp: 55,
+        xp: 35,
         target: 1,
         value: m => m.completedShows,
     },
@@ -10304,7 +10453,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'tv',
         categoryLabel: 'Series',
         icon: 'trophy',
-        xp: 110,
+        xp: 90,
         target: 10,
         value: m => m.completedShows,
     },
@@ -10315,7 +10464,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'tv',
         categoryLabel: 'Series',
         icon: 'crown',
-        xp: 190,
+        xp: 170,
         target: 25,
         value: m => m.completedShows,
     },
@@ -10326,7 +10475,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'tv',
         categoryLabel: 'Series',
         icon: 'flame',
-        xp: 55,
+        xp: 35,
         target: 1,
         value: m => m.miniSeriesCompleted,
     },
@@ -10337,7 +10486,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'tv',
         categoryLabel: 'Series',
         icon: 'trophy',
-        xp: 85,
+        xp: 65,
         target: 1,
         value: m => m.longCompletedShows,
     },
@@ -10348,7 +10497,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'tv',
         categoryLabel: 'Series',
         icon: 'crown',
-        xp: 155,
+        xp: 135,
         target: 3,
         value: m => m.epicCompletedShows,
     },
@@ -10359,7 +10508,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'tv',
         categoryLabel: 'Series',
         icon: 'tv',
-        xp: 55,
+        xp: 35,
         target: 5,
         value: m => m.watchingShowsCount,
     },
@@ -10370,7 +10519,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'tv',
         categoryLabel: 'Series',
         icon: 'tv',
-        xp: 95,
+        xp: 75,
         target: 10,
         value: m => m.watchingShowsCount,
     },
@@ -10381,7 +10530,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'tv',
         categoryLabel: 'Series',
         icon: 'clock',
-        xp: 45,
+        xp: 25,
         target: 5,
         value: m => m.standbyShowsCount,
     },
@@ -10392,7 +10541,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'tv',
         categoryLabel: 'Series',
         icon: 'tv',
-        xp: 35,
+        xp: 15,
         target: 1,
         value: m => m.droppedShowsCount,
     },
@@ -10403,7 +10552,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'tv',
         categoryLabel: 'Series',
         icon: 'scale',
-        xp: 75,
+        xp: 55,
         target: 5,
         value: m => m.droppedShowsCount,
     },
@@ -10414,12 +10563,56 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'tv',
         categoryLabel: 'Series',
         icon: 'tv',
-        xp: 35,
+        xp: 15,
         target: 1,
         value: m => m.skippedEpisodesCount,
     },
 
-    // ── COLECCIÓN Y CRÍTICA (18) ──
+    {
+        id: 'two_hundred_fifty_eps',
+        title: 'Media temporada',
+        desc: 'Alcanza 250 episodios vistos.',
+        category: 'tv',
+        categoryLabel: 'Series',
+        icon: 'tv',
+        xp: 50,
+        target: 250,
+        value: m => m.watchedEpisodes,
+    },
+    {
+        id: 'five_series_done',
+        title: 'Racha de finales',
+        desc: 'Completa al 100% 5 series diferentes.',
+        category: 'tv',
+        categoryLabel: 'Series',
+        icon: 'trophy',
+        xp: 60,
+        target: 5,
+        value: m => m.completedShows,
+    },
+    {
+        id: 'binge_fifteen',
+        title: 'Maratón olímpico',
+        desc: 'Devora 15 o más episodios en un solo día.',
+        category: 'tv',
+        categoryLabel: 'Series',
+        icon: 'flame',
+        xp: 110,
+        target: 15,
+        value: m => m.maxSameDayBinge,
+    },
+    {
+        id: 'twenty_shows_watching',
+        title: 'Heredero de tramas',
+        desc: 'Mantén 20 series simultáneamente en tu lista de Viendo.',
+        category: 'tv',
+        categoryLabel: 'Series',
+        icon: 'layers',
+        xp: 85,
+        target: 20,
+        value: m => m.watchingShowsCount,
+    },
+    // ── COLECCIÓN Y CRÍTICA (26) ──
     {
         id: 'genre_explorer',
         title: 'Paladar ecléctico',
@@ -10427,7 +10620,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'critic',
         categoryLabel: 'Colección',
         icon: 'compass',
-        xp: 55,
+        xp: 35,
         target: 6,
         value: m => m.distinctWatchedGenres,
     },
@@ -10438,7 +10631,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'critic',
         categoryLabel: 'Colección',
         icon: 'compass',
-        xp: 115,
+        xp: 95,
         target: 12,
         value: m => m.distinctWatchedGenres,
     },
@@ -10449,7 +10642,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'critic',
         categoryLabel: 'Colección',
         icon: 'heart',
-        xp: 30,
+        xp: 10,
         target: 1,
         value: m => m.favoritesCount,
     },
@@ -10460,7 +10653,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'critic',
         categoryLabel: 'Colección',
         icon: 'heart',
-        xp: 75,
+        xp: 55,
         target: 15,
         value: m => m.favoritesCount,
     },
@@ -10471,7 +10664,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'critic',
         categoryLabel: 'Colección',
         icon: 'pen',
-        xp: 60,
+        xp: 40,
         target: 5,
         value: m => m.reviewsWritten,
     },
@@ -10482,7 +10675,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'critic',
         categoryLabel: 'Colección',
         icon: 'pen',
-        xp: 130,
+        xp: 110,
         target: 20,
         value: m => m.reviewsWritten,
     },
@@ -10493,7 +10686,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'critic',
         categoryLabel: 'Colección',
         icon: 'pen',
-        xp: 55,
+        xp: 35,
         target: 1,
         value: m => m.longReviewsCount,
     },
@@ -10504,7 +10697,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'critic',
         categoryLabel: 'Colección',
         icon: 'star',
-        xp: 55,
+        xp: 35,
         target: 15,
         value: m => m.ratedItems,
     },
@@ -10515,7 +10708,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'critic',
         categoryLabel: 'Colección',
         icon: 'star',
-        xp: 120,
+        xp: 100,
         target: 75,
         value: m => m.ratedItems,
     },
@@ -10526,7 +10719,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'critic',
         categoryLabel: 'Colección',
         icon: 'crown',
-        xp: 210,
+        xp: 190,
         target: 200,
         value: m => m.ratedItems,
     },
@@ -10537,7 +10730,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'critic',
         categoryLabel: 'Colección',
         icon: 'sparkles',
-        xp: 45,
+        xp: 25,
         target: 1,
         value: m => m.tenRatingsCount,
     },
@@ -10548,7 +10741,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'critic',
         categoryLabel: 'Colección',
         icon: 'scale',
-        xp: 45,
+        xp: 25,
         target: 1,
         value: m => m.brutalRatingsCount,
     },
@@ -10559,7 +10752,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'critic',
         categoryLabel: 'Colección',
         icon: 'star',
-        xp: 75,
+        xp: 55,
         target: 20,
         value: m => m.highRatingsCount,
     },
@@ -10570,7 +10763,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'critic',
         categoryLabel: 'Colección',
         icon: 'scale',
-        xp: 75,
+        xp: 55,
         target: 10,
         value: m => m.lowRatingsCount,
     },
@@ -10581,7 +10774,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'critic',
         categoryLabel: 'Colección',
         icon: 'heart',
-        xp: 65,
+        xp: 45,
         target: 1,
         value: m => m.guiltyPleasureCount,
     },
@@ -10592,7 +10785,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'critic',
         categoryLabel: 'Colección',
         icon: 'scale',
-        xp: 65,
+        xp: 45,
         target: 1,
         value: m => m.contrarianCount,
     },
@@ -10603,7 +10796,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'critic',
         categoryLabel: 'Colección',
         icon: 'layers',
-        xp: 50,
+        xp: 30,
         target: 3,
         value: m => m.customLists,
     },
@@ -10614,7 +10807,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'critic',
         categoryLabel: 'Colección',
         icon: 'layers',
-        xp: 105,
+        xp: 85,
         target: 8,
         value: m => m.customLists,
     },
@@ -10625,7 +10818,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'critic',
         categoryLabel: 'Colección',
         icon: 'bookmark',
-        xp: 80,
+        xp: 60,
         target: 15,
         value: m => m.maxListSize,
     },
@@ -10636,12 +10829,78 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'critic',
         categoryLabel: 'Colección',
         icon: 'bookmark',
-        xp: 120,
+        xp: 100,
         target: 30,
         value: m => m.maxListSize,
     },
+    {
+        id: 'saga_ticket_1',
+        title: 'Coleccionista de taquilla',
+        desc: 'Completa todas las entregas estrenadas de una saga cinematográfica.',
+        category: 'critic',
+        categoryLabel: 'Colección',
+        icon: 'ticket',
+        xp: 60,
+        target: 1,
+        value: m => m.completedSagasCount,
+    },
+    {
+        id: 'saga_ticket_3',
+        title: 'Trilogías en vena',
+        desc: 'Completa 3 colecciones cinematográficas enteras.',
+        category: 'critic',
+        categoryLabel: 'Colección',
+        icon: 'ticket',
+        xp: 150,
+        target: 3,
+        value: m => m.completedSagasCount,
+    },
 
-    // ── HÁBITOS Y SELECTOR (15) ──
+    {
+        id: 'fifty_ratings',
+        title: 'Cincuenta veredictos',
+        desc: 'Puntúa 50 títulos en tu filmoteca.',
+        category: 'critic',
+        categoryLabel: 'Colección',
+        icon: 'star',
+        xp: 60,
+        target: 50,
+        value: m => m.ratedItems,
+    },
+    {
+        id: 'thirty_favorites',
+        title: 'Panteón de favoritos',
+        desc: 'Guarda 30 títulos en tu lista de favoritos.',
+        category: 'critic',
+        categoryLabel: 'Colección',
+        icon: 'heart',
+        xp: 80,
+        target: 30,
+        value: m => m.favoritesCount,
+    },
+    {
+        id: 'saga_ticket_5',
+        title: 'Maestro de sagas',
+        desc: 'Completa 5 colecciones cinematográficas enteras en Colecciones.',
+        category: 'critic',
+        categoryLabel: 'Colección',
+        icon: 'ticket',
+        xp: 160,
+        target: 5,
+        value: m => m.completedSagasCount,
+    },
+    {
+        id: 'ten_reviews',
+        title: 'Columnista habitual',
+        desc: 'Escribe al menos 10 críticas o notas en tus títulos.',
+        category: 'critic',
+        categoryLabel: 'Colección',
+        icon: 'pen',
+        xp: 70,
+        target: 10,
+        value: m => m.reviewsWritten,
+    },
+    // ── HÁBITOS Y SELECTOR (21) ──
     {
         id: 'midnight_snack',
         title: 'Solo un capítulo más...',
@@ -10649,7 +10908,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'habits',
         categoryLabel: 'Hábitos',
         icon: 'moon',
-        xp: 45,
+        xp: 25,
         target: 1,
         value: m => m.midnightSnackCount,
     },
@@ -10660,7 +10919,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'habits',
         categoryLabel: 'Hábitos',
         icon: 'moon',
-        xp: 50,
+        xp: 30,
         target: 1,
         value: m => m.nightOwlCount,
     },
@@ -10671,7 +10930,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'habits',
         categoryLabel: 'Hábitos',
         icon: 'moon',
-        xp: 100,
+        xp: 80,
         target: 5,
         value: m => m.nightOwlCount,
     },
@@ -10682,7 +10941,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'habits',
         categoryLabel: 'Hábitos',
         icon: 'coffee',
-        xp: 55,
+        xp: 35,
         target: 1,
         value: m => m.earlyBirdCount,
     },
@@ -10693,7 +10952,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'habits',
         categoryLabel: 'Hábitos',
         icon: 'layers',
-        xp: 60,
+        xp: 40,
         target: 50,
         value: m => m.pendingItemsCount,
     },
@@ -10704,7 +10963,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'habits',
         categoryLabel: 'Hábitos',
         icon: 'layers',
-        xp: 110,
+        xp: 90,
         target: 150,
         value: m => m.pendingItemsCount,
     },
@@ -10715,7 +10974,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'habits',
         categoryLabel: 'Hábitos',
         icon: 'dice',
-        xp: 50,
+        xp: 30,
         target: 10,
         value: m => m.selectorPoolSize,
     },
@@ -10726,7 +10985,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'habits',
         categoryLabel: 'Hábitos',
         icon: 'dice',
-        xp: 35,
+        xp: 15,
         target: 1,
         value: m => m.selectorSpins,
     },
@@ -10737,7 +10996,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'habits',
         categoryLabel: 'Hábitos',
         icon: 'dice',
-        xp: 75,
+        xp: 55,
         target: 10,
         value: m => m.selectorSpins,
     },
@@ -10748,7 +11007,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'habits',
         categoryLabel: 'Hábitos',
         icon: 'dice',
-        xp: 120,
+        xp: 100,
         target: 25,
         value: m => m.selectorSpins,
     },
@@ -10759,7 +11018,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'habits',
         categoryLabel: 'Hábitos',
         icon: 'dice',
-        xp: 55,
+        xp: 35,
         target: 1,
         value: m => m.selectorCompletedCount,
     },
@@ -10770,7 +11029,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'habits',
         categoryLabel: 'Hábitos',
         icon: 'crown',
-        xp: 130,
+        xp: 110,
         target: 5,
         value: m => m.selectorCompletedCount,
     },
@@ -10781,7 +11040,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'habits',
         categoryLabel: 'Hábitos',
         icon: 'scale',
-        xp: 60,
+        xp: 40,
         target: 1,
         value: m => (m.twoExtremesAchieved ? 1 : 0),
     },
@@ -10792,7 +11051,7 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'habits',
         categoryLabel: 'Hábitos',
         icon: 'hourglass',
-        xp: 160,
+        xp: 140,
         target: 500,
         value: m => m.totalHoursWatched,
     },
@@ -10803,9 +11062,75 @@ const ACHIEVEMENTS_CATALOG = [
         category: 'habits',
         categoryLabel: 'Hábitos',
         icon: 'crown',
-        xp: 260,
+        xp: 240,
         target: 1000,
         value: m => m.totalHoursWatched,
+    },
+    {
+        id: 'selector_fifty_spins',
+        title: 'Ludopatía cinéfila',
+        desc: 'Gira la ruleta del Selector al menos 50 veces.',
+        category: 'habits',
+        categoryLabel: 'Hábitos',
+        icon: 'dice',
+        xp: 100,
+        target: 50,
+        value: m => m.selectorSpins,
+    },
+    {
+        id: 'selector_five_fulfilled',
+        title: 'Destino quintuplicado',
+        desc: 'Completa 5 títulos elegidos al azar en el Selector.',
+        category: 'habits',
+        categoryLabel: 'Hábitos',
+        icon: 'sparkles',
+        xp: 90,
+        target: 5,
+        value: m => m.selectorCompletedCount,
+    },
+    {
+        id: 'backlog_everest',
+        title: 'El Everest de pendientes',
+        desc: 'Acumula más de 200 títulos en tu lista de pendientes.',
+        category: 'habits',
+        categoryLabel: 'Hábitos',
+        icon: 'bookmark',
+        xp: 100,
+        target: 200,
+        value: m => m.pendingItemsCount,
+    },
+    {
+        id: 'total_hours_2000',
+        title: 'Dos mil horas de viaje',
+        desc: 'Alcanza 2.000 horas consumidas entre cine y series.',
+        category: 'habits',
+        categoryLabel: 'Hábitos',
+        icon: 'crown',
+        xp: 260,
+        target: 2000,
+        value: m => m.totalHoursWatched,
+    },
+    {
+        id: 'night_owl_legend',
+        title: 'Señor de la Madrugada',
+        desc: 'Mira 15 episodios de madrugada (entre la 1:00 y las 6:00).',
+        category: 'habits',
+        categoryLabel: 'Hábitos',
+        icon: 'moon',
+        xp: 80,
+        target: 15,
+        value: m => m.nightOwlCount,
+    },
+    {
+        id: 'early_bird_champion',
+        title: 'Cine matinal pro',
+        desc: 'Mira 10 episodios o sesiones a primera hora (6:00 a 9:00 AM).',
+        category: 'habits',
+        categoryLabel: 'Hábitos',
+        icon: 'coffee',
+        xp: 70,
+        target: 10,
+        value: m => m.earlyBirdCount,
     },
 ];
 
@@ -10992,6 +11317,9 @@ function normalizeGamificationState(raw = null) {
             hasHigh: Boolean(c.ratingExtremes.hasHigh),
         }
         : { date: '', hasLow: false, hasHigh: false };
+    const completedSagas = Array.isArray(c.completedSagas)
+        ? [...new Set(c.completedSagas.map(Number).filter(id => Number.isFinite(id) && id > 0))].slice(0, 250)
+        : [];
     return {
         unlockedAchievements,
         counters: {
@@ -11004,6 +11332,8 @@ function normalizeGamificationState(raw = null) {
             maxSameDayBinge: Math.max(0, Number(c.maxSameDayBinge) || 0),
             ratingExtremes,
             twoExtremesAchieved: Boolean(c.twoExtremesAchieved),
+            completedSagas,
+            ticketsSeeded: Boolean(c.ticketsSeeded || c.passportSeeded),
         },
         lastKnownLevel: Math.max(1, Number(src.lastKnownLevel) || 1),
         updatedAt: typeof src.updatedAt === 'string' ? src.updatedAt : '',
@@ -11019,6 +11349,7 @@ function cloneGamificationState(state) {
             selectorWins: [...norm.counters.selectorWins],
             selectorCompletedKeys: [...norm.counters.selectorCompletedKeys],
             ratingExtremes: { ...norm.counters.ratingExtremes },
+            completedSagas: [...norm.counters.completedSagas],
         },
         lastKnownLevel: norm.lastKnownLevel,
         updatedAt: norm.updatedAt,
@@ -11043,6 +11374,7 @@ function mergeGamificationState(localRaw, remoteRaw) {
     }
     const selectorWins = [...new Set([...b.counters.selectorWins, ...a.counters.selectorWins])].slice(0, 250);
     const selectorCompletedKeys = [...new Set([...b.counters.selectorCompletedKeys, ...a.counters.selectorCompletedKeys])].slice(0, 250);
+    const completedSagas = [...new Set([...b.counters.completedSagas, ...a.counters.completedSagas])].slice(0, 250);
     let ratingExtremes = a.counters.ratingExtremes;
     if (b.counters.ratingExtremes.date && a.counters.ratingExtremes.date === b.counters.ratingExtremes.date) {
         ratingExtremes = {
@@ -11066,6 +11398,8 @@ function mergeGamificationState(localRaw, remoteRaw) {
             maxSameDayBinge: Math.max(a.counters.maxSameDayBinge, b.counters.maxSameDayBinge),
             ratingExtremes,
             twoExtremesAchieved: a.counters.twoExtremesAchieved || b.counters.twoExtremesAchieved,
+            completedSagas,
+            ticketsSeeded: a.counters.ticketsSeeded || b.counters.ticketsSeeded,
         },
         lastKnownLevel: Math.max(a.lastKnownLevel, b.lastKnownLevel),
         updatedAt,
@@ -11165,6 +11499,406 @@ function normalizeGamificationGenre(raw) {
         .replace(/[\u0300-\u036f]/g, '');
 }
 
+const SAGA_COLLECTIONS_STORAGE_KEY = 'seenit_saga_collections_v1';
+const SAGA_COLLECTIONS_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const collectibleMetaAttemptCounts = new Map();
+let collectibleHydrationPromise = null;
+let collectibleHydrationTimer = null;
+let sagaCollectionsMemoryCache = null;
+
+function canAttemptCollectibleKey(key) {
+    return (collectibleMetaAttemptCounts.get(key) || 0) < 3;
+}
+
+function loadSagaCollectionsCache() {
+    if (sagaCollectionsMemoryCache) return sagaCollectionsMemoryCache;
+    try {
+        const raw = localStorage.getItem(SAGA_COLLECTIONS_STORAGE_KEY);
+        const parsed = raw ? JSON.parse(raw) : {};
+        sagaCollectionsMemoryCache = (parsed && typeof parsed === 'object') ? parsed : {};
+    } catch (_) {
+        sagaCollectionsMemoryCache = {};
+    }
+    return sagaCollectionsMemoryCache;
+}
+
+function saveSagaCollectionsCache(cacheObj) {
+    try {
+        const entries = Object.entries(cacheObj || {})
+            .sort((a, b) => (Number(b[1]?.fetchedAt) || 0) - (Number(a[1]?.fetchedAt) || 0))
+            .slice(0, 220);
+        const trimmed = Object.fromEntries(entries);
+        sagaCollectionsMemoryCache = trimmed;
+        localStorage.setItem(SAGA_COLLECTIONS_STORAGE_KEY, JSON.stringify(trimmed));
+    } catch (_) {}
+}
+
+function getCachedSagaCollection(collectionId) {
+    const id = Number(collectionId);
+    if (!Number.isFinite(id) || id <= 0) return null;
+    const cache = loadSagaCollectionsCache();
+    const entry = cache[String(id)];
+    if (!entry || typeof entry !== 'object') return null;
+    return entry;
+}
+
+function setCachedSagaCollection(collectionData) {
+    const id = Number(collectionData?.id);
+    if (!Number.isFinite(id) || id <= 0) return;
+    const cache = loadSagaCollectionsCache();
+    cache[String(id)] = {
+        id,
+        name: String(collectionData.name || 'Saga').trim(),
+        poster: collectionData.poster || null,
+        backdrop: collectionData.backdrop || null,
+        parts: Array.isArray(collectionData.parts) ? collectionData.parts : [],
+        fetchedAt: Date.now(),
+    };
+    saveSagaCollectionsCache(cache);
+}
+
+function formatSagaRuntimeLabel(totalMinutes) {
+    const mins = Math.max(0, Math.round(Number(totalMinutes) || 0));
+    if (!mins) return '';
+    const h = Math.floor(mins / 60);
+    const m = mins % 60;
+    if (h > 0 && m > 0) return `${h}h ${m}m`;
+    if (h > 0) return `${h}h`;
+    return `${m}m`;
+}
+
+function computeVintageTicketsProgress() {
+    const todayIso = getLocalDateKey(new Date());
+    const movies = AppState.movies || [];
+    const moviesById = new Map();
+    const groupsByCollectionId = new Map();
+
+    for (const m of movies) {
+        const id = Number(m.id_tmdb);
+        if (Number.isFinite(id) && id > 0) moviesById.set(id, m);
+        const colId = Number(m.coleccion?.id);
+        if (!Number.isFinite(colId) || colId <= 0) continue;
+        if (!groupsByCollectionId.has(colId)) {
+            groupsByCollectionId.set(colId, {
+                id: colId,
+                meta: m.coleccion,
+                libraryMovies: [],
+            });
+        }
+        groupsByCollectionId.get(colId).libraryMovies.push(m);
+    }
+
+    const completedTickets = [];
+    const inProgressTickets = [];
+    const pendingCollectionFetchIds = [];
+
+    for (const [colId, group] of groupsByCollectionId.entries()) {
+        const cached = getCachedSagaCollection(colId);
+        if (!cached || (Date.now() - (Number(cached.fetchedAt) || 0) > SAGA_COLLECTIONS_TTL_MS)) {
+            if (canAttemptCollectibleKey(`col:${colId}`)) {
+                pendingCollectionFetchIds.push(colId);
+            }
+        }
+        if (!cached || !Array.isArray(cached.parts) || !cached.parts.length) continue;
+
+        const allParts = cached.parts;
+        const releasedParts = allParts.filter((part) => {
+            const libMovie = moviesById.get(Number(part.id_tmdb));
+            const isWatched = libMovie && normalizeStatus(libMovie.estado) === 'completed';
+            if (isWatched) return true;
+            if (!part.fecha_estreno) return false;
+            return String(part.fecha_estreno).slice(0, 10) <= todayIso;
+        });
+
+        if (releasedParts.length < 2) continue;
+
+        let watchedCount = 0;
+        let totalRuntime = 0;
+        let ratedSum = 0;
+        let ratedCount = 0;
+        let latestActivity = 0;
+        const genresSet = new Set();
+
+        const enrichedParts = releasedParts.map((part) => {
+            const libMovie = moviesById.get(Number(part.id_tmdb)) || null;
+            const st = libMovie ? normalizeStatus(libMovie.estado) : null;
+            const isWatched = st === 'completed';
+            if (libMovie) {
+                if (isWatched) {
+                    watchedCount += 1;
+                    const rt = Number(libMovie.runtime);
+                    if (Number.isFinite(rt) && rt > 0) totalRuntime += rt;
+                    const actMs = Date.parse(libMovie.updatedAt || libMovie.lastModified || libMovie.fecha_estreno || 0);
+                    if (Number.isFinite(actMs) && actMs > latestActivity) latestActivity = actMs;
+                }
+                const score = Number(libMovie.puntuacion);
+                if (Number.isFinite(score) && score > 0) {
+                    ratedSum += score;
+                    ratedCount += 1;
+                }
+                if (Array.isArray(libMovie.generos)) {
+                    for (const g of libMovie.generos) {
+                        const clean = String(g || '').trim();
+                        if (clean) genresSet.add(clean);
+                    }
+                }
+            }
+            return {
+                ...part,
+                inLibrary: Boolean(libMovie),
+                estado: st,
+                isWatched,
+                puntuacion: libMovie ? (Number(libMovie.puntuacion) || 0) : 0,
+            };
+        });
+
+        if (watchedCount === 0) continue;
+
+        for (const lm of group.libraryMovies) {
+            if (Array.isArray(lm.generos)) {
+                for (const g of lm.generos) {
+                    const clean = String(g || '').trim();
+                    if (clean) genresSet.add(clean);
+                }
+            }
+            const actMs = Date.parse(lm.updatedAt || lm.lastModified || lm.fecha_estreno || 0);
+            if (Number.isFinite(actMs) && actMs > latestActivity) latestActivity = actMs;
+        }
+        const generos = [...genresSet].sort((a, b) => a.localeCompare(b, 'es'));
+
+        const futureParts = allParts
+            .filter(p => !releasedParts.some(rp => rp.id_tmdb === p.id_tmdb))
+            .map(p => ({ ...p, inLibrary: moviesById.has(Number(p.id_tmdb)), estado: null, isWatched: false, isFuture: true }));
+
+        const isCompleted = watchedCount >= releasedParts.length;
+        const ticket = {
+            id: colId,
+            name: cached.name || group.meta?.name || 'Saga cinematográfica',
+            poster: cached.poster || group.meta?.poster || null,
+            backdrop: cached.backdrop || group.meta?.backdrop || null,
+            serialCode: `SN-${String(colId).slice(-4).padStart(4, '0')}`,
+            parts: enrichedParts,
+            futureParts,
+            watchedCount,
+            totalReleased: releasedParts.length,
+            remainingCount: Math.max(0, releasedParts.length - watchedCount),
+            totalRuntimeLabel: formatSagaRuntimeLabel(totalRuntime),
+            avgRatingLabel: ratedCount > 0 ? (ratedSum / ratedCount).toFixed(1) : '',
+            isCompleted,
+            generos,
+            latestActivity: latestActivity || colId,
+        };
+
+        if (isCompleted) {
+            completedTickets.push(ticket);
+        } else {
+            inProgressTickets.push(ticket);
+        }
+    }
+
+    completedTickets.sort((a, b) => {
+        if (b.latestActivity !== a.latestActivity) {
+            return b.latestActivity - a.latestActivity;
+        }
+        return a.name.localeCompare(b.name, 'es');
+    });
+    inProgressTickets.sort((a, b) => {
+        if (a.remainingCount !== b.remainingCount) return a.remainingCount - b.remainingCount;
+        const aRatio = a.watchedCount / Math.max(1, a.totalReleased);
+        const bRatio = b.watchedCount / Math.max(1, b.totalReleased);
+        if (bRatio !== aRatio) return bRatio - aRatio;
+        return a.name.localeCompare(b.name, 'es');
+    });
+
+    return {
+        completedTickets,
+        inProgressTickets,
+        allTickets: [...completedTickets, ...inProgressTickets],
+        completedSagasCount: completedTickets.length,
+        inProgressCount: inProgressTickets.length,
+        pendingCollectionFetchIds,
+    };
+}
+
+function getPendingCollectibleHydrationTargets() {
+    const moviesNeedingMeta = (AppState.movies || []).filter((m) => {
+        if (normalizeStatus(m.estado) !== 'completed') return false;
+        if (!canAttemptCollectibleKey(`movie:${m.id_tmdb}`)) return false;
+        return m.coleccion === undefined;
+    });
+
+    const seenColIds = new Set();
+    const collectionsNeedingDetails = [];
+    for (const m of (AppState.movies || [])) {
+        if (normalizeStatus(m.estado) !== 'completed') continue;
+        const colId = Number(m.coleccion?.id);
+        if (!Number.isFinite(colId) || colId <= 0 || seenColIds.has(colId)) continue;
+        seenColIds.add(colId);
+        if (!canAttemptCollectibleKey(`col:${colId}`)) continue;
+        const cached = getCachedSagaCollection(colId);
+        if (!cached || (Date.now() - (Number(cached.fetchedAt) || 0) > SAGA_COLLECTIONS_TTL_MS)) {
+            collectionsNeedingDetails.push(colId);
+        }
+    }
+
+    return { moviesNeedingMeta, collectionsNeedingDetails };
+}
+
+function hasAnyPendingCollectibleMeta() {
+    const { moviesNeedingMeta, collectionsNeedingDetails } = getPendingCollectibleHydrationTargets();
+    return moviesNeedingMeta.length > 0 || collectionsNeedingDetails.length > 0;
+}
+
+function scheduleCollectibleMetaHydration(delayMs = 250) {
+    if (collectibleHydrationTimer) {
+        clearTimeout(collectibleHydrationTimer);
+    }
+    collectibleHydrationTimer = setTimeout(() => {
+        collectibleHydrationTimer = null;
+        void ensureGamificationCollectibleMeta();
+    }, delayMs);
+}
+
+async function ensureGamificationCollectibleMeta() {
+    if (collectibleHydrationPromise) return collectibleHydrationPromise;
+    if (typeof getMovieFilterMeta !== 'function' && typeof getCollectionDetails !== 'function') return false;
+
+    const targets = getPendingCollectibleHydrationTargets();
+    if (!targets.moviesNeedingMeta.length && !targets.collectionsNeedingDetails.length) {
+        const g = getGamificationState();
+        if (!g.counters.ticketsSeeded) {
+            evaluateGamification({ skipCollectibleToasts: true });
+        }
+        return false;
+    }
+
+    collectibleHydrationPromise = (async () => {
+        let libraryChanged = false;
+        let cacheChanged = false;
+
+        const movieBatch = targets.moviesNeedingMeta.slice(0, 24);
+        if (movieBatch.length && typeof getMovieFilterMeta === 'function') {
+            await mapPool(movieBatch, 5, async (movie) => {
+                const key = `movie:${movie.id_tmdb}`;
+                try {
+                    const meta = await getMovieFilterMeta(movie.id_tmdb);
+                    collectibleMetaAttemptCounts.set(key, 3);
+                    if (Array.isArray(meta?.paises) && !Array.isArray(movie.paises)) {
+                        movie.paises = [...meta.paises];
+                        libraryChanged = true;
+                    }
+                    if (meta && 'coleccion' in meta && movie.coleccion === undefined) {
+                        movie.coleccion = meta.coleccion ?? null;
+                        libraryChanged = true;
+                    }
+                    if (Array.isArray(meta?.generos) && meta.generos.length && !movie.generos?.length) {
+                        movie.generos = meta.generos;
+                        libraryChanged = true;
+                    }
+                    if (Number(meta?.runtime) > 0 && !(Number(movie.runtime) > 0)) {
+                        movie.runtime = Number(meta.runtime);
+                        libraryChanged = true;
+                    }
+                } catch (err) {
+                    const nextTries = err?.status === 404 ? 3 : ((collectibleMetaAttemptCounts.get(key) || 0) + 1);
+                    collectibleMetaAttemptCounts.set(key, nextTries);
+                    console.warn('[App] Meta saga película:', movie.titulo, err);
+                }
+            });
+        }
+
+        // Incluir las colecciones recién descubiertas en el lote de películas
+        const refreshedTargets = getPendingCollectibleHydrationTargets();
+        const colBatch = refreshedTargets.collectionsNeedingDetails.slice(0, 12);
+        if (colBatch.length && typeof getCollectionDetails === 'function') {
+            await mapPool(colBatch, 5, async (colId) => {
+                const key = `col:${colId}`;
+                try {
+                    const col = await getCollectionDetails(colId);
+                    collectibleMetaAttemptCounts.set(key, 3);
+                    if (col && Number(col.id) > 0) {
+                        setCachedSagaCollection(col);
+                        cacheChanged = true;
+                    }
+                } catch (err) {
+                    const nextTries = err?.status === 404 ? 3 : ((collectibleMetaAttemptCounts.get(key) || 0) + 1);
+                    collectibleMetaAttemptCounts.set(key, nextTries);
+                    console.warn('[App] Meta saga TMDB:', colId, err);
+                }
+            });
+        }
+
+        if (libraryChanged) {
+            saveLocalData();
+        }
+        if (libraryChanged || cacheChanged) {
+            const g = getGamificationState();
+            const isInitialBackfill = !g.counters.ticketsSeeded;
+            evaluateGamification({
+                silent: isInitialBackfill,
+                skipCollectibleToasts: isInitialBackfill,
+            });
+            if (AppState.currentTab === 'profile' && AppState.currentProfileTab === 'achievements' && isGamificationEnabled()) {
+                renderProfileAchievements();
+            }
+            if (AppState.collectibleModalState?.kind === 'ticket') {
+                openVintageTicketModal(AppState.collectibleModalState.id);
+            }
+        } else {
+            const g = getGamificationState();
+            if (!g.counters.ticketsSeeded && !hasAnyPendingCollectibleMeta()) {
+                evaluateGamification({ silent: true, skipCollectibleToasts: true });
+            }
+            if (AppState.currentTab === 'profile' && AppState.currentProfileTab === 'achievements' && isGamificationEnabled()) {
+                renderProfileAchievements();
+            }
+        }
+
+        if (hasAnyPendingCollectibleMeta()) {
+            const isViewingAchievements = AppState.currentTab === 'profile' && AppState.currentProfileTab === 'achievements';
+            scheduleCollectibleMetaHydration(isViewingAchievements ? 250 : 900);
+        }
+        return libraryChanged || cacheChanged;
+    })().finally(() => {
+        collectibleHydrationPromise = null;
+    });
+
+    return collectibleHydrationPromise;
+}
+
+async function recheckVintageSagas() {
+    collectibleMetaAttemptCounts.clear();
+    const cache = loadSagaCollectionsCache();
+    for (const entry of Object.values(cache)) {
+        if (entry && typeof entry === 'object') {
+            entry.fetchedAt = 0;
+        }
+    }
+    saveSagaCollectionsCache(cache);
+
+    let resetNullCount = 0;
+    for (const m of (AppState.movies || [])) {
+        if (normalizeStatus(m.estado) !== 'completed') continue;
+        if (m.coleccion === null) {
+            delete m.coleccion;
+            resetNullCount += 1;
+        }
+    }
+    if (resetNullCount > 0) {
+        saveLocalData();
+    }
+
+    if (AppState.currentTab === 'profile' && AppState.currentProfileTab === 'achievements' && isGamificationEnabled()) {
+        renderProfileAchievements();
+    }
+    await ensureGamificationCollectibleMeta();
+    if (hasAnyPendingCollectibleMeta()) {
+        showToast('Analizando sagas de tu videoteca…', 'info');
+    } else {
+        showToast('Sagas cinematográficas actualizadas', 'success');
+    }
+}
+
 function computeGamificationMetrics() {
     const g = getGamificationState();
     const movies = AppState.movies || [];
@@ -11198,6 +11932,8 @@ function computeGamificationMetrics() {
         scifi: 0,
         comedy: 0,
         documentary: 0,
+        action: 0,
+        thriller: 0,
     };
 
     const tallyGenreHits = (rawGenres) => {
@@ -11213,6 +11949,8 @@ function computeGamificationMetrics() {
             if (norm.includes('ciencia ficc') || norm.includes('sci-fi') || norm.includes('science fiction')) genreCounts.scifi += 1;
             if (norm.includes('comedia') || norm.includes('comedy')) genreCounts.comedy += 1;
             if (norm.includes('documental') || norm.includes('documentary')) genreCounts.documentary += 1;
+            if (norm.includes('acci') || norm.includes('action')) genreCounts.action += 1;
+            if (norm.includes('suspens') || norm.includes('thriller') || norm.includes('misteri')) genreCounts.thriller += 1;
         }
     };
 
@@ -11396,6 +12134,7 @@ function computeGamificationMetrics() {
         selectorSpins: Math.max(0, Number(g.counters.selectorSpins) || 0),
         selectorCompletedCount: completedWinSet.size,
         twoExtremesAchieved: Boolean(g.counters.twoExtremesAchieved),
+        completedSagasCount: computeVintageTicketsProgress().completedSagasCount,
     };
 }
 
@@ -11417,11 +12156,11 @@ function computeGamificationSummary(metrics = computeGamificationMetrics()) {
 
     const breakdown = {
         episodes: metrics.watchedEpisodes * 10,
-        movies: metrics.watchedMovies * 30,
-        completedShows: metrics.completedShows * 100,
-        reviews: metrics.reviewsWritten * 15,
-        ratings: metrics.ratedItems * 10,
-        lists: metrics.customLists * 25,
+        movies: metrics.watchedMovies * 20,
+        completedShows: metrics.completedShows * 50,
+        reviews: metrics.reviewsWritten * 10,
+        ratings: metrics.ratedItems * 5,
+        lists: metrics.customLists * 15,
         achievements: achievementXp,
     };
 
@@ -11609,7 +12348,9 @@ function applySelectorSkinClass() {
 function evaluateGamification(options = {}) {
     const silent = Boolean(options.silent);
     const skipSave = Boolean(options.skipSave);
+    const skipCollectibleToasts = Boolean(options.skipCollectibleToasts);
     const g = getGamificationState();
+    const ticketsProgress = computeVintageTicketsProgress();
     const metrics = computeGamificationMetrics();
     const prevSummary = computeGamificationSummary(metrics);
     const prevUnlockedThemes = new Set(
@@ -11618,6 +12359,27 @@ function evaluateGamification(options = {}) {
     const prevUnlockedPosters = new Set(
         GAMIFICATION_POSTER_STYLES.filter(p => p.isUnlocked(prevSummary, g.unlockedAchievements)).map(p => p.id),
     );
+
+    const prevSagaSet = new Set(g.counters.completedSagas || []);
+    const newlyCompletedSagas = [];
+    let collectiblesChanged = false;
+
+    for (const ticket of ticketsProgress.completedTickets) {
+        if (!prevSagaSet.has(ticket.id)) {
+            prevSagaSet.add(ticket.id);
+            newlyCompletedSagas.push(ticket);
+            collectiblesChanged = true;
+        }
+    }
+
+    const wasSeeded = Boolean(g.counters.ticketsSeeded);
+    if (collectiblesChanged) {
+        g.counters.completedSagas = [...prevSagaSet].slice(0, 250);
+    }
+    if (!wasSeeded && !hasAnyPendingCollectibleMeta()) {
+        g.counters.ticketsSeeded = true;
+        collectiblesChanged = true;
+    }
 
     const newlyUnlocked = [];
     const ts = nowIso();
@@ -11634,7 +12396,7 @@ function evaluateGamification(options = {}) {
     const prevLevel = Math.max(1, Number(g.lastKnownLevel) || 1);
     const leveledUp = nextSummary.level > prevLevel;
 
-    if (newlyUnlocked.length > 0 || nextSummary.level !== g.lastKnownLevel) {
+    if (newlyUnlocked.length > 0 || collectiblesChanged || nextSummary.level !== g.lastKnownLevel) {
         g.lastKnownLevel = nextSummary.level;
         g.updatedAt = ts;
         if (!skipSave) {
@@ -11642,7 +12404,23 @@ function evaluateGamification(options = {}) {
         }
     }
 
+    if (!silent && !skipCollectibleToasts && hasAnyPendingCollectibleMeta()) {
+        scheduleCollectibleMetaHydration(200);
+    }
+
     if (!silent && isGamificationEnabled()) {
+        if (wasSeeded && !skipCollectibleToasts) {
+            for (const ticket of newlyCompletedSagas.slice(0, 2)) {
+                queueGamificationToast({
+                    kind: 'achievement',
+                    iconHtml: GAMIFICATION_BADGE_ICONS.ticket,
+                    kicker: 'Colección completada',
+                    title: ticket.name,
+                    subtitle: `Colección completada (${ticket.watchedCount}/${ticket.totalReleased})`,
+                });
+            }
+        }
+
         for (const ach of newlyUnlocked) {
             queueGamificationToast({
                 kind: 'achievement',
@@ -11742,6 +12520,139 @@ function toggleRewardsExpanded() {
     }
 }
 
+function toggleTicketsExpanded() {
+    AppState.ticketsExpanded = !Boolean(AppState.ticketsExpanded);
+    renderProfileAchievements();
+}
+
+function setTicketsGenreFilter(genre) {
+    AppState.ticketsGenreFilter = String(genre || 'all').trim();
+    renderProfileAchievements();
+}
+
+function setTicketsStatusFilter(status) {
+    AppState.ticketsStatusFilter = ['all', 'completed', 'in-progress'].includes(status) ? status : 'all';
+    renderProfileAchievements();
+}
+
+function closeCollectibleModal() {
+    document.getElementById('collectible-modal')?.classList.add('hidden');
+    AppState.collectibleModalState = null;
+}
+
+function openCollectibleLibraryDetail(tipo, idTmdb) {
+    closeCollectibleModal();
+    openDetail(tipo === 'tv' ? 'tv' : 'movie', Number(idTmdb));
+}
+
+async function addSagaPartFromTicket(movieId, collectionId) {
+    const safeMovieId = Number(movieId);
+    if (!Number.isFinite(safeMovieId) || safeMovieId <= 0) return;
+    await addItem('movie', safeMovieId);
+    if (!document.getElementById('collectible-modal')?.classList.contains('hidden')) {
+        await openVintageTicketModal(Number(collectionId));
+    }
+    if (AppState.currentTab === 'profile' && AppState.currentProfileTab === 'achievements') {
+        renderProfileAchievements();
+    }
+}
+
+async function openVintageTicketModal(collectionId) {
+    const safeColId = Number(collectionId);
+    if (!Number.isFinite(safeColId) || safeColId <= 0) return;
+
+    if (!getCachedSagaCollection(safeColId) && typeof getCollectionDetails === 'function') {
+        try {
+            const fetched = await getCollectionDetails(safeColId);
+            if (fetched) setCachedSagaCollection(fetched);
+        } catch (_) {}
+    }
+
+    const progress = computeVintageTicketsProgress();
+    const ticket = progress.allTickets.find(t => t.id === safeColId);
+    const modal = document.getElementById('collectible-modal');
+    const titleEl = document.getElementById('collectible-modal-title');
+    const bodyEl = document.getElementById('collectible-modal-body');
+    if (!modal || !titleEl || !bodyEl) return;
+    if (!ticket) {
+        showToast('No se pudo cargar el detalle de esta saga', 'info');
+        return;
+    }
+
+    AppState.collectibleModalState = { kind: 'ticket', id: safeColId };
+    titleEl.textContent = ticket.name;
+
+    const metaBits = [
+        `${ticket.watchedCount}/${ticket.totalReleased} entregas vistas`,
+        ticket.totalRuntimeLabel || '',
+        ticket.avgRatingLabel ? `Media ${ticket.avgRatingLabel}★` : '',
+    ].filter(Boolean);
+
+    const statusMap = {
+        completed: 'Vista',
+        pending: 'Pendiente',
+        standby: 'En espera',
+        watching: 'Viendo',
+        dropped: 'Abandonada',
+    };
+
+    const partsHtml = ticket.parts.map((part, idx) => {
+        const poster = safeUrl(part.portada);
+        const year = part.fecha_estreno ? String(part.fecha_estreno).slice(0, 4) : '';
+        const actionOrBadge = part.inLibrary
+            ? `<span class="tvst-collectible-item-badge ${part.isWatched ? 'is-done' : 'is-pending'}">${escapeHtml(statusMap[part.estado] || 'Pendiente')}</span>`
+            : `<button type="button" class="tvst-saga-part-add-btn" onclick="event.stopPropagation(); addSagaPartFromTicket(${Number(part.id_tmdb)}, ${safeColId})">+ Añadir</button>`;
+        return `
+            <div class="tvst-collectible-item-row" role="button" tabindex="0" onclick="openCollectibleLibraryDetail('movie', ${Number(part.id_tmdb)})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openCollectibleLibraryDetail('movie', ${Number(part.id_tmdb)});}">
+                ${poster
+                    ? `<img class="tvst-collectible-item-poster" src="${escapeHtml(poster)}" alt="">`
+                    : `<span class="tvst-collectible-item-fallback">${UI_ICONS.film}</span>`}
+                <span class="tvst-collectible-item-meta">
+                    <span class="tvst-collectible-item-title">${idx + 1}. ${escapeHtml(part.titulo)}</span>
+                    <span class="tvst-collectible-item-sub">${escapeHtml(year || 'Fecha por confirmar')}${part.puntuacion > 0 ? ` · ${part.puntuacion}★` : ''}</span>
+                </span>
+                ${actionOrBadge}
+            </div>
+        `;
+    }).join('');
+
+    const futureHtml = ticket.futureParts.length
+        ? `
+            <div class="tvst-collectible-future-note">
+                Próximas entregas anunciadas (no necesarias para completar la entrada):
+                ${ticket.futureParts.map((fp) => {
+                    const fpYear = fp.fecha_estreno ? String(fp.fecha_estreno).slice(0, 4) : '';
+                    return escapeHtml(fpYear ? `${fp.titulo} (${fpYear})` : fp.titulo);
+                }).join(', ')}
+            </div>
+        `
+        : '';
+
+    const backdropUrl = ticket.backdrop || ticket.poster || '';
+    bodyEl.innerHTML = `
+        <div class="tvst-ticket-stub tvst-ticket-stub-modal${ticket.isCompleted ? ' is-issued' : ' is-in-progress'}">
+            ${backdropUrl ? `
+                <div class="tvst-ticket-backdrop" style="background-image: url('${escapeHtml(safeUrl(backdropUrl))}');" aria-hidden="true"></div>
+                <div class="tvst-ticket-scrim" aria-hidden="true"></div>
+            ` : ''}
+            <div class="tvst-ticket-stub-left">
+                <span class="tvst-ticket-admit">ADMIT ONE</span>
+                <span class="tvst-ticket-serial">${escapeHtml(ticket.serialCode)}</span>
+            </div>
+            <div class="tvst-ticket-tear" aria-hidden="true"></div>
+            <div class="tvst-ticket-stub-main">
+                <h4 class="tvst-ticket-title">${escapeHtml(ticket.name)}</h4>
+                <p class="tvst-ticket-meta">${escapeHtml(metaBits.join(' · '))}</p>
+            </div>
+            ${ticket.isCompleted ? '<span class="tvst-ticket-ink-stamp">COMPLETADA</span>' : ''}
+        </div>
+        <div class="tvst-collectible-items-list">${partsHtml}</div>
+        ${futureHtml}
+    `;
+
+    modal.classList.remove('hidden');
+}
+
 function isGamificationDesktopViewport() {
     if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return true;
     return window.matchMedia('(min-width: 768px)').matches;
@@ -11811,16 +12722,46 @@ function renderRewardSwatchesHtml(summary, unlockedMap, options = {}) {
     return { themeCards, posterCards, hiddenCount, hasMore };
 }
 
+function renderGamifSectionToggleBtn(isExpanded, onClickFn, expandLabel, collapseLabel, countBadge = '') {
+    const label = isExpanded ? 'Colapsar' : `Ver todas${countBadge ? ` (${countBadge})` : ''}`;
+    const aria = isExpanded ? collapseLabel : expandLabel;
+    return `
+        <button type="button"
+            class="tvst-tickets-toggle-btn${isExpanded ? ' is-expanded' : ''}"
+            onclick="${onClickFn}()"
+            aria-expanded="${isExpanded ? 'true' : 'false'}"
+            aria-label="${escapeHtml(aria)}"
+            title="${escapeHtml(aria)}">
+            <span class="tvst-tickets-toggle-label">${escapeHtml(label)}</span>
+            <svg class="tvst-tickets-toggle-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                ${isExpanded
+                    ? '<polyline points="18 15 12 9 6 15"></polyline>'
+                    : '<polyline points="6 9 12 15 18 9"></polyline>'}
+            </svg>
+        </button>
+    `;
+}
+
 function renderSettingsGamificationRewardsRows() {
     const summary = computeGamificationSummary();
     const unlockedMap = getGamificationState().unlockedAchievements || {};
     const expanded = Boolean(AppState.rewardsExpanded);
-    const { themeCards, posterCards, hiddenCount, hasMore } = renderRewardSwatchesHtml(summary, unlockedMap, { expanded });
+    const { themeCards, posterCards, hasMore } = renderRewardSwatchesHtml(summary, unlockedMap, { expanded });
+    const totalRewardsCount = GAMIFICATION_THEMES.length + GAMIFICATION_POSTER_STYLES.length;
     return `
         <div class="tvst-setting-row is-stacked">
-            <div class="tvst-setting-copy">
-                <span class="tvst-setting-label">Tema visual de la app</span>
-                <p class="tvst-setting-hint">Nivel ${summary.level} · ${escapeHtml(summary.rank)}</p>
+            <div class="tvst-gamif-section-head">
+                <div class="tvst-setting-copy">
+                    <span class="tvst-setting-label">Tema visual de la app</span>
+                    <p class="tvst-setting-hint">Nivel ${summary.level} · ${escapeHtml(summary.rank)}</p>
+                </div>
+                ${hasMore ? renderGamifSectionToggleBtn(
+                    expanded,
+                    'toggleRewardsExpanded',
+                    'Ver todas las recompensas',
+                    'Colapsar recompensas',
+                    `${totalRewardsCount}`,
+                ) : ''}
             </div>
             <div class="tvst-reward-grid">${themeCards}</div>
         </div>
@@ -11830,13 +12771,6 @@ function renderSettingsGamificationRewardsRows() {
                 <p class="tvst-setting-hint">Aplica marcos y brillos sutiles a tus carátulas según tu nivel.</p>
             </div>
             <div class="tvst-reward-grid">${posterCards}</div>
-            ${hasMore ? `
-                <button type="button" class="tvst-gamif-expand-btn" onclick="toggleRewardsExpanded()">
-                    ${expanded
-                        ? 'Mostrar menos recompensas'
-                        : `Ver todas las recompensas (${hiddenCount} más)`}
-                </button>
-            ` : ''}
         </div>
     `;
 }
@@ -11887,10 +12821,9 @@ function renderProfileAchievements() {
     const visibleAchievements = badgesExpanded
         ? filteredAchievements
         : filteredAchievements.slice(0, badgesPreviewLimit);
-    const hiddenBadgesCount = Math.max(0, filteredAchievements.length - visibleAchievements.length);
 
     const rewardsExpanded = Boolean(AppState.rewardsExpanded);
-    const { themeCards, posterCards, hiddenCount: hiddenRewardsCount, hasMore: hasMoreRewards } = renderRewardSwatchesHtml(
+    const { themeCards, posterCards, hasMore: hasMoreRewards } = renderRewardSwatchesHtml(
         summary,
         unlockedMap,
         { expanded: rewardsExpanded },
@@ -11912,6 +12845,67 @@ function renderProfileAchievements() {
         { id: 'critic', label: 'Colección' },
         { id: 'habits', label: 'Hábitos' },
     ];
+
+    const pendingTargets = getPendingCollectibleHydrationTargets();
+    const pendingHydrationCount = pendingTargets.moviesNeedingMeta.length + pendingTargets.collectionsNeedingDetails.length;
+    const isHydratingSagas = pendingHydrationCount > 0;
+    if (isHydratingSagas) {
+        scheduleCollectibleMetaHydration(150);
+    }
+
+    const ticketsData = computeVintageTicketsProgress();
+    const ticketsExpanded = Boolean(AppState.ticketsExpanded);
+    const ticketsPreviewLimit = isDesktop ? 4 : 2;
+
+    const genreCounts = new Map();
+    for (const t of ticketsData.allTickets) {
+        if (Array.isArray(t.generos) && t.generos.length) {
+            for (const g of t.generos) {
+                genreCounts.set(g, (genreCounts.get(g) || 0) + 1);
+            }
+        } else {
+            genreCounts.set('Otras', (genreCounts.get('Otras') || 0) + 1);
+        }
+    }
+    const availableGenres = [...genreCounts.entries()]
+        .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'es'))
+        .map(([name, count]) => ({ name, count }));
+
+    const activeGenre = AppState.ticketsGenreFilter || 'all';
+    const activeStatus = AppState.ticketsStatusFilter || 'all';
+
+    const matchesGenre = (t) => {
+        if (activeGenre === 'all') return true;
+        if (activeGenre === 'Otras') return !t.generos || !t.generos.length;
+        return Array.isArray(t.generos) && t.generos.includes(activeGenre);
+    };
+
+    let visibleTickets = [];
+
+    if (!ticketsExpanded) {
+        if (ticketsData.completedTickets.length > 0) {
+            visibleTickets = ticketsData.completedTickets.slice(0, ticketsPreviewLimit);
+        } else if (ticketsData.inProgressTickets.length > 0) {
+            visibleTickets = ticketsData.inProgressTickets.slice(0, ticketsPreviewLimit);
+        } else {
+            visibleTickets = [];
+        }
+    } else {
+        let list = ticketsData.allTickets.filter(matchesGenre);
+        if (activeStatus === 'completed') {
+            list = list.filter(t => t.isCompleted);
+        } else if (activeStatus === 'in-progress') {
+            list = list.filter(t => !t.isCompleted);
+        }
+        visibleTickets = list;
+    }
+
+    const genreFilteredTotal = ticketsData.allTickets.filter(matchesGenre).length;
+    const genreFilteredCompleted = ticketsData.allTickets.filter(t => t.isCompleted && matchesGenre(t)).length;
+    const genreFilteredInProgress = ticketsData.allTickets.filter(t => !t.isCompleted && matchesGenre(t)).length;
+    const ticketsHasToggle = ticketsData.allTickets.length > ticketsPreviewLimit || ticketsExpanded;
+    const badgesHasToggle = filteredAchievements.length > badgesPreviewLimit || badgesExpanded;
+    const ticketsSubText = `${ticketsData.completedSagasCount} ${ticketsData.completedSagasCount === 1 ? 'completada' : 'completadas'} · ${ticketsData.inProgressCount} en curso${isHydratingSagas ? ` · analizando (${pendingHydrationCount})…` : ''}`;
 
     root.innerHTML = `
         <section class="tvst-section-card tvst-gamif-hero is-frame-${summary.frameTier}">
@@ -11960,9 +12954,133 @@ function renderProfileAchievements() {
             </details>
         </section>
 
-        <section class="tvst-section-card tvst-gamif-rewards-card">
-            <div class="tvst-gamif-section-head">
-                <h3 class="tvst-gamif-section-title">Recompensas desbloqueables (${unlockedRewardsCount}/${totalRewardsCount})</h3>
+        <section class="tvst-section-card tvst-tickets-card${ticketsExpanded ? ' is-expanded' : ''}">
+            <div class="tvst-tickets-sticky-top${ticketsExpanded ? ' is-sticky' : ''}">
+                <div class="tvst-tickets-head">
+                    <div class="tvst-tickets-head-copy">
+                        <h3 class="tvst-gamif-section-title">Colecciones</h3>
+                        <p class="tvst-gamif-card-sub">${escapeHtml(ticketsSubText)}</p>
+                    </div>
+                    <div class="tvst-tickets-head-actions">
+                        <button type="button" class="tvst-tickets-refresh-btn" onclick="recheckVintageSagas()" title="Reanalizar colecciones de TMDB" aria-label="Reanalizar colecciones de TMDB">
+                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>
+                        </button>
+                        ${ticketsHasToggle ? renderGamifSectionToggleBtn(
+                            ticketsExpanded,
+                            'toggleTicketsExpanded',
+                            'Ver todas las colecciones',
+                            'Colapsar colecciones',
+                            `${ticketsData.allTickets.length}`,
+                        ) : ''}
+                    </div>
+                </div>
+
+                ${ticketsExpanded ? `
+                    <div class="tvst-tickets-filter-wrap">
+                        <div class="tvst-tickets-genre-bar" role="tablist" aria-label="Filtrar colecciones por género">
+                            <button type="button"
+                                class="tvst-tickets-genre-tab${activeGenre === 'all' ? ' is-active' : ''}"
+                                onclick="setTicketsGenreFilter('all')">
+                                <span>Todos los géneros</span>
+                                <span class="tvst-genre-count">(${ticketsData.allTickets.length})</span>
+                            </button>
+                            ${availableGenres.map(g => `
+                                <button type="button"
+                                    class="tvst-tickets-genre-tab${activeGenre === g.name ? ' is-active' : ''}"
+                                    onclick="setTicketsGenreFilter('${escapeHtml(g.name)}')">
+                                    <span>${escapeHtml(g.name)}</span>
+                                    <span class="tvst-genre-count">(${g.count})</span>
+                                </button>
+                            `).join('')}
+                        </div>
+                        <div class="tvst-tickets-subfilter-bar">
+                            <div class="tvst-tickets-status-pills" role="radiogroup" aria-label="Filtrar por estado">
+                                <button type="button"
+                                    class="tvst-tickets-status-pill${activeStatus === 'all' ? ' is-active' : ''}"
+                                    onclick="setTicketsStatusFilter('all')">
+                                    Todas (${genreFilteredTotal})
+                                </button>
+                                <button type="button"
+                                    class="tvst-tickets-status-pill${activeStatus === 'completed' ? ' is-active' : ''}"
+                                    onclick="setTicketsStatusFilter('completed')">
+                                    Completadas (${genreFilteredCompleted})
+                                </button>
+                                <button type="button"
+                                    class="tvst-tickets-status-pill${activeStatus === 'in-progress' ? ' is-active' : ''}"
+                                    onclick="setTicketsStatusFilter('in-progress')">
+                                    En curso (${genreFilteredInProgress})
+                                </button>
+                            </div>
+                            <span class="tvst-tickets-count-note">${visibleTickets.length} de ${ticketsData.allTickets.length}</span>
+                        </div>
+                    </div>
+                ` : ''}
+            </div>
+
+            ${visibleTickets.length ? `
+                <div class="tvst-tickets-grid">
+                    ${visibleTickets.map((ticket) => {
+                        const backdropUrl = ticket.backdrop || ticket.poster || '';
+                        const hasBanner = Boolean(backdropUrl);
+                        const metaParts = [`${ticket.watchedCount}/${ticket.totalReleased} películas`];
+                        if (ticket.isCompleted) {
+                            if (ticket.totalRuntimeLabel) metaParts.push(ticket.totalRuntimeLabel);
+                            if (ticket.avgRatingLabel) metaParts.push(`${ticket.avgRatingLabel}★`);
+                        } else {
+                            metaParts.push(ticket.remainingCount === 1 ? 'Falta 1 entrega' : `Faltan ${ticket.remainingCount}`);
+                        }
+                        const pct = Math.min(100, Math.round((ticket.watchedCount / Math.max(1, ticket.totalReleased)) * 100));
+                        return `
+                            <button type="button"
+                                class="tvst-ticket-stub${ticket.isCompleted ? ' is-issued' : ' is-in-progress'}"
+                                onclick="openVintageTicketModal(${Number(ticket.id)})">
+                                ${hasBanner ? `
+                                    <div class="tvst-ticket-backdrop" style="background-image: url('${escapeHtml(safeUrl(backdropUrl))}');" aria-hidden="true"></div>
+                                    <div class="tvst-ticket-scrim" aria-hidden="true"></div>
+                                ` : ''}
+                                <div class="tvst-ticket-stub-left">
+                                    <span class="tvst-ticket-admit">ADMIT ONE</span>
+                                    <span class="tvst-ticket-serial">${escapeHtml(ticket.serialCode)}</span>
+                                </div>
+                                <div class="tvst-ticket-tear" aria-hidden="true"></div>
+                                <div class="tvst-ticket-stub-main">
+                                    <span class="tvst-ticket-title">${escapeHtml(ticket.name)}</span>
+                                    <span class="tvst-ticket-meta">${escapeHtml(metaParts.join(' · '))}</span>
+                                    ${!ticket.isCompleted ? `
+                                        <span class="tvst-ticket-progress-track">
+                                            <span class="tvst-ticket-progress-fill" style="width:${pct}%"></span>
+                                        </span>
+                                    ` : ''}
+                                </div>
+                                ${ticket.isCompleted ? '<span class="tvst-ticket-ink-stamp">COMPLETADA</span>' : ''}
+                            </button>
+                        `;
+                    }).join('')}
+                </div>
+            ` : `
+                <p class="tvst-gamif-empty-msg">${isHydratingSagas
+                    ? 'Analizando colecciones de tu videoteca…'
+                    : (ticketsExpanded && (activeGenre !== 'all' || activeStatus !== 'all')
+                        ? 'No hay colecciones que coincidan con los filtros seleccionados.'
+                        : 'Completa sagas y colecciones de 2 o más películas para desbloquear tus colecciones.')}</p>
+            `}
+        </section>
+
+        <section class="tvst-section-card tvst-gamif-rewards-card${rewardsExpanded ? ' is-expanded' : ''}">
+            <div class="tvst-gamif-card-sticky-head${rewardsExpanded ? ' is-sticky' : ''}">
+                <div class="tvst-gamif-section-head">
+                    <div class="tvst-tickets-head-copy">
+                        <h3 class="tvst-gamif-section-title">Recompensas</h3>
+                        <p class="tvst-gamif-card-sub">${unlockedRewardsCount}/${totalRewardsCount} desbloqueadas</p>
+                    </div>
+                    ${hasMoreRewards ? renderGamifSectionToggleBtn(
+                        rewardsExpanded,
+                        'toggleRewardsExpanded',
+                        'Ver todas las recompensas',
+                        'Colapsar recompensas',
+                        `${totalRewardsCount}`,
+                    ) : ''}
+                </div>
             </div>
             <div class="tvst-gamif-reward-group">
                 <span class="tvst-gamif-group-label">Tema de la app</span>
@@ -11972,30 +13090,37 @@ function renderProfileAchievements() {
                 <span class="tvst-gamif-group-label">Acabado de pósters</span>
                 <div class="tvst-reward-grid">${posterCards}</div>
             </div>
-            ${hasMoreRewards ? `
-                <button type="button" class="tvst-gamif-expand-btn" onclick="toggleRewardsExpanded()">
-                    ${rewardsExpanded
-                        ? 'Mostrar menos recompensas'
-                        : `Ver todas las recompensas (${hiddenRewardsCount} más)`}
-                </button>
-            ` : ''}
         </section>
 
-        <section class="tvst-gamif-badges-section">
-            <div class="tvst-gamif-section-head">
-                <h3 class="tvst-lists-title">Insignias (${unlockedCount}/${totalCount})</h3>
-                <div class="tvst-picker-type-pills" role="tablist" aria-label="Filtrar estado de logros">
-                    <button type="button" class="tvst-picker-pill${filter === 'all' ? ' is-active' : ''}" onclick="setAchievementsFilter('all')">Todos</button>
-                    <button type="button" class="tvst-picker-pill${filter === 'unlocked' ? ' is-active' : ''}" onclick="setAchievementsFilter('unlocked')">Conseguidos</button>
-                    <button type="button" class="tvst-picker-pill${filter === 'locked' ? ' is-active' : ''}" onclick="setAchievementsFilter('locked')">Pendientes</button>
+        <section class="tvst-gamif-badges-section${badgesExpanded ? ' is-expanded' : ''}">
+            <div class="tvst-gamif-badges-sticky${badgesExpanded ? ' is-sticky' : ''}">
+                <div class="tvst-gamif-section-head">
+                    <div class="tvst-tickets-head-copy">
+                        <h3 class="tvst-lists-title">Insignias</h3>
+                        <p class="tvst-gamif-card-sub">${unlockedCount}/${totalCount} conseguidas</p>
+                    </div>
+                    ${badgesHasToggle ? renderGamifSectionToggleBtn(
+                        badgesExpanded,
+                        'toggleAchievementsExpanded',
+                        'Ver todas las insignias',
+                        'Colapsar insignias',
+                        `${filteredAchievements.length}`,
+                    ) : ''}
                 </div>
-            </div>
-            <div class="tvst-gamif-cat-row" role="tablist" aria-label="Filtrar categoría de logros">
-                ${categoryTabs.map(c => `
-                    <button type="button"
-                        class="tvst-gamif-cat-pill${category === c.id ? ' is-active' : ''}"
-                        onclick="setAchievementsCategory('${c.id}')">${escapeHtml(c.label)}</button>
-                `).join('')}
+                <div class="tvst-gamif-badges-filters">
+                    <div class="tvst-picker-type-pills" role="tablist" aria-label="Filtrar estado de logros">
+                        <button type="button" class="tvst-picker-pill${filter === 'all' ? ' is-active' : ''}" onclick="setAchievementsFilter('all')">Todos</button>
+                        <button type="button" class="tvst-picker-pill${filter === 'unlocked' ? ' is-active' : ''}" onclick="setAchievementsFilter('unlocked')">Conseguidos</button>
+                        <button type="button" class="tvst-picker-pill${filter === 'locked' ? ' is-active' : ''}" onclick="setAchievementsFilter('locked')">Pendientes</button>
+                    </div>
+                    <div class="tvst-gamif-cat-row" role="tablist" aria-label="Filtrar categoría de logros">
+                        ${categoryTabs.map(c => `
+                            <button type="button"
+                                class="tvst-gamif-cat-pill${category === c.id ? ' is-active' : ''}"
+                                onclick="setAchievementsCategory('${c.id}')">${escapeHtml(c.label)}</button>
+                        `).join('')}
+                    </div>
+                </div>
             </div>
             <div class="tvst-gamif-badges-grid">
                 ${visibleAchievements.length
@@ -12027,13 +13152,6 @@ function renderProfileAchievements() {
                     }).join('')
                     : `<p class="tvst-gamif-empty-msg">No hay logros en esta categoría todavía.</p>`}
             </div>
-            ${filteredAchievements.length > badgesPreviewLimit ? `
-                <button type="button" class="tvst-gamif-expand-btn" onclick="toggleAchievementsExpanded()">
-                    ${badgesExpanded
-                        ? 'Mostrar menos insignias'
-                        : `Ver todas las insignias (${hiddenBadgesCount} más)`}
-                </button>
-            ` : ''}
         </section>
     `;
 }
@@ -12180,6 +13298,14 @@ window.setAchievementsFilter = setAchievementsFilter;
 window.setAchievementsCategory = setAchievementsCategory;
 window.toggleAchievementsExpanded = toggleAchievementsExpanded;
 window.toggleRewardsExpanded = toggleRewardsExpanded;
+window.toggleTicketsExpanded = toggleTicketsExpanded;
+window.setTicketsGenreFilter = setTicketsGenreFilter;
+window.setTicketsStatusFilter = setTicketsStatusFilter;
+window.recheckVintageSagas = recheckVintageSagas;
+window.openVintageTicketModal = openVintageTicketModal;
+window.closeCollectibleModal = closeCollectibleModal;
+window.openCollectibleLibraryDetail = openCollectibleLibraryDetail;
+window.addSagaPartFromTicket = addSagaPartFromTicket;
 window.onGamificationToastClick = onGamificationToastClick;
 
 console.log('[App] app.js cargado');
