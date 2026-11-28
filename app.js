@@ -10180,6 +10180,47 @@ function importData() {
     document.getElementById('import-file').click();
 }
 
+function openUniversalImportModal() {
+    if (window.SeenItMigration && typeof window.SeenItMigration.openUniversalImportModal === 'function') {
+        window.SeenItMigration.openUniversalImportModal();
+        return;
+    }
+    const modal = document.getElementById('universal-import-modal');
+    if (modal) {
+        modal.classList.remove('hidden');
+        document.body.classList.add('modal-open');
+    }
+}
+
+function closeUniversalImportModal() {
+    if (window.SeenItMigration && typeof window.SeenItMigration.closeUniversalImportModal === 'function') {
+        window.SeenItMigration.closeUniversalImportModal();
+        return;
+    }
+    const modal = document.getElementById('universal-import-modal');
+    if (modal) modal.classList.add('hidden');
+    document.body.classList.remove('modal-open');
+}
+
+function openUniversalExportModal() {
+    if (window.SeenItMigration && typeof window.SeenItMigration.openUniversalExportModal === 'function') {
+        window.SeenItMigration.openUniversalExportModal();
+        return;
+    }
+    exportData();
+}
+
+function closeUniversalExportModal() {
+    if (window.SeenItMigration && typeof window.SeenItMigration.closeUniversalExportModal === 'function') {
+        window.SeenItMigration.closeUniversalExportModal();
+        return;
+    }
+    const modal = document.getElementById('universal-export-modal');
+    if (modal) modal.classList.add('hidden');
+    document.body.classList.remove('modal-open');
+}
+
+
 /**
  * Maneja la importación de datos
  * @param {Event} event - Evento del input file
@@ -15273,6 +15314,10 @@ window.continueWithoutDrive = continueWithoutDrive;
 window.disconnectDrive = disconnectDrive;
 window.exportData = exportData;
 window.importData = importData;
+window.openUniversalImportModal = openUniversalImportModal;
+window.closeUniversalImportModal = closeUniversalImportModal;
+window.openUniversalExportModal = openUniversalExportModal;
+window.closeUniversalExportModal = closeUniversalExportModal;
 window.handleImport = handleImport;
 window.clearAllData = clearAllData;
 window.createProfileList = createProfileList;
