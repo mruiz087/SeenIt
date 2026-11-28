@@ -6,14 +6,17 @@
 
 ## Propósito
 
-Definir la forma de la biblioteca que se guarda en **localStorage** y en Drive (`tv_showtime_data.json`). Todo merge y toda UI parten de estos shapes.
+Definir la forma de la biblioteca que se guarda en **IndexedDB + localStorage** y en Drive (`tv_showtime_data.json`). Todo merge y toda UI parten de estos shapes.
 
 La normalización al cargar/guardar está en:
 
 - `normalizeStoredMovie`
 - `normalizeStoredShow`
 - `normalizeStoredList`
-- `normalizeDeletedIds` / `normalizeDeletedListIds`
+- `normalizeSelectorItem`
+- `normalizePreferences`
+- `normalizeGamificationState`
+- `normalizeDeletedIds` / `normalizeDeletedListIds` / `normalizeDeletedSelectorKeys`
 
 ---
 
@@ -24,9 +27,13 @@ La normalización al cargar/guardar está en:
   "movies": [],
   "shows": [],
   "lists": [],
+  "selectorItems": [],
   "deletedIds": { "movie": [], "tv": [] },
   "deletedListIds": [],
-  "lastModified": "2026-07-29T12:00:00.000Z"
+  "deletedSelectorKeys": [],
+  "preferences": {},
+  "gamification": {},
+  "lastModified": "2026-11-28T10:00:00.000Z"
 }
 ```
 
@@ -34,8 +41,12 @@ La normalización al cargar/guardar está en:
 |-------|-------------|
 | `movies` / `shows` | Ítems de biblioteca |
 | `lists` | Listas personalizadas |
+| `selectorItems` | Candidatos en el selector «¿Qué vemos?» |
 | `deletedIds` | Tombstones de películas/series (`{ id, deletedAt }`) |
 | `deletedListIds` | Tombstones de listas (`{ id, deletedAt }`) |
+| `deletedSelectorKeys` | Tombstones de candidatos del selector (`{ key, deletedAt }`) |
+| `preferences` | Ajustes del usuario (`DEFAULT_PREFERENCES`) |
+| `gamification` | Estado de logros desbloqueados y rachas/eventos |
 | `lastModified` | Marca del blob completo (útil para comparar snapshots) |
 
 Cada ítem lleva además su propio `updatedAt` (LWW a nivel de entidad).
@@ -44,21 +55,20 @@ Cada ítem lleva además su propio `updatedAt` (LWW a nivel de entidad).
 
 ## Película (`tipo: 'movie'`)
 
-Campos habituales (mezcla TMDB + usuario):
-
 | Campo | Origen | Notas |
 |-------|--------|--------|
 | `id_tmdb` | TMDB | Clave primaria |
-| `titulo`, `poster_path`, `backdrop_path`, `overview` | TMDB | |
-| `release_date`, `runtime`, `genres` / nombres | TMDB | Filtros de duración/género |
-| `vote_average` | TMDB | Nota pública |
-| `providers` / watch providers | TMDB (ES) | Filtro plataforma |
-| `estado` | Usuario | `pending` \| `watched` (y normalizaciones legacy) |
+| `imdb_id` | TMDB | Para migración (IMDb, Trakt, SeriesGuide) |
+| `titulo`, `portada`, `backdrop`, `sinopsis` | TMDB | URLs / sinopsis |
+| `fecha_estreno`, `runtime`, `generos` | TMDB | Filtros de duración/género/próximos estrenos/avisos |
+| `vote_average`, `collection` | TMDB | Nota pública y saga coleccionable |
+| `watch_providers` | TMDB | Cache por país de streaming |
+| `estado` | Usuario | `pending` \| `completed` (acepta aliases legacy como `watched`) |
+| `fecha_visto` | Usuario | ISO de cuándo se marcó vista (estadísticas y Wrapped) |
 | `favorito` | Usuario | boolean |
 | `puntuacion` | Usuario | 0–10; 0 = sin nota |
-| `critica` | Usuario | string; crítica personal |
+| `critica` | Usuario | string; crítica o nota privada |
 | `updatedAt` | Sistema | ISO; LWW |
-| `lastModified` | Legacy | Se usa como fallback de `updatedAt` |
 
 `normalizeStoredMovie` garantiza tipos seguros y `critica` string.
 
@@ -69,18 +79,21 @@ Campos habituales (mezcla TMDB + usuario):
 | Campo | Origen | Notas |
 |-------|--------|--------|
 | `id_tmdb` | TMDB | PK |
-| `titulo`, posters, `overview`, `genres` | TMDB | |
-| `status` | TMDB | Ej. Returning Series / Ended (meta de emisión) |
+| `imdb_id`, `tvdb_id` | TMDB / migración | Para compatibilidad externa |
+| `titulo`, `portada`, `backdrop`, `sinopsis`, `generos`, `paises`, `network` | TMDB | Metadatos base (y export SeriesGuide) |
+| `status` | TMDB | Ej. Returning Series / Ended / Canceled |
 | `estado` | Usuario | Ver estados abajo |
-| `temporadas[]` | TMDB + cache | `{ numero, especial, ... }` |
+| `temporadas[]` | TMDB + cache | `{ numero, episodio_count, especial, ... }` |
 | `capitulos_vistos` | Usuario | Array de IDs `S01E01` |
-| `capitulos_vistos_fecha` | Usuario | Mapa `episodeId → ISO` (actividad / historial) |
-| `episodios_emitidos`, `episodios_vistos_count` | Derivados / meta | |
-| `episode_run_time` | TMDB | Stats de tiempo |
+| `capitulos_saltados` | Usuario | Array de IDs `S01E01` marcados como saltados |
+| `capitulos_vistos_fecha` | Usuario | Mapa `episodeId → ISO` (actividad / historial / Wrapped) |
+| `next_episode_to_air` | TMDB | Próximo episodio emitido (usado en Próximamente y avisos PWA) |
+| `episodios_emitidos`, `episodios_vistos_count`, `episodios_consumidos_count` | Derivados / meta | Progreso real |
+| `episode_run_time` | TMDB | Duración media (stats y export SeriesGuide) |
 | `favorito`, `puntuacion`, `critica` | Usuario | Igual que películas |
 | `continueBoostAt` | Sistema | ISO; fuerza sección «Ver a continuación» ≤14 días |
 | `metaCheckedAt` | Sistema | TTL de refresco de meta TMDB |
-| `providers` | TMDB | Perfil / filtros |
+| `watch_providers` | TMDB | Perfil / fichas |
 | `updatedAt` | Sistema | LWW |
 
 ### Estados de visionado (`estado`)
@@ -93,26 +106,25 @@ Normalizados por `normalizeStatus` (acepta aliases legacy):
 | `watching` | Viendo |
 | `completed` | Completada |
 | `standby` | Ver en otro momento |
-| `abandoned` | Abandonada |
+| `dropped` | Abandonada (alias `abandoned`) |
 
-**Importante:** al añadir desde búsqueda/detalle, el código pone `details.estado = 'pending'` (no `watching`). Al marcar el primer episodio suele pasar a `watching`.
+**Importante:** al añadir desde búsqueda/detalle, la serie empieza en `pending` (no `watching`). Al marcar un episodio suele pasar a `watching`.
 
 ### IDs de episodio
 
-Formato canónico: **`S01E01`** (temporada y episodio con padding).
+Formato canónico: **`S01E01`** (temporada y episodio con padding de 2+ dígitos).
 
-- Se usan en `capitulos_vistos`, `capitulos_vistos_fecha`, toggles y timelines.
+- Se usan en `capitulos_vistos`, `capitulos_saltados`, `capitulos_vistos_fecha`, toggles y timelines.
 - Especiales: temporada `0` → `S00E…`.
-
-Si importas datos externos, hay que convertir a este formato o el progreso no casará con TMDB.
 
 ---
 
-## Lista personalizada
+## Lista personalizada, Selector y Preferencias
 
+### Lista personalizada
 ```js
 {
-  id: 'lst_…',       // string
+  id: 'lst_…',
   name: 'Nombre',
   tipo: 'tv' | 'movie',
   itemIds: [123, 456], // id_tmdb
@@ -121,43 +133,49 @@ Si importas datos externos, hay que convertir a este formato o el progreso no ca
 }
 ```
 
-`normalizeStoredList` deduplica `itemIds` y genera `id` si falta.
+### Candidato del Selector (`selectorItems`)
+```js
+{
+  tipo: 'tv' | 'movie',
+  id_tmdb: 123,
+  titulo: '…',
+  portada: '…',
+  fecha_estreno: '…',
+  vote_average: 8.2,
+  runtime: 120,
+  sinopsis: '…',
+  addedAt: '…',
+  updatedAt: '…'
+}
+```
+
+### Preferencias (`DEFAULT_PREFERENCES`)
+Incluyen: `startTab`, `spoilerFree`, `includeSpecials`, `inactivityDays` (7/14/30/60), `previousEpisodesRule` (`ask`/`always`/`never`), `showMoviePosterTitles`, `showMoviePosterRatings`, `providerCountry` (`ES`/`MX`/`AR`/`CO`/`CL`/`US`), `mySubscriptions`, `showTrailers`, `showUpcomingMiniCalendar`, `notificationsEnabled`, `notifyEpisodeReleases`, `notifyMovieReleases`, `notifyHour`, `gamificationEnabled`, `gamificationTheme`, `posterStyle`, `celebrationEffects`, `updatedAt`.
 
 ---
 
 ## Tombstones
 
-Borrar un ítem **no** es solo quitarlo del array: se registra un tombstone para que, en el siguiente merge, una copia antigua en otro dispositivo no “resucite” el ítem.
+Borrar un ítem, lista o candidato del selector registra un tombstone para evitar que una copia antigua en Drive o en otro dispositivo lo resucite durante el merge:
 
 ```js
 // deletedIds.movie / .tv
-{ id: 1396, deletedAt: '2026-07-29T10:00:00.000Z' }
+{ id: 1396, deletedAt: '2026-11-28T10:00:00.000Z' }
 
 // deletedListIds
 { id: 'lst_abc', deletedAt: '…' }
+
+// deletedSelectorKeys
+{ key: 'movie:550', deletedAt: '…' }
 ```
 
-Regla (`isItemTombstoned`): el ítem se oculta si `deletedAt >= updatedAt` del ítem. Si el usuario **vuelve a añadir** el mismo `id_tmdb` con `updatedAt` más nuevo que el tombstone, el ítem revive.
-
-Ver [03](03-persistencia-y-sync.md).
+Regla (`isItemTombstoned`): se oculta si `deletedAt >= updatedAt`. Si el usuario vuelve a añadir el ítem con un `updatedAt` más nuevo, revive.
 
 ---
 
 ## Backup previo al merge
 
-Antes de reconciliar, `backupLibraryBeforeMerge` escribe `seenit_data_backup` en localStorage (snapshot local + `backedUpAt`). No sustituye a export JSON manual, pero salva de merges malos.
-
----
-
-## Campos “nuevos” a no olvidar en features
-
-Al añadir persistencia de algo del usuario:
-
-1. Incluirlo en `normalizeStoredMovie` / `normalizeStoredShow`.
-2. Asegurarse de que mutaciones llaman a actualización de `updatedAt` (p.ej. `touchUpdatedAt`).
-3. No hace falta schema migration formal: la normalización rellena defaults.
-
-Ejemplos recientes: `critica`, `continueBoostAt`.
+Antes de reconciliar con Drive, `backupLibraryBeforeMerge` escribe `seenit_data_backup` en `localStorage`.
 
 ---
 
@@ -165,7 +183,6 @@ Ejemplos recientes: `critica`, `continueBoostAt`.
 
 | Cambio | Dónde |
 |--------|--------|
-| Nuevo estado de serie | `normalizeStatus` + selects UI detalle/perfil + filtros timeline |
-| Cambiar ID de episodio | Toda la cadena TMDB ↔ `capitulos_vistos` ↔ import TV Time |
-| Campo solo local (no Drive) | Evítalo: todo el blob se sube; usa otra key de localStorage |
-| Renombrar fichero Drive | `DATA_FILE_NAME` + migración manual de usuarios |
+| Nuevo estado de serie | `normalizeStatus` + selects UI detalle/perfil + filtros timeline + exportadores |
+| Nueva preferencia | `DEFAULT_PREFERENCES` + `normalizePreferences` + `renderSettings` |
+| Nuevo campo en ítem | `normalizeStoredMovie` / `normalizeStoredShow` + `touchUpdatedAt` + exportadores si aplica |

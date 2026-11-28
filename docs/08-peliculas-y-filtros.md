@@ -6,7 +6,10 @@
 
 ## Propósito
 
-Subvista **Películas → Lista pendiente**: grid de pósters con filtros colapsables (género, plataforma, duración máxima). **Próximamente** lista estrenos futuros sin ese panel.
+La pestaña **Películas** tiene dos subvistas:
+
+1. **Lista pendiente** — grid de pósters con barra compacta de búsqueda, ordenación, selector rápido aleatorio (“¿Qué veo?”) y filtros colapsables multi-selección.
+2. **Próximamente** — estrenos futuros de películas pendientes con **mini-calendario semanal interactivo**.
 
 ---
 
@@ -14,10 +17,14 @@ Subvista **Películas → Lista pendiente**: grid de pósters con filtros colaps
 
 | Campo | Default | Significado |
 |-------|---------|-------------|
-| `moviesPendingGenreFilter` | `'all'` | Nombre de género o todas |
-| `moviesPendingPlatformFilter` | `'all'` | Featured, `Otros`, o todas |
+| `moviesPendingSearch` | `''` | Búsqueda en tiempo real por título |
+| `moviesPendingSort` | `'name'` | Orden: `'name'`, `'recent'`, `'rating'`, `'runtime_asc'`, `'runtime_desc'` |
+| `moviesPendingGenres` | `[]` | Array multi-selección de géneros |
+| `moviesPendingPlatforms` | `[]` | Array multi-selección de plataformas featured u `'Otros'` |
 | `moviesPendingMaxRuntime` | `null` | Minutos máximos; `null` = sin tope |
-| `moviesPendingFiltersOpen` | `false` | Panel expandido |
+| `moviesPendingMySubsOnly` | `false` | Filtrar solo por suscripciones configuradas en Ajustes (`mySubscriptions`) |
+| `moviesPendingFiltersOpen` | `false` | Panel colapsable expandido |
+| `upcomingMoviesCal` | `{ weekOffset: 0, selectedDate: null }` | Mini-calendario de estrenos de cine |
 
 UI en `#movies-pending-filters` (sticky bajo el subnav).
 
@@ -29,47 +36,44 @@ UI en `#movies-pending-filters` (sticky bajo el subnav).
 flowchart LR
   Base[getMoviesPendingBaseList] --> FiltersUI[renderMoviesPendingFilters]
   FiltersUI --> Apply[applyMoviesPendingFilters]
-  Apply --> Grid[#movies-pending-list-container]
+  Apply --> Sort[sortMoviesPendingList]
+  Sort --> Grid[#movies-pending-list-container]
   BG[ensureMovieFilterMeta + providers] -.-> FiltersUI
 ```
 
-1. `renderMoviesPendingList` — pinta chips + aplica filtros.
-2. En background hidrata `generos`, `runtime` y `watch_providers` si faltan.
-3. **Slider de duración en vivo:** `options.live` → solo `applyMoviesPendingFilters()` (no re-monta el panel, así el thumb no “salta”).
+1. `renderMoviesPendingList` — pinta controles, chips activos y grid filtrado.
+2. En background hidrata `generos`, `runtime` y `watch_providers` para la región configurada (`providerCountry`) si faltan.
+3. **Slider de duración en vivo:** cuando `options.live === true`, solo ejecuta `applyMoviesPendingFilters()` sin reconstruir el panel para no interrumpir el arrastre táctil.
+4. **Elección aleatoria rápida:** `pickRandomPendingMovie()` elige una película de entre las que cumplen los filtros activos.
 
-Handlers: `setMoviesPendingGenreFilter`, `setMoviesPendingPlatformFilter`, `setMoviesPendingMaxRuntime`, `toggleMoviesPendingFilters`.
+Handlers principales: `setMoviesPendingSort`, `toggleMoviesPendingGenre`, `toggleMoviesPendingPlatform`, `setMoviesPendingMaxRuntime`, `toggleMoviesPendingFilters`, `resetMoviesPendingFilters`, `pickRandomPendingMovie`, `toggleMovieWatched`.
 
 ---
 
-## Plataformas featured + aliases
+## Plataformas featured, suscripciones y aliases
 
 Lista canónica `FEATURED_PROVIDERS` en `app.js`:
 
-Netflix, Prime Video, Disney+, Max, Movistar Plus+, Apple TV, SkyShowtime, RTVE, Atresplayer, Filmin, Rakuten.
+Netflix, Prime Video, Disney+, Max, Movistar Plus+, Apple TV, SkyShowtime, RTVE, Atresplayer, Filmin, Rakuten (con aliases normalizados en `normalizeProviderName`: Amazon → Prime Video, HBO Max → Max, etc.).
 
-`normalizeProviderName` mapea variantes TMDB (Amazon → Prime Video, HBO Max → Max, etc.).
+- **Multi-selección de plataformas:** películas que incluyan **cualquiera** de las plataformas marcadas (`OR` entre chips de plataforma; `AND` entre género ∩ plataforma ∩ duración ∩ búsqueda ∩ mis suscripciones).
+- **Chip Otros** (`PROVIDER_OTHER`): películas con proveedores fuera de `FEATURED_PROVIDERS` (`itemHasOtherProviders`).
+- **Mis suscripciones:** en Ajustes el usuario puede marcar qué plataformas paga (`preferences.mySubscriptions`) y activar el filtro rápido correspondiente.
+- Los chips activos se resumen en pills removibles sobre el grid (`remove-active`).
 
-- Chip de una featured: películas que, tras normalizar, incluyen ese nombre.
-- Chip **Otros** (`PROVIDER_OTHER`): tiene al menos un provider **no** featured (`itemHasOtherProviders`).
-- Misma normalización se reutiliza en selects de plataforma del **perfil**.
+---
 
-Orden de chips: `orderFilterChipValues` pone el activo justo después de “Todas”.
+## Próximamente y mini-calendario
+
+- Muestra películas con `estado === 'pending'` cuya `release_date` sea hoy o futura.
+- Comparte el componente de **mini-calendario semanal** (`upcomingMoviesCal`) con los mismos controles (`shiftUpcomingCalendarWeek`, `selectUpcomingCalendarDate`, `resetUpcomingCalendar`, `jumpToUpcomingCalendarDate`).
+- Al marcar una película como vista (`toggleMovieWatched`), además puede registrar `fecha_vista` (hoy o editable en ficha).
 
 ---
 
 ## Sticky del panel
 
-CSS: `top: calc(var(--tvst-subnav-h) - 2px)`, `z-index: 40`, sombra superior para tapar el hueco del border del subnav. Alturas: `syncMobileChromeHeights` ([06](06-navegacion-y-layout.md)).
-
-Chips: scroll horizontal en móvil; `flex-wrap` en desktop.
-
----
-
-## Matching
-
-`movieMatchesPendingFilters` combina género ∩ plataforma ∩ `runtime <= max`. Si hay tope de duración, las películas **sin** `runtime > 0` se excluyen.
-
-Toggle visto en card: `toggleMovieWatched` (no confundir con filtros).
+CSS: `top: calc(var(--tvst-subnav-h) - 2px)`, `z-index: 40`, sombra superior para tapar el hueco del borde del subnav. Alturas medidas dinámicamente con `syncMobileChromeHeights` ([06](06-navegacion-y-layout.md)).
 
 ---
 
@@ -78,6 +82,6 @@ Toggle visto en card: `toggleMovieWatched` (no confundir con filtros).
 | Cambio | Dónde |
 |--------|--------|
 | Añadir plataforma featured | `FEATURED_PROVIDERS` + alias en `normalizeProviderName` |
-| Filtro nuevo (año, nota…) | Estado + `movieMatchesPendingFilters` + UI chips |
-| Comportamiento live del slider | rama `options.live` en el render de filtros |
-| Sticky gap | CSS `.tvst-movies-filters` + vars chrome |
+| Nuevo criterio de ordenación | `sortMoviesPendingList` y `getMoviesPendingSortLabel` en `app.js` |
+| Lógica de combinación de filtros | `movieMatchesPendingFilters` |
+| País de plataformas | `preferences.providerCountry` + `getPreferredProviderCountry()` |

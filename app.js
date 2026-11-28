@@ -91,6 +91,7 @@ const AppState = {
 const VALID_START_TABS = new Set(['series', 'movies', 'explore', 'profile']);
 const VALID_INACTIVITY_DAYS = new Set([7, 14, 30, 60]);
 const VALID_PREV_EP_RULES = new Set(['ask', 'always', 'never']);
+const VALID_NOTIFY_HOURS = new Set(['08:00', '10:00', '12:00', '15:00', '18:00', '20:00']);
 const VALID_GAMIF_THEMES = new Set(['default', 'oled', 'cinema', 'neon', 'emerald', 'terracotta', 'crimson', 'royal', 'solaris', 'platinum', 'imperial']);
 const VALID_POSTER_STYLES = new Set([
     'default',
@@ -124,6 +125,10 @@ const DEFAULT_PREFERENCES = {
     mySubscriptions: [],
     showTrailers: true,
     showUpcomingMiniCalendar: true,
+    notificationsEnabled: false,
+    notifyEpisodeReleases: true,
+    notifyMovieReleases: true,
+    notifyHour: '10:00',
     gamificationEnabled: true,
     gamificationTheme: 'default',
     posterStyle: 'default',
@@ -172,6 +177,9 @@ function normalizePreferences(raw = null) {
     const posterStyle = VALID_POSTER_STYLES.has(src.posterStyle)
         ? src.posterStyle
         : DEFAULT_PREFERENCES.posterStyle;
+    const notifyHour = VALID_NOTIFY_HOURS.has(src.notifyHour)
+        ? src.notifyHour
+        : DEFAULT_PREFERENCES.notifyHour;
     return {
         startTab,
         spoilerFree: Boolean(src.spoilerFree),
@@ -184,6 +192,10 @@ function normalizePreferences(raw = null) {
         mySubscriptions: subs,
         showTrailers: src.showTrailers === undefined ? DEFAULT_PREFERENCES.showTrailers : Boolean(src.showTrailers),
         showUpcomingMiniCalendar: src.showUpcomingMiniCalendar === undefined ? DEFAULT_PREFERENCES.showUpcomingMiniCalendar : Boolean(src.showUpcomingMiniCalendar),
+        notificationsEnabled: Boolean(src.notificationsEnabled),
+        notifyEpisodeReleases: src.notifyEpisodeReleases === undefined ? DEFAULT_PREFERENCES.notifyEpisodeReleases : Boolean(src.notifyEpisodeReleases),
+        notifyMovieReleases: src.notifyMovieReleases === undefined ? DEFAULT_PREFERENCES.notifyMovieReleases : Boolean(src.notifyMovieReleases),
+        notifyHour,
         gamificationEnabled: src.gamificationEnabled === undefined ? DEFAULT_PREFERENCES.gamificationEnabled : Boolean(src.gamificationEnabled),
         gamificationTheme,
         posterStyle,
@@ -481,9 +493,13 @@ async function enterAppAfterDrive() {
     applyGamificationAppearance();
     await renderCurrentView();
     scheduleSyncMobileChromeHeights();
+    initPwaNotificationLifecycle();
+    handlePendingNotificationOpenFromUrl();
     const idle = window.requestIdleCallback || ((cb) => setTimeout(cb, 800));
     idle(() => {
-        prefetchTimelineSeasons().catch(() => {});
+        prefetchTimelineSeasons()
+            .then(() => scheduleNotifSyncToSw({ checkNow: true }))
+            .catch(() => {});
         scheduleCollectibleMetaHydration();
     });
 }
@@ -496,6 +512,11 @@ function continueWithoutDrive() {
     applyGamificationAppearance();
     void renderCurrentView();
     scheduleSyncMobileChromeHeights();
+    initPwaNotificationLifecycle();
+    handlePendingNotificationOpenFromUrl();
+    setTimeout(() => {
+        void syncNotificationsScheduleToSw({ checkNow: true });
+    }, 900);
     showToast('Modo local activado (sin sincronización en nube)', 'info');
 }
 
@@ -1023,6 +1044,10 @@ function saveLocalDataImmediate() {
             try { localStorage.removeItem(key); } catch (_) { /* ignore */ }
             console.warn('[App] Biblioteca demasiado grande para localStorage; guardada en IndexedDB:', retryError?.name || retryError);
         }
+    }
+
+    if (typeof scheduleNotifSyncToSw === 'function') {
+        scheduleNotifSyncToSw();
     }
 }
 
@@ -1925,6 +1950,10 @@ function switchTab(tab) {
     document.querySelectorAll('.tvst-bottom-nav-btn').forEach(btn => btn.classList.remove('is-active'));
     document.querySelector(`.tvst-bottom-nav-btn[data-tab="${tab}"]`)?.classList.add('is-active');
 
+    if (tab !== 'profile' && typeof closeSelectorWinnerModal === 'function') {
+        closeSelectorWinnerModal();
+    }
+
     Promise.resolve(renderCurrentView()).finally(() => {
         scheduleSyncMobileChromeHeights();
         if (tab === 'profile' || tab === 'explore' || tab === 'movies' || tab === 'settings') {
@@ -1991,6 +2020,10 @@ function switchProfileTab(tab) {
     document.getElementById('profile-movies-content')?.classList.toggle('hidden', nextTab !== 'movies');
     document.getElementById('profile-picker-content')?.classList.toggle('hidden', nextTab !== 'picker');
     document.getElementById('profile-achievements-content')?.classList.toggle('hidden', nextTab !== 'achievements');
+
+    if (nextTab !== 'picker' && typeof closeSelectorWinnerModal === 'function') {
+        closeSelectorWinnerModal();
+    }
 
     Promise.resolve(renderProfileView()).finally(() => {
         scheduleSyncMobileChromeHeights();
@@ -4938,62 +4971,117 @@ function renderSelectorSuggestions() {
     `;
 }
 
-function renderSelectorStageCard(item, options = {}) {
-    const isRolling = Boolean(options.isRolling);
-    const isPop = Boolean(options.isPop);
+let selectorWinnerModalItem = null;
+
+function closeSelectorWinnerModal() {
+    clearTimeout(selectorSpinTimer);
+    AppState.selectorIsSpinning = false;
+    const modal = document.getElementById('selector-winner-modal');
+    if (modal) {
+        modal.classList.add('hidden');
+    }
+    const rollBtn = document.getElementById('picker-roll-btn');
+    if (rollBtn) rollBtn.disabled = false;
+}
+
+function renderSelectorWinnerModalContent(item, { isRolling = false, pop = false } = {}) {
+    const body = document.getElementById('selector-winner-modal-body');
+    const titleEl = document.getElementById('selector-winner-modal-title');
+    const subEl = document.getElementById('selector-winner-modal-sub');
+    if (!body || !item) return;
+
+    selectorWinnerModalItem = item;
     const tipo = item.tipo === 'movie' ? 'movie' : 'tv';
     const id = Number(item.id_tmdb);
     const poster = safeUrl(item.portada);
-    const bg = escapeCssUrl(item.backdrop || item.portada || '');
     const year = getItemYearString(item);
     const kindLabel = tipo === 'movie' ? 'Película' : 'Serie';
     const score = Number(item.vote_average);
     const runtime = tipo === 'movie' && Number(item.runtime) > 0 ? `${Math.round(Number(item.runtime))} min` : '';
+    const synopsis = String(item.sinopsis || item.overview || '').trim();
+
     const metaParts = [kindLabel];
     if (year) metaParts.push(year);
     if (runtime) metaParts.push(runtime);
     if (Number.isFinite(score) && score > 0) metaParts.push(`★ ${score.toFixed(1)}`);
 
-    return `
-        <div class="tvst-picker-winner${isRolling ? ' is-rolling' : ''}${isPop ? ' is-winner-pop' : ''}"${bg ? ` style="--picker-winner-bg: url('${bg}')"` : ''}>
-            <div class="tvst-picker-winner-scrim"></div>
-            <div class="tvst-picker-winner-inner">
+    const filteredPool = getFilteredSelectorItems(AppState.selectorFilter);
+    const canReroll = filteredPool.length > 1;
+
+    if (titleEl) {
+        titleEl.textContent = isRolling ? 'Sorteando opción…' : '¡Tenemos elección!';
+    }
+    if (subEl) {
+        subEl.textContent = isRolling
+            ? `Barajando entre ${filteredPool.length} opciones…`
+            : `Selección al azar de tu lista (${filteredPool.length} disponibles)`;
+    }
+
+    body.innerHTML = `
+        <div class="tvst-selector-winner-card${isRolling ? ' is-rolling' : ''}${pop ? ' is-winner-pop' : ''}">
+            <div class="tvst-selector-winner-main">
                 ${poster
-                    ? `<img class="tvst-picker-winner-poster" src="${escapeHtml(poster)}" alt="${escapeHtml(item.titulo || '')}">`
-                    : `<div class="tvst-picker-winner-fallback">${tipo === 'movie' ? UI_ICONS.film : UI_ICONS.tv}</div>`}
-                <div class="tvst-picker-winner-copy">
-                    <span class="tvst-picker-winner-kicker">${isRolling ? 'Eligiendo…' : 'Elegida para ver'}</span>
-                    <h3 class="tvst-picker-winner-title">${escapeHtml(item.titulo || 'Sin título')}</h3>
-                    <p class="tvst-picker-winner-meta">${escapeHtml(metaParts.join(' · '))}</p>
-                    ${isRolling ? '' : `
-                        <div class="tvst-picker-winner-actions">
-                            <button type="button" class="tvst-picker-btn is-primary" onclick="openDetail('${tipo}', ${id})">Ver ficha</button>
-                            <button type="button" class="tvst-picker-btn" onclick="removeFromSelector('${tipo}', ${id})">Descartar</button>
-                        </div>
-                    `}
+                    ? `<img class="tvst-selector-winner-poster" src="${escapeHtml(poster)}" alt="${escapeHtml(item.titulo || '')}">`
+                    : `<div class="tvst-selector-winner-fallback">${tipo === 'movie' ? UI_ICONS.film : UI_ICONS.tv}</div>`}
+                <div class="tvst-selector-winner-info">
+                    <span class="tvst-selector-winner-kicker">${isRolling ? 'Sorteando…' : 'Elección recomendada'}</span>
+                    <h3 class="tvst-selector-winner-title">${escapeHtml(item.titulo || 'Sin título')}</h3>
+                    <div class="tvst-selector-winner-meta">
+                        <span>${escapeHtml(metaParts.join(' · '))}</span>
+                    </div>
+                    ${synopsis ? `<p class="tvst-selector-winner-synopsis">${escapeHtml(synopsis)}</p>` : ''}
                 </div>
+            </div>
+            <div class="tvst-selector-winner-actions">
+                ${isRolling ? `
+                    <button type="button" class="tvst-selector-modal-btn is-primary" disabled style="opacity: 0.85;">
+                        <svg class="animate-spin" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" style="animation: spin 0.8s linear infinite;">
+                            <circle cx="12" cy="12" r="10" stroke-opacity="0.25"></circle>
+                            <path d="M12 2a10 10 0 0 1 10 10"></path>
+                        </svg>
+                        <span>Eligiendo...</span>
+                    </button>
+                ` : `
+                    <button type="button" class="tvst-selector-modal-btn is-primary" onclick="openDetailFromSelectorModal('${tipo}', ${id})">
+                        ${UI_ICONS.film || ''}
+                        <span>Ver ficha completa</span>
+                    </button>
+                    ${canReroll ? `
+                        <button type="button" class="tvst-selector-modal-btn" onclick="spinSelectorPicker()">
+                            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+                            <span>Elegir otra</span>
+                        </button>
+                    ` : ''}
+                    <button type="button" class="tvst-selector-modal-btn is-subtle" onclick="discardFromSelectorModal('${tipo}', ${id})">
+                        <span>Quitar de la lista</span>
+                    </button>
+                `}
             </div>
         </div>
     `;
 }
 
-function renderSelectorWinnerStage(filteredItems, options = {}) {
-    const stage = document.getElementById('picker-winner-stage');
-    if (!stage) return;
+function openSelectorWinnerModal(item, { isRolling = false, pop = false } = {}) {
+    const modal = document.getElementById('selector-winner-modal');
+    if (!modal || !item) return;
+    renderSelectorWinnerModalContent(item, { isRolling, pop });
+    modal.classList.remove('hidden');
+}
 
-    const winner = AppState.selectorWinnerKey
-        ? filteredItems.find(item => getSelectorItemKey(item.tipo, item.id_tmdb) === AppState.selectorWinnerKey)
-        : null;
+function openDetailFromSelectorModal(tipo, id_tmdb) {
+    closeSelectorWinnerModal();
+    openDetail(tipo, id_tmdb);
+}
 
-    if (!winner) {
-        const msg = filteredItems.length
-            ? 'Pulsa «Elegir al azar» para decidir qué ver.'
-            : 'Añade películas o series abajo para empezar el sorteo.';
-        stage.innerHTML = `<div class="tvst-picker-stage-idle"><p>${escapeHtml(msg)}</p></div>`;
+function discardFromSelectorModal(tipo, id_tmdb) {
+    removeFromSelector(tipo, id_tmdb);
+    const remaining = getFilteredSelectorItems(AppState.selectorFilter);
+    if (!remaining.length) {
+        closeSelectorWinnerModal();
+        showToast('Lista del selector vacía', 'info');
         return;
     }
-
-    stage.innerHTML = renderSelectorStageCard(winner, { isPop: Boolean(options.pop) });
+    spinSelectorPicker();
 }
 
 function renderSelectorPool(filteredItems) {
@@ -5056,7 +5144,7 @@ function renderSelectorPool(filteredItems) {
     }).join('');
 }
 
-function renderProfilePicker(options = {}) {
+function renderProfilePicker() {
     const filter = AppState.selectorFilter === 'movie' || AppState.selectorFilter === 'tv'
         ? AppState.selectorFilter
         : 'all';
@@ -5086,7 +5174,6 @@ function renderProfilePicker(options = {}) {
         quickBtn.textContent = AppState.selectorSuggestionsOpen ? 'Ocultar lista' : 'Desde mi lista';
     }
 
-    renderSelectorWinnerStage(filteredItems, { pop: Boolean(options.pop) });
     renderSelectorSearchResults();
     renderSelectorSuggestions();
     renderSelectorPool(filteredItems);
@@ -5106,7 +5193,8 @@ function spinSelectorPicker() {
         const onlyKey = getSelectorItemKey(only.tipo, only.id_tmdb);
         AppState.selectorWinnerKey = onlyKey;
         recordGamificationSelectorWin(onlyKey);
-        renderProfilePicker({ pop: true });
+        renderProfilePicker();
+        openSelectorWinnerModal(only, { isRolling: false, pop: true });
         return;
     }
 
@@ -5122,8 +5210,10 @@ function spinSelectorPicker() {
     const rollBtn = document.getElementById('picker-roll-btn');
     if (rollBtn) rollBtn.disabled = true;
 
-    const stage = document.getElementById('picker-winner-stage');
-    const delays = [55, 65, 75, 90, 105, 125, 150, 180];
+    const firstPreview = pool[Math.floor(Math.random() * pool.length)];
+    openSelectorWinnerModal(firstPreview, { isRolling: true });
+
+    const delays = [55, 70, 85, 105, 130];
     let step = 0;
 
     const runStep = () => {
@@ -5131,12 +5221,13 @@ function spinSelectorPicker() {
             AppState.selectorIsSpinning = false;
             AppState.selectorWinnerKey = finalKey;
             recordGamificationSelectorWin(finalKey);
+            closeSelectorWinnerModal();
             return;
         }
         if (step < delays.length) {
             const preview = pool[Math.floor(Math.random() * pool.length)];
-            if (stage && preview) {
-                stage.innerHTML = renderSelectorStageCard(preview, { isRolling: true });
+            if (preview) {
+                renderSelectorWinnerModalContent(preview, { isRolling: true });
             }
             const delay = delays[step];
             step += 1;
@@ -5146,7 +5237,9 @@ function spinSelectorPicker() {
         AppState.selectorIsSpinning = false;
         AppState.selectorWinnerKey = finalKey;
         recordGamificationSelectorWin(finalKey);
-        renderProfilePicker({ pop: true });
+        renderProfilePicker();
+        renderSelectorWinnerModalContent(finalWinner, { isRolling: false, pop: true });
+        if (rollBtn) rollBtn.disabled = false;
     };
 
     runStep();
@@ -7164,11 +7257,371 @@ function updatePreference(key, value) {
         if (AppState.currentTab === 'profile' && AppState.currentProfileTab === 'achievements') {
             renderProfileAchievements();
         }
+    } else if (key === 'notifyEpisodeReleases' || key === 'notifyMovieReleases' || key === 'notifyHour') {
+        scheduleNotifSyncToSw({ checkNow: false });
     }
 
     saveLocalData();
     syncToDrive();
     renderSettings();
+}
+
+function isIosDevice() {
+    const ua = navigator.userAgent || '';
+    return /iPhone|iPad|iPod/i.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+}
+
+function isStandalonePwa() {
+    return window.matchMedia('(display-mode: standalone)').matches
+        || window.navigator.standalone === true;
+}
+
+const NOTIF_SENT_STORAGE_KEY = 'seenit_notif_sent_v1';
+let notifSyncDebounceTimer = null;
+let notifLifecycleBound = false;
+
+function getStoredSentNotifKeys() {
+    try {
+        const raw = localStorage.getItem(NOTIF_SENT_STORAGE_KEY);
+        const parsed = raw ? JSON.parse(raw) : [];
+        return Array.isArray(parsed) ? parsed.map(String).slice(-250) : [];
+    } catch (_) {
+        return [];
+    }
+}
+
+function saveStoredSentNotifKeys(keys) {
+    try {
+        const normalized = [...new Set((keys || []).map(String))].slice(-250);
+        localStorage.setItem(NOTIF_SENT_STORAGE_KEY, JSON.stringify(normalized));
+    } catch (_) {
+        /* ignore */
+    }
+}
+
+function getNotificationStatusMeta() {
+    const ios = isIosDevice();
+    const standalone = isStandalonePwa();
+    const hasNotificationApi = 'Notification' in window;
+    const permission = hasNotificationApi ? Notification.permission : 'unsupported';
+    const prefs = getPreferences();
+
+    if (ios && !standalone) {
+        return {
+            supported: false,
+            needsIosInstall: true,
+            permission,
+            text: 'En iPhone e iPad debes añadir la PWA a tu pantalla de inicio antes de activar notificaciones.',
+            tone: 'warn',
+        };
+    }
+    if (!hasNotificationApi) {
+        return {
+            supported: false,
+            needsIosInstall: false,
+            permission,
+            text: 'Este navegador no soporta notificaciones web.',
+            tone: 'muted',
+        };
+    }
+    if (permission === 'denied') {
+        return {
+            supported: true,
+            needsIosInstall: false,
+            permission,
+            text: 'Permiso bloqueado en tu navegador. Actívalo desde la configuración del sitio web para recibir avisos.',
+            tone: 'warn',
+        };
+    }
+    if (prefs.notificationsEnabled && permission === 'granted') {
+        return {
+            supported: true,
+            needsIosInstall: false,
+            permission,
+            text: standalone
+                ? 'Avisos activos en tu PWA (se comprueban en segundo plano y al abrir la app).'
+                : 'Avisos activos en este navegador (comprobación automática al usar o reanudar la app).',
+            tone: 'ok',
+        };
+    }
+    if (permission === 'granted') {
+        return {
+            supported: true,
+            needsIosInstall: false,
+            permission,
+            text: 'Permiso concedido. Activa el interruptor para recibir avisos de estrenos.',
+            tone: 'muted',
+        };
+    }
+    return {
+        supported: true,
+        needsIosInstall: false,
+        permission,
+        text: 'Desactivadas. Activa el interruptor para conceder permiso en este dispositivo.',
+        tone: 'muted',
+    };
+}
+
+function buildNotificationSchedulePayload() {
+    const prefs = getPreferences();
+    const items = [];
+    const seenKeys = new Set();
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const maxHorizonMs = 14 * 86400000;
+
+    const formatLocalYmd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    const inWindow = (rawDate) => {
+        const s = String(rawDate || '').slice(0, 10);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
+        const parsed = new Date(`${s}T00:00:00`);
+        if (Number.isNaN(parsed.getTime())) return null;
+        const diff = parsed.getTime() - today.getTime();
+        if (diff < 0 || diff > maxHorizonMs) return null;
+        return formatLocalYmd(parsed);
+    };
+
+    const addShowEpisodeEntry = (show, epNum, seasonNum, epName, airDate) => {
+        const dateKey = inWindow(airDate);
+        if (!dateKey || !show?.id_tmdb) return;
+        const epCode = `S${String(seasonNum).padStart(2, '0')}E${String(epNum).padStart(2, '0')}`;
+        if (isEpisodeConsumed(show, epCode)) return;
+        const key = `tv:${show.id_tmdb}:${epCode}:${dateKey}`;
+        if (seenKeys.has(key)) return;
+        seenKeys.add(key);
+        const maskSpoiler = isSpoilerFreeEnabled();
+        const epTitleText = !maskSpoiler && epName ? ` · ${epName}` : '';
+        items.push({
+            kind: 'tv',
+            key,
+            date: dateKey,
+            id_tmdb: Number(show.id_tmdb),
+            title: show.titulo || 'Serie',
+            subtitle: `${epCode}${epTitleText}`,
+        });
+    };
+
+    for (const show of (AppState.shows || [])) {
+        if (normalizeStatus(show.estado) === 'dropped') continue;
+        const next = show.next_episode_to_air;
+        if (next && next.air_date && Number.isInteger(Number(next.season_number)) && Number.isInteger(Number(next.episode_number))) {
+            addShowEpisodeEntry(show, Number(next.episode_number), Number(next.season_number), next.name, next.air_date);
+        }
+        const cachedEpsMap = getCachedShowEpisodesMap(show.id_tmdb);
+        cachedEpsMap.forEach((ep) => {
+            if (ep?.air_date && ep.seasonNumber != null && ep.episodeNumber != null) {
+                addShowEpisodeEntry(show, ep.episodeNumber, ep.seasonNumber, ep.name, ep.air_date);
+            }
+        });
+    }
+
+    for (const movie of (AppState.movies || [])) {
+        if (normalizeStatus(movie.estado) !== 'pending') continue;
+        const dateKey = inWindow(movie.fecha_estreno);
+        if (!dateKey || !movie?.id_tmdb) continue;
+        const key = `movie:${movie.id_tmdb}:${dateKey}`;
+        if (seenKeys.has(key)) return;
+        seenKeys.add(key);
+        items.push({
+            kind: 'movie',
+            key,
+            date: dateKey,
+            id_tmdb: Number(movie.id_tmdb),
+            title: movie.titulo || 'Película',
+            subtitle: 'Estreno marcado en tu lista de pendientes.',
+        });
+    }
+
+    const permissionGranted = 'Notification' in window && Notification.permission === 'granted';
+    return {
+        enabled: Boolean(prefs.notificationsEnabled && permissionGranted),
+        notifyEpisodeReleases: prefs.notifyEpisodeReleases !== false,
+        notifyMovieReleases: prefs.notifyMovieReleases !== false,
+        notifyHour: prefs.notifyHour || '10:00',
+        items,
+        sentKeys: getStoredSentNotifKeys(),
+        updatedAt: nowIso(),
+    };
+}
+
+async function registerPeriodicNotifSync() {
+    if (!('serviceWorker' in navigator)) return false;
+    try {
+        const reg = await navigator.serviceWorker.ready;
+        if (reg && 'periodicSync' in reg) {
+            await reg.periodicSync.register('seenit-release-check', {
+                minInterval: 12 * 60 * 60 * 1000,
+            });
+            return true;
+        }
+    } catch (_) {
+        /* Chrome solo habilita periodicSync tras instalar PWA */
+    }
+    return false;
+}
+
+async function syncNotificationsScheduleToSw({ checkNow = false, forceIgnoreHour = false } = {}) {
+    if (!('serviceWorker' in navigator)) return;
+    try {
+        const payload = buildNotificationSchedulePayload();
+        const reg = await navigator.serviceWorker.ready;
+        const target = navigator.serviceWorker.controller || reg?.active;
+        if (target) {
+            target.postMessage({
+                type: 'SYNC_NOTIF_SCHEDULE',
+                payload,
+                checkNow: Boolean(checkNow && payload.enabled),
+                forceIgnoreHour: Boolean(forceIgnoreHour),
+            });
+        }
+    } catch (_) {
+        /* ignore */
+    }
+}
+
+function scheduleNotifSyncToSw({ checkNow = false } = {}) {
+    clearTimeout(notifSyncDebounceTimer);
+    notifSyncDebounceTimer = setTimeout(() => {
+        notifSyncDebounceTimer = null;
+        void syncNotificationsScheduleToSw({ checkNow });
+    }, 900);
+}
+
+async function toggleNotificationsPreference(nextEnabled) {
+    if (!nextEnabled) {
+        updatePreference('notificationsEnabled', false);
+        void syncNotificationsScheduleToSw({ checkNow: false });
+        showToast('Notificaciones desactivadas', 'info');
+        return;
+    }
+
+    const status = getNotificationStatusMeta();
+    if (status.needsIosInstall) {
+        showToast('En iOS añade la app a tu pantalla de inicio primero', 'info');
+        renderSettings();
+        return;
+    }
+    if (!('Notification' in window)) {
+        showToast('Tu navegador no soporta notificaciones web', 'error');
+        return;
+    }
+
+    let permission = Notification.permission;
+    if (permission === 'default') {
+        try {
+            permission = await Notification.requestPermission();
+        } catch (err) {
+            console.warn('[Notif] Error solicitando permiso:', err);
+        }
+    }
+
+    if (permission !== 'granted') {
+        updatePreference('notificationsEnabled', false);
+        showToast(
+            permission === 'denied'
+                ? 'Permiso bloqueado en el navegador; habilítalo en la configuración del sitio'
+                : 'No se concedió permiso para mostrar notificaciones',
+            'info',
+        );
+        return;
+    }
+
+    updatePreference('notificationsEnabled', true);
+    await registerPeriodicNotifSync();
+    await syncNotificationsScheduleToSw({ checkNow: true });
+    showToast('Notificaciones de estrenos activadas', 'success');
+}
+
+async function sendTestNotificationFromSettings() {
+    const status = getNotificationStatusMeta();
+    if (status.needsIosInstall) {
+        showToast('Instala la PWA en pantalla de inicio en Safari para probar notificaciones en iOS', 'info');
+        return;
+    }
+    if (!('Notification' in window)) {
+        showToast('Tu navegador no soporta notificaciones web', 'error');
+        return;
+    }
+
+    let permission = Notification.permission;
+    if (permission === 'default') {
+        permission = await Notification.requestPermission();
+    }
+    if (permission !== 'granted') {
+        showToast('Permiso de notificaciones no concedido', 'info');
+        renderSettings();
+        return;
+    }
+
+    try {
+        if ('serviceWorker' in navigator) {
+            const reg = await navigator.serviceWorker.ready;
+            const target = navigator.serviceWorker.controller || reg?.active;
+            if (target) {
+                target.postMessage({ type: 'SEND_TEST_NOTIFICATION' });
+                showToast('Notificación de prueba enviada', 'success');
+                return;
+            }
+            if (reg && typeof reg.showNotification === 'function') {
+                await reg.showNotification('SeenIt · Avisos activos', {
+                    body: 'Tus notificaciones de estrenos de series y películas funcionan correctamente.',
+                    icon: './icons/icon-192.png',
+                });
+                showToast('Notificación de prueba enviada', 'success');
+                return;
+            }
+        }
+        new Notification('SeenIt · Avisos activos', {
+            body: 'Tus notificaciones de estrenos de series y películas funcionan correctamente.',
+            icon: './icons/icon-192.png',
+        });
+        showToast('Notificación de prueba enviada', 'success');
+    } catch (err) {
+        console.warn('[Notif] No se pudo enviar prueba:', err);
+        showToast('No se pudo mostrar la notificación de prueba en este entorno', 'error');
+    }
+}
+
+function initPwaNotificationLifecycle() {
+    if (notifLifecycleBound) return;
+    notifLifecycleBound = true;
+
+    if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.addEventListener('message', (event) => {
+            const msg = event?.data;
+            if (!msg || typeof msg !== 'object') return;
+            if (msg.type === 'NOTIF_SENT_KEYS_UPDATED' && Array.isArray(msg.sentKeys)) {
+                saveStoredSentNotifKeys(msg.sentKeys);
+            } else if (msg.type === 'OPEN_DETAIL_FROM_NOTIFICATION' && msg.id_tmdb) {
+                const tipo = msg.tipo === 'movie' ? 'movie' : 'tv';
+                openDetail(tipo, Number(msg.id_tmdb));
+            }
+        });
+    }
+
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') {
+            scheduleNotifSyncToSw({ checkNow: true });
+        }
+    });
+}
+
+function handlePendingNotificationOpenFromUrl() {
+    try {
+        const params = new URLSearchParams(window.location.search);
+        const rawOpen = params.get('open');
+        if (!rawOpen) return;
+        const match = rawOpen.match(/^(tv|movie):(\d+)$/);
+        if (!match) return;
+        const cleanUrl = `${window.location.pathname}${window.location.hash || ''}`;
+        window.history.replaceState({}, '', cleanUrl);
+        setTimeout(() => {
+            openDetail(match[1], Number(match[2]));
+        }, 250);
+    } catch (_) {
+        /* ignore */
+    }
 }
 
 function toggleSubscriptionPreference(providerName) {
@@ -7228,30 +7681,43 @@ function renderSettings() {
         { value: 'always', label: 'Marcar todos' },
         { value: 'never', label: 'Solo ese' },
     ];
+    const notifyHourOptions = [
+        { value: '08:00', label: '08:00' },
+        { value: '10:00', label: '10:00' },
+        { value: '12:00', label: '12:00' },
+        { value: '15:00', label: '15:00' },
+        { value: '18:00', label: '18:00' },
+        { value: '20:00', label: '20:00' },
+    ];
 
-    const renderSwitch = (key, checked, label, hint) => `
-        <div class="tvst-setting-row">
-            <div class="tvst-setting-copy">
-                <span class="tvst-setting-label">${escapeHtml(label)}</span>
-                ${hint ? `<p class="tvst-setting-hint">${escapeHtml(hint)}</p>` : ''}
+    const renderSwitch = (key, checked, label, hint, customHandler = null) => {
+        const handler = customHandler || `updatePreference('${escapeHtml(key)}', ${checked ? 'false' : 'true'})`;
+        return `
+            <div class="tvst-setting-row">
+                <div class="tvst-setting-copy">
+                    <span class="tvst-setting-label">${escapeHtml(label)}</span>
+                    ${hint ? `<p class="tvst-setting-hint">${escapeHtml(hint)}</p>` : ''}
+                </div>
+                <button type="button"
+                    role="switch"
+                    aria-checked="${checked ? 'true' : 'false'}"
+                    aria-label="${escapeHtml(label)}"
+                    class="tvst-switch${checked ? ' is-on' : ''}"
+                    onclick="${handler}">
+                    <span class="tvst-switch-thumb"></span>
+                </button>
             </div>
-            <button type="button"
-                role="switch"
-                aria-checked="${checked ? 'true' : 'false'}"
-                aria-label="${escapeHtml(label)}"
-                class="tvst-switch${checked ? ' is-on' : ''}"
-                onclick="updatePreference('${escapeHtml(key)}', ${checked ? 'false' : 'true'})">
-                <span class="tvst-switch-thumb"></span>
-            </button>
-        </div>
-    `;
+        `;
+    };
 
+    const notifMeta = getNotificationStatusMeta();
+    const notifActive = Boolean(prefs.notificationsEnabled && notifMeta.permission === 'granted');
     const mySubs = new Set(getMySubscriptions().map(s => s.toLowerCase()));
     const providersList = typeof FEATURED_PROVIDERS !== 'undefined' ? FEATURED_PROVIDERS : [];
 
     container.innerHTML = `
         <div class="tvst-section-card">
-            <h3 class="tvst-settings-card-title">Experiencia y seguimiento</h3>
+            <h3 class="tvst-settings-card-title">Visualización e interfaz</h3>
             <div class="tvst-settings-group-list">
                 <div class="tvst-setting-row">
                     <div class="tvst-setting-copy">
@@ -7262,30 +7728,6 @@ function renderSettings() {
                         ${startTabOptions.map(o => `<option value="${escapeHtml(o.value)}"${prefs.startTab === o.value ? ' selected' : ''}>${escapeHtml(o.label)}</option>`).join('')}
                     </select>
                 </div>
-                <div class="tvst-setting-row">
-                    <div class="tvst-setting-copy">
-                        <label class="tvst-setting-label" for="pref-inactivity-days">Días para «En espera»</label>
-                        <p class="tvst-setting-hint">Tiempo sin ver episodios antes de bajar a inactivas.</p>
-                    </div>
-                    <select id="pref-inactivity-days" class="tvst-setting-select" onchange="updatePreference('inactivityDays', Number(this.value))">
-                        ${inactivityOptions.map(o => `<option value="${o.value}"${Number(prefs.inactivityDays) === o.value ? ' selected' : ''}>${escapeHtml(o.label)}</option>`).join('')}
-                    </select>
-                </div>
-                <div class="tvst-setting-row">
-                    <div class="tvst-setting-copy">
-                        <label class="tvst-setting-label" for="pref-prev-rule">Episodios anteriores</label>
-                        <p class="tvst-setting-hint">Acción al marcar un capítulo con anteriores pendientes.</p>
-                    </div>
-                    <select id="pref-prev-rule" class="tvst-setting-select" onchange="updatePreference('previousEpisodesRule', this.value)">
-                        ${prevRuleOptions.map(o => `<option value="${escapeHtml(o.value)}"${prefs.previousEpisodesRule === o.value ? ' selected' : ''}>${escapeHtml(o.label)}</option>`).join('')}
-                    </select>
-                </div>
-            </div>
-        </div>
-
-        <div class="tvst-section-card">
-            <h3 class="tvst-settings-card-title">Visualización</h3>
-            <div class="tvst-settings-group-list">
                 ${renderSwitch(
                     'spoilerFree',
                     prefs.spoilerFree,
@@ -7293,10 +7735,10 @@ function renderSettings() {
                     'Oculta títulos, imágenes y sinopsis de episodios aún no vistos.',
                 )}
                 ${renderSwitch(
-                    'includeSpecials',
-                    prefs.includeSpecials,
-                    'Incluir especiales (T0)',
-                    'Incluye los episodios especiales en listas y cálculo de progreso.',
+                    'showUpcomingMiniCalendar',
+                    prefs.showUpcomingMiniCalendar,
+                    'Minicalendario en Próximamente',
+                    'Muestra la vista semanal interactiva en Series y Películas.',
                 )}
                 ${renderSwitch(
                     'showMoviePosterTitles',
@@ -7316,17 +7758,85 @@ function renderSettings() {
                     'Tráiler en la ficha',
                     'Muestra el botón y reproductor de tráiler dentro de cada ficha.',
                 )}
-                ${renderSwitch(
-                    'showUpcomingMiniCalendar',
-                    prefs.showUpcomingMiniCalendar,
-                    'Minicalendario en Próximamente',
-                    'Muestra la vista semanal interactiva en Series y Películas.',
-                )}
             </div>
         </div>
 
         <div class="tvst-section-card">
-            <h3 class="tvst-settings-card-title">Plataformas y región</h3>
+            <h3 class="tvst-settings-card-title">Notificaciones y estrenos (PWA)</h3>
+            <p class="tvst-notif-status-line is-${escapeHtml(notifMeta.tone)}">${escapeHtml(notifMeta.text)}</p>
+            ${notifMeta.needsIosInstall ? `
+                <div class="tvst-notif-ios-callout">
+                    <strong>Cómo activar en iPhone / iPad</strong>
+                    <p>Pulsa el botón <strong>Compartir</strong> de Safari y elige <strong>Añadir a pantalla de inicio</strong>. Después abre SeenIt desde su icono y activa el interruptor.</p>
+                </div>
+            ` : ''}
+            <div class="tvst-settings-group-list">
+                ${renderSwitch(
+                    'notificationsEnabled',
+                    notifActive,
+                    'Notificaciones de estrenos',
+                    'Avisos locales y en segundo plano sin servidores externos.',
+                    `toggleNotificationsPreference(${notifActive ? 'false' : 'true'})`,
+                )}
+                ${renderSwitch(
+                    'notifyEpisodeReleases',
+                    prefs.notifyEpisodeReleases,
+                    'Nuevos episodios de series',
+                    'Avisa el día de emisión de próximos capítulos en tus series activas.',
+                )}
+                ${renderSwitch(
+                    'notifyMovieReleases',
+                    prefs.notifyMovieReleases,
+                    'Estrenos de películas pendientes',
+                    'Avisa cuando llega la fecha de estreno de tus películas pendientes.',
+                )}
+                <div class="tvst-setting-row">
+                    <div class="tvst-setting-copy">
+                        <label class="tvst-setting-label" for="pref-notify-hour">A partir de qué hora avisar</label>
+                        <p class="tvst-setting-hint">Hora local mínima para mostrar recordatorios del día.</p>
+                    </div>
+                    <select id="pref-notify-hour" class="tvst-setting-select" onchange="updatePreference('notifyHour', this.value)">
+                        ${notifyHourOptions.map(o => `<option value="${escapeHtml(o.value)}"${prefs.notifyHour === o.value ? ' selected' : ''}>${escapeHtml(o.label)}</option>`).join('')}
+                    </select>
+                </div>
+            </div>
+            <div class="tvst-settings-actions tvst-notif-actions">
+                <button type="button" class="tvst-settings-btn" onclick="sendTestNotificationFromSettings()">Enviar notificación de prueba</button>
+            </div>
+        </div>
+
+        <div class="tvst-section-card">
+            <h3 class="tvst-settings-card-title">Seguimiento de series y episodios</h3>
+            <div class="tvst-settings-group-list">
+                ${renderSwitch(
+                    'includeSpecials',
+                    prefs.includeSpecials,
+                    'Incluir especiales (T0)',
+                    'Incluye los episodios especiales en listas y cálculo de progreso.',
+                )}
+                <div class="tvst-setting-row">
+                    <div class="tvst-setting-copy">
+                        <label class="tvst-setting-label" for="pref-inactivity-days">Días para «En espera»</label>
+                        <p class="tvst-setting-hint">Tiempo sin ver episodios antes de bajar una serie a inactivas.</p>
+                    </div>
+                    <select id="pref-inactivity-days" class="tvst-setting-select" onchange="updatePreference('inactivityDays', Number(this.value))">
+                        ${inactivityOptions.map(o => `<option value="${o.value}"${Number(prefs.inactivityDays) === o.value ? ' selected' : ''}>${escapeHtml(o.label)}</option>`).join('')}
+                    </select>
+                </div>
+                <div class="tvst-setting-row">
+                    <div class="tvst-setting-copy">
+                        <label class="tvst-setting-label" for="pref-prev-rule">Episodios anteriores</label>
+                        <p class="tvst-setting-hint">Acción al marcar un capítulo con episodios previos pendientes.</p>
+                    </div>
+                    <select id="pref-prev-rule" class="tvst-setting-select" onchange="updatePreference('previousEpisodesRule', this.value)">
+                        ${prevRuleOptions.map(o => `<option value="${escapeHtml(o.value)}"${prefs.previousEpisodesRule === o.value ? ' selected' : ''}>${escapeHtml(o.label)}</option>`).join('')}
+                    </select>
+                </div>
+            </div>
+        </div>
+
+        <div class="tvst-section-card">
+            <h3 class="tvst-settings-card-title">Catálogo y plataformas de streaming</h3>
             <div class="tvst-settings-group-list">
                 <div class="tvst-setting-row">
                     <div class="tvst-setting-copy">
@@ -7371,14 +7881,6 @@ function renderSettings() {
                     )}
                     ${renderSettingsGamificationRewardsRows()}
                 ` : ''}
-            </div>
-        </div>
-
-        <div class="tvst-section-card">
-            <h3 class="tvst-settings-card-title">Caché de TMDB</h3>
-            <p class="tvst-settings-desc">Recarga metadatos de episodios, estrenos y plataformas si notas información desactualizada.</p>
-            <div class="tvst-settings-actions">
-                <button type="button" onclick="clearTmdbCachesFromSettings()" class="tvst-settings-btn">Limpiar caché TMDB</button>
             </div>
         </div>
     `;
@@ -7960,6 +8462,20 @@ async function getOrderedEpisodes(show, options = {}) {
 
     orderedEpisodesInflight.set(cacheKey, fetchPromise);
     return fetchPromise;
+}
+
+function getCachedShowEpisodesMap(idTmdb) {
+    const map = new Map();
+    const prefix = `${Number(idTmdb)}:`;
+    orderedEpisodesCache.forEach((episodes, key) => {
+        if (!String(key).startsWith(prefix) || !Array.isArray(episodes)) return;
+        for (const ep of episodes) {
+            if (ep?.id && !map.has(ep.id)) {
+                map.set(ep.id, ep);
+            }
+        }
+    });
+    return map;
 }
 
 async function refreshShowStatus(show) {
@@ -9931,9 +10447,19 @@ function setupEventListeners() {
     document.addEventListener('keydown', (e) => {
         if (e.key !== 'Escape') return;
         if (!document.getElementById('app-dialog-modal')?.classList.contains('hidden')) return;
+        if (!document.getElementById('selector-winner-modal')?.classList.contains('hidden')) {
+            closeSelectorWinnerModal();
+            return;
+        }
         if (!document.getElementById('universal-import-modal')?.classList.contains('hidden')) {
             if (typeof window.closeUniversalImportModal === 'function') {
                 window.closeUniversalImportModal();
+            }
+            return;
+        }
+        if (!document.getElementById('universal-export-modal')?.classList.contains('hidden')) {
+            if (typeof window.closeUniversalExportModal === 'function') {
+                window.closeUniversalExportModal();
             }
             return;
         }
@@ -14792,6 +15318,11 @@ window.resetUpcomingCalendar = resetUpcomingCalendar;
 window.jumpToUpcomingCalendarDate = jumpToUpcomingCalendarDate;
 window.setSelectorFilter = setSelectorFilter;
 window.spinSelectorPicker = spinSelectorPicker;
+window.closeSelectorWinnerModal = closeSelectorWinnerModal;
+window.openSelectorWinnerModal = openSelectorWinnerModal;
+window.openDetailFromSelectorModal = openDetailFromSelectorModal;
+window.discardFromSelectorModal = discardFromSelectorModal;
+window.dismissSelectorWinnerToast = closeSelectorWinnerModal;
 window.toggleSelectorSuggestions = toggleSelectorSuggestions;
 window.onSelectorSearchInput = onSelectorSearchInput;
 window.clearSelectorSearch = clearSelectorSearch;
@@ -14799,6 +15330,9 @@ window.addToSelectorFromSearch = addToSelectorFromSearch;
 window.removeFromSelector = removeFromSelector;
 window.clearSelectorItems = clearSelectorItems;
 window.toggleItemInSelector = toggleItemInSelector;
+window.toggleNotificationsPreference = toggleNotificationsPreference;
+window.sendTestNotificationFromSettings = sendTestNotificationFromSettings;
+window.getCachedShowEpisodesMap = getCachedShowEpisodesMap;
 window.selectGamificationTheme = selectGamificationTheme;
 window.selectPosterStyle = selectPosterStyle;
 window.setAchievementsFilter = setAchievementsFilter;

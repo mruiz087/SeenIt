@@ -48,8 +48,8 @@
             id: 'seriesguide',
             name: 'SeriesGuide (.json)',
             importLabel: 'Automático',
-            exportLabel: 'Vía Trakt JSON o CSV',
-            details: 'Copia sg-shows / sg-movies JSON con episodios, notas e IDs TMDB/TVDB',
+            exportLabel: 'Series + Películas JSON',
+            details: 'Copia seriesguide-shows / seriesguide-movies JSON con episodios, notas e IDs TMDB',
         },
         {
             id: 'custom',
@@ -1823,6 +1823,200 @@
         showToast('Esquema Trakt JSON exportado', 'success');
     }
 
+    function extractTmdbPosterPath(rawUrl) {
+        const url = String(rawUrl || '').trim();
+        if (!url) return '';
+        const match = url.match(/\/t\/p\/[^/]+(\/[^?#]+)/i);
+        if (match) return match[1];
+        if (url.startsWith('/')) return url;
+        return '';
+    }
+
+    function toEpochMs(rawDate) {
+        const s = String(rawDate || '').trim();
+        if (!s) return 0;
+        const normalized = /^\d{4}-\d{2}-\d{2}$/.test(s) ? `${s}T00:00:00Z` : s;
+        const ms = Date.parse(normalized);
+        return Number.isFinite(ms) && ms > 0 ? ms : 0;
+    }
+
+    function toIsoUtcStamp(rawDate) {
+        const ms = toEpochMs(rawDate);
+        return ms > 0 ? new Date(ms).toISOString().replace('.000Z', 'Z') : '';
+    }
+
+    function mapTmdbStatusToSeriesGuide(rawStatus) {
+        const s = String(rawStatus || '').trim().toLowerCase();
+        if (s === 'ended') return 'ended';
+        if (s === 'canceled' || s === 'cancelled') return 'canceled';
+        if (s === 'in production' || s === 'planned' || s === 'upcoming') return 'upcoming';
+        return 'continuing';
+    }
+
+    function exportSeriesGuideJson() {
+        const shows = AppState.shows || [];
+        const movies = AppState.movies || [];
+        if (!shows.length && !movies.length) {
+            showToast('No hay series ni películas para exportar', 'info');
+            return;
+        }
+
+        const getEpMeta = typeof window.getCachedShowEpisodesMap === 'function'
+            ? window.getCachedShowEpisodesMap
+            : () => new Map();
+
+        const sgShows = shows.map((s) => {
+            const idTmdb = Number(s.id_tmdb);
+            const watchedSet = new Set(Array.isArray(s.capitulos_vistos) ? s.capitulos_vistos : []);
+            const skippedSet = new Set(Array.isArray(s.capitulos_saltados) ? s.capitulos_saltados : []);
+            const datesMap = s.capitulos_vistos_fecha && typeof s.capitulos_vistos_fecha === 'object'
+                ? s.capitulos_vistos_fecha
+                : {};
+            const epMetaMap = getEpMeta(idTmdb);
+
+            const seasonCounts = new Map();
+            if (Array.isArray(s.temporadas)) {
+                for (const t of s.temporadas) {
+                    const sNum = Number(t?.numero);
+                    if (!Number.isInteger(sNum) || sNum < 0) continue;
+                    const count = Math.max(0, Number(t?.episodio_count) || 0);
+                    seasonCounts.set(sNum, Math.max(seasonCounts.get(sNum) || 0, count));
+                }
+            }
+
+            const registerCode = (code) => {
+                const m = String(code || '').match(/^S(\d+)E(\d+)$/i);
+                if (!m) return;
+                const sNum = Number(m[1]);
+                const eNum = Number(m[2]);
+                if (Number.isInteger(sNum) && sNum >= 0 && Number.isInteger(eNum) && eNum > 0) {
+                    seasonCounts.set(sNum, Math.max(seasonCounts.get(sNum) || 0, eNum));
+                }
+            };
+            watchedSet.forEach(registerCode);
+            skippedSet.forEach(registerCode);
+
+            if (epMetaMap && typeof epMetaMap.forEach === 'function') {
+                epMetaMap.forEach((_, epCode) => registerCode(epCode));
+            }
+
+            let showLastWatchedMs = 0;
+            for (const val of Object.values(datesMap)) {
+                const ms = toEpochMs(val);
+                if (ms > showLastWatchedMs) showLastWatchedMs = ms;
+            }
+            if (!showLastWatchedMs && watchedSet.size > 0) {
+                showLastWatchedMs = toEpochMs(s.updatedAt) || Date.now();
+            }
+
+            const seasons = [...seasonCounts.entries()]
+                .sort((a, b) => a[0] - b[0])
+                .map(([seasonNum, epCount]) => {
+                    const episodes = [];
+                    for (let eNum = 1; eNum <= epCount; eNum += 1) {
+                        const epId = `S${String(seasonNum).padStart(2, '0')}E${String(eNum).padStart(2, '0')}`;
+                        const isWatched = watchedSet.has(epId);
+                        const isSkipped = !isWatched && skippedSet.has(epId);
+                        const cached = epMetaMap?.get ? epMetaMap.get(epId) : null;
+                        const airMs = cached?.air_date ? toEpochMs(cached.air_date) : 0;
+                        const epObj = {
+                            collected: false,
+                            episode: eNum,
+                            first_aired: airMs > 0 ? airMs : -1,
+                            plays: isWatched ? 1 : 0,
+                            rating_user: 0,
+                            skipped: isSkipped,
+                            title: cached?.name || '',
+                            watched: isWatched,
+                        };
+                        if (isWatched && datesMap[epId]) {
+                            const epWatchedMs = toEpochMs(datesMap[epId]);
+                            if (epWatchedMs > 0) epObj.last_watched_ms = epWatchedMs;
+                        }
+                        episodes.push(epObj);
+                    }
+                    return {
+                        season: seasonNum,
+                        episodes,
+                    };
+                });
+
+            const sgShow = {
+                content_rating: '',
+                country: Array.isArray(s.paises) && s.paises[0] ? String(s.paises[0]).toLowerCase() : '',
+                favorite: Boolean(s.favorito),
+                first_aired: toIsoUtcStamp(s.fecha_estreno),
+                hidden: normalizeStatus(s.estado) === 'dropped',
+                language: 'es-ES',
+                last_watched_ms: showLastWatchedMs,
+                network: typeof s.network === 'string' ? s.network : '',
+                notify: normalizeStatus(s.estado) !== 'dropped',
+                poster: extractTmdbPosterPath(s.portada),
+                rating_user: Number(s.puntuacion) > 0 ? Math.round(Number(s.puntuacion)) : 0,
+                release_time: -1,
+                release_timezone: '',
+                release_weekday: -1,
+                runtime: Number(s.episode_run_time) || 45,
+                seasons,
+                status: mapTmdbStatusToSeriesGuide(s.status),
+                title: s.titulo || s.name || '',
+                tmdb_id: idTmdb,
+            };
+            if (s.imdb_id) sgShow.imdb_id = String(s.imdb_id);
+            return sgShow;
+        });
+
+        const sgMovies = movies.map((m) => {
+            const isWatched = normalizeStatus(m.estado) === 'completed';
+            const releaseMs = toEpochMs(m.fecha_estreno);
+            const updatedMs = toEpochMs(m.fecha_visto || m.updatedAt);
+            const sgMovie = {
+                title: m.titulo || m.title || '',
+                tmdb_id: Number(m.id_tmdb),
+                released_utc_ms: releaseMs > 0 ? releaseMs : 0,
+                watched: isWatched,
+                plays: isWatched ? 1 : 0,
+                in_watchlist: !isWatched && normalizeStatus(m.estado) === 'pending',
+                in_collection: false,
+                rating_user: Number(m.puntuacion) > 0 ? Math.round(Number(m.puntuacion)) : 0,
+                last_updated_ms: updatedMs > 0 ? updatedMs : Date.now(),
+                poster: extractTmdbPosterPath(m.portada),
+                runtime_min: Number(m.runtime) || 0,
+                overview: typeof m.sinopsis === 'string' ? m.sinopsis : '',
+            };
+            if (m.imdb_id) sgMovie.imdb_id = String(m.imdb_id);
+            return sgMovie;
+        });
+
+        const dateTag = new Date().toISOString().split('T')[0];
+        if (sgShows.length > 0) {
+            downloadTextFile(
+                `seenit_seriesguide_shows_${dateTag}.json`,
+                JSON.stringify(sgShows, null, 2),
+                'application/json',
+            );
+        }
+        if (sgMovies.length > 0) {
+            const triggerMoviesDownload = () => {
+                downloadTextFile(
+                    `seenit_seriesguide_movies_${dateTag}.json`,
+                    JSON.stringify(sgMovies, null, 2),
+                    'application/json',
+                );
+            };
+            if (sgShows.length > 0) {
+                setTimeout(triggerMoviesDownload, 280);
+            } else {
+                triggerMoviesDownload();
+            }
+        }
+
+        const parts = [];
+        if (sgShows.length) parts.push(`${sgShows.length} series`);
+        if (sgMovies.length) parts.push(`${sgMovies.length} películas`);
+        showToast(`SeriesGuide exportado: ${parts.join(' y ')}`, 'success');
+    }
+
     function exportIssuesCsv() {
         if (!migrationState.issues.length) return;
         const headers = ['Title', 'Year', 'Type', 'Reason'];
@@ -2043,14 +2237,15 @@
                     </label>
 
                     <div class="tvst-import-compat-box">
-                        <h3 class="tvst-import-subhead">Plataformas y formatos compatibles</h3>
+                        <h3 class="tvst-import-subhead">Elige tu servicio de origen o formato</h3>
                         <ul class="tvst-compat-list is-compact">
                             ${PLATFORM_DIRECTORY.map(p => `
-                                <li class="tvst-compat-row">
+                                <li class="tvst-compat-row tvst-compat-interactive" onclick="triggerUniversalFileInput()" role="button" tabindex="0" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();triggerUniversalFileInput();}">
                                     <div class="tvst-compat-main">
                                         <span class="tvst-compat-name">${esc(p.name)}</span>
                                         <span class="tvst-compat-meta">${esc(p.importLabel)} · ${esc(p.details)}</span>
                                     </div>
+                                    <span class="tvst-compat-action-tag">Elegir archivo</span>
                                 </li>
                             `).join('')}
                         </ul>
@@ -2366,6 +2561,11 @@
         });
     }
 
+    function triggerUniversalFileInput() {
+        const input = document.getElementById('univ-import-file');
+        if (input) input.click();
+    }
+
     function openUniversalImportModal() {
         resetMigrationState();
         const modal = document.getElementById('universal-import-modal');
@@ -2386,6 +2586,128 @@
             document.getElementById('detail-modal')?.classList.contains('hidden')
             && document.getElementById('list-modal')?.classList.contains('hidden')
             && document.getElementById('collectible-modal')?.classList.contains('hidden')
+            && document.getElementById('universal-export-modal')?.classList.contains('hidden')
+            && document.getElementById('wrapped-modal')?.classList.contains('hidden')
+        ) {
+            document.body.classList.remove('modal-open');
+        }
+    }
+
+    const EXPORT_TARGETS = [
+        {
+            id: 'seenit',
+            name: 'SeenIt (.json)',
+            kicker: 'Copia completa de seguridad',
+            badge: 'Recomendada',
+            icon: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>',
+            desc: 'Respaldo total de películas, series, episodios vistos con fechas exactas, notas 1–10, reseñas privadas, listas temáticas, selector y logros. Ideal para restaurar en otro dispositivo o archivar tus datos.',
+            btnText: 'Descargar copia SeenIt (.json)',
+        },
+        {
+            id: 'universal_csv',
+            name: 'CSV Universal (.csv)',
+            kicker: 'Hojas de cálculo y Simkl',
+            badge: 'Excel / Sheets',
+            icon: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/></svg>',
+            desc: 'Tabla estándar con columnas de título, tipo (película/serie), año, ID de TMDB, estado (vista/pendiente), puntuación, fechas y lista de episodios vistos. Compatible con Microsoft Excel, Google Sheets y Simkl.',
+            btnText: 'Descargar CSV Universal (.csv)',
+        },
+        {
+            id: 'letterboxd',
+            name: 'Letterboxd (.csv)',
+            kicker: 'Plantilla de cine',
+            badge: 'Letterboxd',
+            icon: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18"/><line x1="7" y1="2" x2="7" y2="22"/><line x1="17" y1="2" x2="17" y2="22"/><line x1="2" y1="12" x2="22" y2="12"/></svg>',
+            desc: 'Formato específico para Letterboxd. Exporta tus películas vistas con valoración de 0.5 a 5.0 estrellas, fecha de visionado y críticas, o bien tu lista de pendientes (Watchlist) lista para importar en su web.',
+            btnText: 'Exportar para Letterboxd (.csv)',
+        },
+        {
+            id: 'trakt',
+            name: 'Trakt.tv (.json)',
+            kicker: 'Esquema estructurado Trakt',
+            badge: 'Trakt',
+            icon: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M14.31 8l5.74 9.94M9.69 8h11.48M7.38 12l5.74-9.94M9.69 16L3.95 6.06M14.31 16H2.83M16.62 12l-5.74 9.94"/></svg>',
+            desc: 'Estructura JSON con series y películas desglosadas por temporadas y episodios individuales vistos con marcas de tiempo, notas y enlaces directos con TMDB.',
+            btnText: 'Descargar Trakt JSON (.json)',
+        },
+        {
+            id: 'seriesguide',
+            name: 'SeriesGuide (.json)',
+            kicker: 'Backup oficial de SeriesGuide',
+            badge: 'Series + Pelis',
+            icon: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M8 9h8"/><path d="M8 13h5"/><path d="M8 17h3"/></svg>',
+            desc: 'Genera los dos archivos JSON nativos de SeriesGuide (series con temporadas y capítulos marcados, y películas vistas o en watchlist) listos para restaurar en SeriesGuide o reimportar en SeenIt.',
+            btnText: 'Exportar para SeriesGuide (.json)',
+        },
+    ];
+
+    function renderUniversalExportModalBody() {
+        const body = document.getElementById('universal-export-modal-body');
+        if (!body) return;
+        body.innerHTML = `
+            <div class="tvst-export-cards-grid">
+                ${EXPORT_TARGETS.map(item => `
+                    <div class="tvst-export-card">
+                        <div class="tvst-export-card-head">
+                            <div class="tvst-export-card-title-wrap">
+                                <span class="tvst-export-card-icon" aria-hidden="true">${item.icon}</span>
+                                <div class="tvst-export-card-titles">
+                                    <span class="tvst-export-card-kicker">${esc(item.kicker)}</span>
+                                    <strong class="tvst-export-card-name">${esc(item.name)}</strong>
+                                </div>
+                            </div>
+                            <span class="tvst-export-card-badge">${esc(item.badge)}</span>
+                        </div>
+                        <p class="tvst-export-card-desc">${esc(item.desc)}</p>
+                        <div class="tvst-export-card-actions">
+                            <button type="button" class="tvst-settings-btn is-primary" onclick="triggerExportFromModal('${item.id}')">${esc(item.btnText)}</button>
+                        </div>
+                    </div>
+                `).join('')}
+            </div>
+        `;
+    }
+
+    async function triggerExportFromModal(id) {
+        try {
+            if (id === 'seenit') {
+                if (typeof exportData === 'function') exportData();
+                closeUniversalExportModal();
+            } else if (id === 'universal_csv') {
+                exportUniversalCsv();
+                closeUniversalExportModal();
+            } else if (id === 'letterboxd') {
+                closeUniversalExportModal();
+                await exportLetterboxdCsv();
+            } else if (id === 'trakt') {
+                exportTraktJson();
+                closeUniversalExportModal();
+            } else if (id === 'seriesguide') {
+                exportSeriesGuideJson();
+                closeUniversalExportModal();
+            }
+        } catch (err) {
+            console.error('[Migration] Error al exportar:', err);
+        }
+    }
+
+    function openUniversalExportModal() {
+        const modal = document.getElementById('universal-export-modal');
+        if (!modal) return;
+        renderUniversalExportModalBody();
+        modal.classList.remove('hidden');
+        document.body.classList.add('modal-open');
+    }
+
+    function closeUniversalExportModal() {
+        const modal = document.getElementById('universal-export-modal');
+        if (modal) modal.classList.add('hidden');
+        if (
+            document.getElementById('detail-modal')?.classList.contains('hidden')
+            && document.getElementById('list-modal')?.classList.contains('hidden')
+            && document.getElementById('collectible-modal')?.classList.contains('hidden')
+            && document.getElementById('universal-import-modal')?.classList.contains('hidden')
+            && document.getElementById('wrapped-modal')?.classList.contains('hidden')
         ) {
             document.body.classList.remove('modal-open');
         }
@@ -2399,15 +2721,25 @@
 
     window.SeenItMigration = {
         PLATFORM_DIRECTORY,
+        EXPORT_TARGETS,
         openUniversalImportModal,
         closeUniversalImportModal,
+        openUniversalExportModal,
+        closeUniversalExportModal,
+        triggerUniversalFileInput,
+        triggerExportFromModal,
         exportUniversalCsv,
         exportLetterboxdCsv,
         exportTraktJson,
+        exportSeriesGuideJson,
     };
 
     window.openUniversalImportModal = openUniversalImportModal;
     window.closeUniversalImportModal = closeUniversalImportModal;
+    window.openUniversalExportModal = openUniversalExportModal;
+    window.closeUniversalExportModal = closeUniversalExportModal;
+    window.triggerUniversalFileInput = triggerUniversalFileInput;
+    window.triggerExportFromModal = triggerExportFromModal;
     window.resetUniversalImportWizard = resetUniversalImportWizard;
     window.onUniversalFileInputChange = onUniversalFileInputChange;
     window.onUniversalMappingChange = onUniversalMappingChange;
@@ -2418,6 +2750,7 @@
     window.exportUniversalCsv = exportUniversalCsv;
     window.exportLetterboxdCsv = exportLetterboxdCsv;
     window.exportTraktJson = exportTraktJson;
+    window.exportSeriesGuideJson = exportSeriesGuideJson;
     window.exportIssuesCsv = exportIssuesCsv;
     window.copyIssuesToClipboard = copyIssuesToClipboard;
     window.searchIssueInExplore = searchIssueInExplore;

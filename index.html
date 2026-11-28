@@ -13,6 +13,9 @@
     <link rel="icon" type="image/svg+xml" href="./icons/icon.svg">
     <link rel="icon" type="image/png" sizes="192x192" href="./icons/icon-192.png">
     <link rel="apple-touch-icon" href="./icons/icon-192.png">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="SeenIt">
     <link rel="stylesheet" href="styles.css">
 </head>
 <body class="bg-black text-white antialiased">
@@ -308,7 +311,7 @@
                             <div class="tvst-picker-hero-head">
                                 <div>
                                     <h2 class="tvst-picker-title">¿Qué vemos?</h2>
-                                    <p class="tvst-picker-subtitle">Reúne vuestras opciones y deja que el azar decida.</p>
+                                    <p class="tvst-picker-subtitle">Añade opciones arriba, filtra si quieres y pulsa «Elegir al azar».</p>
                                 </div>
                                 <div class="tvst-picker-type-pills" role="tablist" aria-label="Filtrar opciones del selector">
                                     <button type="button" class="tvst-picker-pill is-active" data-picker-filter="all" onclick="setSelectorFilter('all')">Todo</button>
@@ -316,30 +319,32 @@
                                     <button type="button" class="tvst-picker-pill" data-picker-filter="tv" onclick="setSelectorFilter('tv')">Series</button>
                                 </div>
                             </div>
-                            <div id="picker-winner-stage" class="tvst-picker-stage"></div>
+
+                            <div class="tvst-picker-add-inline">
+                                <div class="tvst-picker-section-head">
+                                    <h3 class="tvst-picker-section-title">Añadir opciones</h3>
+                                    <button type="button" id="picker-quick-library-btn" class="tvst-picker-link-btn" onclick="toggleSelectorSuggestions()">Desde mi lista</button>
+                                </div>
+                                <div class="tvst-profile-search-wrap tvst-picker-search-wrap">
+                                    <svg class="tvst-profile-search-icon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+                                    <input type="text" inputmode="search" id="picker-search-input" class="tvst-profile-search" placeholder="Buscar película o serie en TMDB o tu lista…" oninput="onSelectorSearchInput()" autocomplete="off">
+                                    <button type="button" id="picker-search-clear" class="tvst-search-clear hidden" onclick="clearSelectorSearch()" aria-label="Limpiar búsqueda">
+                                        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+                                    </button>
+                                </div>
+                                <div id="picker-search-results" class="tvst-picker-search-results hidden"></div>
+                                <div id="picker-suggestions-wrap" class="tvst-picker-suggestions hidden"></div>
+                            </div>
+
                             <div class="tvst-picker-draw-actions">
                                 <button type="button" id="picker-roll-btn" class="tvst-picker-roll-btn" onclick="spinSelectorPicker()">
                                     <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1" fill="currentColor"/><circle cx="15.5" cy="8.5" r="1" fill="currentColor"/><circle cx="8.5" cy="15.5" r="1" fill="currentColor"/><circle cx="15.5" cy="15.5" r="1" fill="currentColor"/><circle cx="12" cy="12" r="1" fill="currentColor"/></svg>
                                     <span>Elegir al azar</span>
                                 </button>
-                                <span id="picker-pool-count-hint" class="tvst-picker-count-hint">0 opciones</span>
+                                <div class="tvst-picker-draw-meta">
+                                    <span id="picker-pool-count-hint" class="tvst-picker-count-hint">0 opciones</span>
+                                </div>
                             </div>
-                        </section>
-
-                        <section class="tvst-section-card tvst-picker-add-card">
-                            <div class="tvst-picker-section-head">
-                                <h3 class="tvst-picker-section-title">Añadir opciones</h3>
-                                <button type="button" id="picker-quick-library-btn" class="tvst-picker-link-btn" onclick="toggleSelectorSuggestions()">Desde mi lista</button>
-                            </div>
-                            <div class="tvst-profile-search-wrap tvst-picker-search-wrap">
-                                <svg class="tvst-profile-search-icon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
-                                <input type="text" inputmode="search" id="picker-search-input" class="tvst-profile-search" placeholder="Buscar película o serie en TMDB o tu lista…" oninput="onSelectorSearchInput()" autocomplete="off">
-                                <button type="button" id="picker-search-clear" class="tvst-search-clear hidden" onclick="clearSelectorSearch()" aria-label="Limpiar búsqueda">
-                                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
-                                </button>
-                            </div>
-                            <div id="picker-search-results" class="tvst-picker-search-results hidden"></div>
-                            <div id="picker-suggestions-wrap" class="tvst-picker-suggestions hidden"></div>
                         </section>
 
                         <section class="tvst-picker-pool-section">
@@ -372,274 +377,298 @@
                         <div id="settings-preferences-container">
                             <!-- filled by JS -->
                         </div>
+                        <!-- Sincronización en la nube -->
                         <div class="tvst-section-card">
-                            <h3 class="tvst-settings-card-title">Google Drive</h3>
+                            <h3 class="tvst-settings-card-title">Sincronización con Google Drive</h3>
+                            <p class="tvst-settings-desc">Respalda tu biblioteca en tu nube personal de Google Drive para mantenerla actualizada entre tus navegadores y dispositivos.</p>
                             <p id="drive-status" class="tvst-settings-status">Cargando...</p>
                             <p id="drive-origin-hint" class="tvst-settings-origin"></p>
                             <div class="tvst-settings-actions">
-                                <button type="button" id="btn-connect-drive" onclick="connectDrive()" class="tvst-settings-btn is-primary">Conectar Drive</button>
+                                <button type="button" id="btn-connect-drive" onclick="connectDrive()" class="tvst-settings-btn is-primary">Conectar Google Drive</button>
+                                <button type="button" id="btn-sync-drive" onclick="loadFromDrive()" class="hidden tvst-settings-btn">Sincronizar ahora</button>
                                 <button type="button" id="btn-disconnect-drive" onclick="disconnectDrive()" class="hidden tvst-settings-btn">Desconectar</button>
-                                <button type="button" id="btn-sync-drive" onclick="loadFromDrive()" class="hidden tvst-settings-btn">Sincronizar</button>
                             </div>
                         </div>
-                        <div class="tvst-section-card tvst-migration-card">
-                            <h3 class="tvst-settings-card-title">Importación, exportación y compatibilidad</h3>
-                            <p class="tvst-settings-desc">Importa tu historial desde otras plataformas sin borrar tus datos actuales o exporta tu biblioteca en varios formatos.</p>
 
-                            <div class="tvst-compat-panel">
-                                <span class="tvst-compat-heading">Plataformas compatibles con SeenIt</span>
-                                <ul class="tvst-compat-list">
-                                    <li class="tvst-compat-row">
-                                        <div class="tvst-compat-main">
-                                            <span class="tvst-compat-name">SeenIt (.json)</span>
-                                            <span class="tvst-compat-meta">Importa y exporta · Copia completa (pelis, series, episodios, listas, selector y logros)</span>
-                                        </div>
-                                    </li>
-                                    <li class="tvst-compat-row">
-                                        <div class="tvst-compat-main">
-                                            <span class="tvst-compat-name">Letterboxd (.csv)</span>
-                                            <span class="tvst-compat-meta">Importa y exporta · Películas, año, valoración 0.5–5.0, crítica y fecha vista</span>
-                                        </div>
-                                    </li>
-                                    <li class="tvst-compat-row">
-                                        <div class="tvst-compat-main">
-                                            <span class="tvst-compat-name">Trakt.tv (.json / .csv)</span>
-                                            <span class="tvst-compat-meta">Importa y exporta · Películas, series, episodios exactos (S/E) y notas 1–10</span>
-                                        </div>
-                                    </li>
-                                    <li class="tvst-compat-row">
-                                        <div class="tvst-compat-main">
-                                            <span class="tvst-compat-name">IMDb (.csv)</span>
-                                            <span class="tvst-compat-meta">Importa directo / Exporta vía CSV Universal · ID tt…, notas 1–10 y fecha</span>
-                                        </div>
-                                    </li>
-                                    <li class="tvst-compat-row">
-                                        <div class="tvst-compat-main">
-                                            <span class="tvst-compat-name">TV Time (.csv / .json)</span>
-                                            <span class="tvst-compat-meta">Importa directo / Exporta vía CSV Universal · Series por tvdb_id y episodios exactos</span>
-                                        </div>
-                                    </li>
-                                    <li class="tvst-compat-row">
-                                        <div class="tvst-compat-main">
-                                            <span class="tvst-compat-name">SeriesGuide (.json)</span>
-                                            <span class="tvst-compat-meta">Importa directo (sg-shows / sg-movies JSON) · Exporta vía Trakt JSON o CSV Universal</span>
-                                        </div>
-                                    </li>
-                                    <li class="tvst-compat-row">
-                                        <div class="tvst-compat-main">
-                                            <span class="tvst-compat-name">Simkl / Excel / Otros (.csv o .json)</span>
-                                            <span class="tvst-compat-meta">Mapeador de columnas / Exporta CSV Universal · Compatible con hojas de cálculo</span>
-                                        </div>
-                                    </li>
-                                </ul>
+                        <!-- Copia de seguridad y migración -->
+                        <div class="tvst-section-card">
+                            <h3 class="tvst-settings-card-title">Copia de seguridad y migración</h3>
+                            <p class="tvst-settings-desc">Exporta tu biblioteca para conservarla o transferirla, o importa tu historial desde otros servicios sin borrar tus datos actuales.</p>
+                            <div class="tvst-settings-actions tvst-migration-buttons-row">
+                                <button type="button" onclick="openUniversalImportModal()" class="tvst-settings-btn is-primary tvst-data-action-btn">
+                                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V4"/><path d="M7 9l5-5 5 5"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+                                    <span>Importar</span>
+                                </button>
+                                <button type="button" onclick="openUniversalExportModal()" class="tvst-settings-btn tvst-data-action-btn">
+                                    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v12"/><path d="M17 11l-5 5-5-5"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+                                    <span>Exportar</span>
+                                </button>
                             </div>
+                        </div>
 
-                            <div class="tvst-settings-actions tvst-migration-primary-row">
-                                <button type="button" onclick="openUniversalImportModal()" class="tvst-settings-btn is-primary">Importar archivo (.csv / .json)</button>
-                                <button type="button" onclick="clearAllData()" class="tvst-settings-btn is-danger">Borrar todo</button>
-                            </div>
-
-                            <div class="tvst-export-section">
-                                <span class="tvst-compat-heading">Exportar biblioteca</span>
-                                <div class="tvst-export-grid">
-                                    <button type="button" onclick="exportData()" class="tvst-export-btn">
-                                        <strong>Copia SeenIt (.json)</strong>
-                                        <span>Respaldo total con listas y logros</span>
-                                    </button>
-                                    <button type="button" onclick="exportUniversalCsv()" class="tvst-export-btn">
-                                        <strong>CSV Universal (.csv)</strong>
-                                        <span>Excel, Simkl y tabla completa con episodios</span>
-                                    </button>
-                                    <button type="button" onclick="exportLetterboxdCsv()" class="tvst-export-btn">
-                                        <strong>Letterboxd (.csv)</strong>
-                                        <span>Vistas, notas 0.5–5 y watchlist de cine</span>
-                                    </button>
-                                    <button type="button" onclick="exportTraktJson()" class="tvst-export-btn">
-                                        <strong>Esquema Trakt (.json)</strong>
-                                        <span>Películas, series y episodios por temporada</span>
-                                    </button>
-                                </div>
+                        <!-- Mantenimiento y almacenamiento -->
+                        <div class="tvst-section-card">
+                            <h3 class="tvst-settings-card-title">Mantenimiento y datos locales</h3>
+                            <p class="tvst-settings-desc">Gestiona la memoria temporal de TMDB o restablece los datos guardados en este navegador.</p>
+                            <div class="tvst-settings-actions tvst-maintenance-actions">
+                                <button type="button" onclick="clearTmdbCachesFromSettings()" class="tvst-settings-btn">Limpiar caché TMDB</button>
+                                <button type="button" onclick="clearAllData()" class="tvst-settings-btn is-danger">Borrar todos los datos</button>
                             </div>
                         </div>
                     </div>
 
                     <div id="settings-subtab-content-guide" class="tvst-settings-panel hidden">
-                        <div class="tvst-section-card tvst-info-doc-card">
-                            <h3 class="tvst-settings-card-title">Seguimiento de series y películas</h3>
-                            <p class="tvst-settings-desc">Organiza lo que estás viendo ahora, lo que tienes pendiente y los próximos estrenos sin perder el hilo.</p>
-                            <ul class="tvst-compat-list">
-                                <li class="tvst-compat-row">
-                                    <div class="tvst-compat-main">
-                                        <span class="tvst-compat-name">Series: Lista pendiente y Próximamente</span>
-                                        <span class="tvst-compat-meta">Marca episodios vistos (o temporadas enteras) para actualizar tu progreso al instante. Las series sin actividad durante los días configurados pasan automáticamente a «En espera» para priorizar las activas.</span>
-                                    </div>
-                                </li>
-                                <li class="tvst-compat-row">
-                                    <div class="tvst-compat-main">
-                                        <span class="tvst-compat-name">Saltar capítulos y episodios especiales</span>
-                                        <span class="tvst-compat-meta">Puedes saltar episodios que no quieras ver (resúmenes o relleno) sin bloquear el avance, y decidir en Ajustes si los especiales (T0) cuentan en tus estadísticas.</span>
-                                    </div>
-                                </li>
-                                <li class="tvst-compat-row">
-                                    <div class="tvst-compat-main">
-                                        <span class="tvst-compat-name">Películas y fecha de visionado</span>
-                                        <span class="tvst-compat-meta">Filtra tus pendientes por duración, género o tus plataformas suscritas. Cada película completada guarda la fecha en que la viste para alimentar tus resúmenes anuales.</span>
-                                    </div>
-                                </li>
-                                <li class="tvst-compat-row">
-                                    <div class="tvst-compat-main">
-                                        <span class="tvst-compat-name">Modo sin spoilers</span>
-                                        <span class="tvst-compat-meta">Actívalo en Ajustes para ocultar títulos, capturas y sinopsis de episodios que todavía no has visto.</span>
-                                    </div>
-                                </li>
-                            </ul>
-                        </div>
+                        <details class="tvst-section-card tvst-info-doc-card tvst-doc-accordion">
+                            <summary class="tvst-doc-accordion-summary">
+                                <div class="tvst-doc-accordion-title-wrap">
+                                    <h3 class="tvst-settings-card-title">Seguimiento de series y películas</h3>
+                                    <p class="tvst-settings-desc">Organiza lo que estás viendo ahora, lo que tienes pendiente y los próximos estrenos sin perder el hilo.</p>
+                                </div>
+                                <span class="tvst-doc-accordion-icon" aria-hidden="true">
+                                    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+                                </span>
+                            </summary>
+                            <div class="tvst-doc-accordion-content">
+                                <ul class="tvst-compat-list">
+                                    <li class="tvst-compat-row">
+                                        <div class="tvst-compat-main">
+                                            <span class="tvst-compat-name">Series: Lista pendiente y Próximamente</span>
+                                            <span class="tvst-compat-meta">Marca episodios vistos (o temporadas enteras) para actualizar tu progreso al instante. Las series sin actividad durante los días configurados (7, 14, 30 o 60) pasan automáticamente a «En espera» para priorizar las activas. En Próximamente cuentas con un minicalendario semanal interactivo.</span>
+                                        </div>
+                                    </li>
+                                    <li class="tvst-compat-row">
+                                        <div class="tvst-compat-main">
+                                            <span class="tvst-compat-name">Saltar capítulos y episodios especiales</span>
+                                            <span class="tvst-compat-meta">Puedes saltar episodios que no quieras ver (resúmenes o relleno) sin bloquear el avance, y decidir en Ajustes si los especiales (T0) cuentan en listas y estadísticas.</span>
+                                        </div>
+                                    </li>
+                                    <li class="tvst-compat-row">
+                                        <div class="tvst-compat-main">
+                                            <span class="tvst-compat-name">Películas y fecha de visionado</span>
+                                            <span class="tvst-compat-meta">Filtra tus pendientes por duración, género, tus plataformas suscritas o búsqueda por título. Cada película marcada como vista guarda su fecha de visionado para alimentar tus estadísticas y Wrapped.</span>
+                                        </div>
+                                    </li>
+                                    <li class="tvst-compat-row">
+                                        <div class="tvst-compat-main">
+                                            <span class="tvst-compat-name">Modo sin spoilers</span>
+                                            <span class="tvst-compat-meta">Actívalo en Ajustes para ocultar títulos, capturas y sinopsis de episodios que todavía no has visto.</span>
+                                        </div>
+                                    </li>
+                                </ul>
+                            </div>
+                        </details>
 
-                        <div class="tvst-section-card tvst-info-doc-card">
-                            <h3 class="tvst-settings-card-title">Explorar, Perfil y Selector</h3>
-                            <p class="tvst-settings-desc">Descubre títulos nuevos, organiza tu archivo personal y decide qué ver en segundos.</p>
-                            <ul class="tvst-compat-list">
-                                <li class="tvst-compat-row">
-                                    <div class="tvst-compat-main">
-                                        <span class="tvst-compat-name">Explorar y fichas completas</span>
-                                        <span class="tvst-compat-meta">Consulta tendencias semanales y busca series, películas o reparto. Cada ficha muestra dónde verlas en tu país, puntuación de TMDB, tráiler, valoración personal y notas privadas.</span>
-                                    </div>
-                                </li>
-                                <li class="tvst-compat-row">
-                                    <div class="tvst-compat-main">
-                                        <span class="tvst-compat-name">Listas personalizadas y favoritos</span>
-                                        <span class="tvst-compat-meta">Agrupa películas o series en listas temáticas desde tu Perfil, cambia el banner de portada y ordénalas por nombre, progreso o fecha.</span>
-                                    </div>
-                                </li>
-                                <li class="tvst-compat-row">
-                                    <div class="tvst-compat-main">
-                                        <span class="tvst-compat-name">Selector («¿Qué vemos?»)</span>
-                                        <span class="tvst-compat-meta">Añade candidatos de tu lista o desde el buscador y pulsa «Elegir al azar» para sortear la próxima película o serie cuando no os ponéis de acuerdo.</span>
-                                    </div>
-                                </li>
-                            </ul>
-                        </div>
+                        <details class="tvst-section-card tvst-info-doc-card tvst-doc-accordion">
+                            <summary class="tvst-doc-accordion-summary">
+                                <div class="tvst-doc-accordion-title-wrap">
+                                    <h3 class="tvst-settings-card-title">Explorar, Perfil y Selector («¿Qué vemos?»)</h3>
+                                    <p class="tvst-settings-desc">Descubre títulos nuevos, organiza tu archivo personal y decide qué ver en segundos.</p>
+                                </div>
+                                <span class="tvst-doc-accordion-icon" aria-hidden="true">
+                                    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+                                </span>
+                            </summary>
+                            <div class="tvst-doc-accordion-content">
+                                <ul class="tvst-compat-list">
+                                    <li class="tvst-compat-row">
+                                        <div class="tvst-compat-main">
+                                            <span class="tvst-compat-name">Explorar y fichas completas</span>
+                                            <span class="tvst-compat-meta">Consulta tendencias semanales y busca series, películas o reparto. Cada ficha muestra dónde verlas en tu país según TMDB, tráilers oficiales en YouTube, valoración personal y notas o críticas privadas.</span>
+                                        </div>
+                                    </li>
+                                    <li class="tvst-compat-row">
+                                        <div class="tvst-compat-main">
+                                            <span class="tvst-compat-name">Listas personalizadas y favoritos</span>
+                                            <span class="tvst-compat-meta">Agrupa películas o series en listas temáticas desde tu Perfil, cambia el banner de portada y ordénalas por fecha añadida, nombre o progreso. Tus favoritos están a un toque desde cualquier ficha o carátula.</span>
+                                        </div>
+                                    </li>
+                                    <li class="tvst-compat-row">
+                                        <div class="tvst-compat-main">
+                                            <span class="tvst-compat-name">Selector interactivo («¿Qué vemos?»)</span>
+                                            <span class="tvst-compat-meta">Añade candidatos desde el buscador o tu lista y pulsa «Elegir al azar» para abrir una ventana interactiva donde se sortea la próxima película o serie en tiempo real, con opciones para ver la ficha completa, sortear otra o descartar de la lista.</span>
+                                        </div>
+                                    </li>
+                                </ul>
+                            </div>
+                        </details>
 
-                        <div class="tvst-section-card tvst-info-doc-card">
-                            <h3 class="tvst-settings-card-title">Niveles, Colecciones y Wrapped</h3>
-                            <p class="tvst-settings-desc">Tu actividad diaria desbloquea insignias, estilos visuales y tarjetas resumen listas para compartir.</p>
-                            <ul class="tvst-compat-list">
-                                <li class="tvst-compat-row">
-                                    <div class="tvst-compat-main">
-                                        <span class="tvst-compat-name">Sistema de puntos (XP) y niveles</span>
-                                        <span class="tvst-compat-meta">Cada episodio visto suma 10 XP, cada película vista 20 XP, cada serie completada 50 XP, cada valoración 5 XP, cada nota o reseña 10 XP y cada lista creada 15 XP, además de la XP extra de cada insignia.</span>
-                                    </div>
-                                </li>
-                                <li class="tvst-compat-row">
-                                    <div class="tvst-compat-main">
-                                        <span class="tvst-compat-name">Recompensas y entradas de sagas</span>
-                                        <span class="tvst-compat-meta">Al subir de nivel desbloqueas temas de color y acabados para pósters. Completa todas las entregas estrenadas de una saga para conseguir su entrada vintage coleccionable.</span>
-                                    </div>
-                                </li>
-                                <li class="tvst-compat-row">
-                                    <div class="tvst-compat-main">
-                                        <span class="tvst-compat-name">Generador de Wrapped</span>
-                                        <span class="tvst-compat-meta">Desde Estadísticas o Logros puedes generar tarjetas en PNG filtrando entre «Este año» e «Histórico», con estilos progresivos por nivel y fondos de series o películas desde el Nivel 70.</span>
-                                    </div>
-                                </li>
-                            </ul>
-                        </div>
+                        <details class="tvst-section-card tvst-info-doc-card tvst-doc-accordion">
+                            <summary class="tvst-doc-accordion-summary">
+                                <div class="tvst-doc-accordion-title-wrap">
+                                    <h3 class="tvst-settings-card-title">Niveles, Colecciones y Wrapped</h3>
+                                    <p class="tvst-settings-desc">Tu actividad diaria desbloquea insignias, temas visuales y tarjetas resumen listas para compartir.</p>
+                                </div>
+                                <span class="tvst-doc-accordion-icon" aria-hidden="true">
+                                    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+                                </span>
+                            </summary>
+                            <div class="tvst-doc-accordion-content">
+                                <ul class="tvst-compat-list">
+                                    <li class="tvst-compat-row">
+                                        <div class="tvst-compat-main">
+                                            <span class="tvst-compat-name">Sistema de puntos (XP) y niveles</span>
+                                            <span class="tvst-compat-meta">Cada episodio visto suma 10 XP, cada película vista 20 XP, cada serie completada 50 XP, cada valoración 5 XP, cada nota o reseña 10 XP y cada lista creada 15 XP, además de la XP extra al desbloquear insignias.</span>
+                                        </div>
+                                    </li>
+                                    <li class="tvst-compat-row">
+                                        <div class="tvst-compat-main">
+                                            <span class="tvst-compat-name">Recompensas y entradas de sagas</span>
+                                            <span class="tvst-compat-meta">Al subir de nivel desbloqueas temas de color de la interfaz y acabados premium para pósters. Completa todas las entregas estrenadas de una saga para conseguir su entrada vintage coleccionable.</span>
+                                        </div>
+                                    </li>
+                                    <li class="tvst-compat-row">
+                                        <div class="tvst-compat-main">
+                                            <span class="tvst-compat-name">Generador de Wrapped</span>
+                                            <span class="tvst-compat-meta">Desde Estadísticas o Logros puedes generar tarjetas en imagen PNG filtrando entre «Este año» e «Histórico», con estilos visuales progresivos y fondos de series o películas desde el Nivel 70.</span>
+                                        </div>
+                                    </li>
+                                </ul>
+                            </div>
+                        </details>
 
-                        <div class="tvst-section-card tvst-info-doc-card">
-                            <h3 class="tvst-settings-card-title">Funcionamiento offline y copias</h3>
-                            <p class="tvst-settings-desc">Diseñada como aplicación web progresiva (PWA) para responder al instante en móvil y escritorio.</p>
-                            <ul class="tvst-compat-list">
-                                <li class="tvst-compat-row">
-                                    <div class="tvst-compat-main">
-                                        <span class="tvst-compat-name">Guardado instantáneo local</span>
-                                        <span class="tvst-compat-meta">Cada cambio se guarda al momento en el almacenamiento interno del navegador (IndexedDB y localStorage), permitiendo consultar tu biblioteca incluso sin conexión.</span>
-                                    </div>
-                                </li>
-                                <li class="tvst-compat-row">
-                                    <div class="tvst-compat-main">
-                                        <span class="tvst-compat-name">Sincronización e importación</span>
-                                        <span class="tvst-compat-meta">Si conectas Google Drive, tu biblioteca se respalda en tu propia nube. También puedes migrar desde Letterboxd, Trakt, IMDb, TV Time o cualquier CSV/JSON en la pestaña Ajustes.</span>
-                                    </div>
-                                </li>
-                            </ul>
-                        </div>
+                        <details class="tvst-section-card tvst-info-doc-card tvst-doc-accordion">
+                            <summary class="tvst-doc-accordion-summary">
+                                <div class="tvst-doc-accordion-title-wrap">
+                                    <h3 class="tvst-settings-card-title">Funcionamiento offline, copias y notificaciones</h3>
+                                    <p class="tvst-settings-desc">Diseñada como aplicación web progresiva (PWA) para responder al instante en móvil y escritorio.</p>
+                                </div>
+                                <span class="tvst-doc-accordion-icon" aria-hidden="true">
+                                    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+                                </span>
+                            </summary>
+                            <div class="tvst-doc-accordion-content">
+                                <ul class="tvst-compat-list">
+                                    <li class="tvst-compat-row">
+                                        <div class="tvst-compat-main">
+                                            <span class="tvst-compat-name">Guardado instantáneo local</span>
+                                            <span class="tvst-compat-meta">Cada cambio se guarda al momento en el almacenamiento interno del navegador (IndexedDB y localStorage), permitiendo consultar tu biblioteca incluso sin conexión.</span>
+                                        </div>
+                                    </li>
+                                    <li class="tvst-compat-row">
+                                        <div class="tvst-compat-main">
+                                            <span class="tvst-compat-name">Sincronización con Google Drive (Opcional)</span>
+                                            <span class="tvst-compat-meta">Puedes usar SeenIt en modo local sin cuenta o conectar tu Google Drive para respaldar tu biblioteca en <code>tv_showtime_data.json</code> mediante el permiso restringido <code>drive.file</code>.</span>
+                                        </div>
+                                    </li>
+                                    <li class="tvst-compat-row">
+                                        <div class="tvst-compat-main">
+                                            <span class="tvst-compat-name">Notificaciones PWA de estrenos</span>
+                                            <span class="tvst-compat-meta">Recibe avisos locales y en segundo plano de nuevos episodios y películas pendientes a tu hora preferida sin intermediarios ni costes. En iPhone/iPad requiere instalar la app desde «Compartir → Añadir a pantalla de inicio».</span>
+                                        </div>
+                                    </li>
+                                    <li class="tvst-compat-row">
+                                        <div class="tvst-compat-main">
+                                            <span class="tvst-compat-name">Importación y exportación universal</span>
+                                            <span class="tvst-compat-meta">Importa y exporta en formatos compatibles con SeriesGuide (series y películas en JSON independientes), Trakt, Letterboxd, IMDb, TV Time o archivos universales CSV y JSON.</span>
+                                        </div>
+                                    </li>
+                                </ul>
+                            </div>
+                        </details>
                     </div>
 
                     <div id="settings-subtab-content-legal" class="tvst-settings-panel hidden">
-                        <div class="tvst-section-card tvst-info-doc-card">
-                            <h3 class="tvst-settings-card-title">Privacidad y almacenamiento de datos</h3>
-                            <p class="tvst-settings-desc">SeenIt sigue una arquitectura centrada en tu dispositivo: no vendemos, perfilamos ni almacenamos tu historial en servidores propios.</p>
-                            <ul class="tvst-compat-list">
-                                <li class="tvst-compat-row">
-                                    <div class="tvst-compat-main">
-                                        <span class="tvst-compat-name">Datos locales en tu navegador</span>
-                                        <span class="tvst-compat-meta">Tus series, películas, episodios vistos, valoraciones, reseñas, listas personalizadas, selector, preferencias y logros se guardan únicamente en tu dispositivo mediante localStorage e IndexedDB.</span>
-                                    </div>
-                                </li>
-                                <li class="tvst-compat-row">
-                                    <div class="tvst-compat-main">
-                                        <span class="tvst-compat-name">Sin cuentas ni analíticas de seguimiento</span>
-                                        <span class="tvst-compat-meta">El servidor de SeenIt no mantiene base de datos de usuarios, no utiliza cookies publicitarias ni recopila telemetría sobre lo que ves o puntuas.</span>
-                                    </div>
-                                </li>
-                                <li class="tvst-compat-row">
-                                    <div class="tvst-compat-main">
-                                        <span class="tvst-compat-name">Permisos de Google Drive (Opcional)</span>
-                                        <span class="tvst-compat-meta">Si conectas tu cuenta de Google, solo se solicita el alcance restringido <code>drive.file</code> para leer y actualizar el archivo de respaldo creado por la app (<code>tv_showtime_data.json</code>), sin acceso al resto de tu Drive. El token de sesión se guarda en tu navegador y puedes desconectarlo cuando quieras.</span>
-                                    </div>
-                                </li>
-                            </ul>
-                        </div>
+                        <details class="tvst-section-card tvst-info-doc-card tvst-doc-accordion">
+                            <summary class="tvst-doc-accordion-summary">
+                                <div class="tvst-doc-accordion-title-wrap">
+                                    <h3 class="tvst-settings-card-title">Privacidad y almacenamiento de datos</h3>
+                                    <p class="tvst-settings-desc">SeenIt sigue una arquitectura centrada en tu dispositivo: no vendemos, perfilamos ni almacenamos tu historial en servidores propios.</p>
+                                </div>
+                                <span class="tvst-doc-accordion-icon" aria-hidden="true">
+                                    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+                                </span>
+                            </summary>
+                            <div class="tvst-doc-accordion-content">
+                                <ul class="tvst-compat-list">
+                                    <li class="tvst-compat-row">
+                                        <div class="tvst-compat-main">
+                                            <span class="tvst-compat-name">Datos locales en tu navegador</span>
+                                            <span class="tvst-compat-meta">Tus series, películas, episodios vistos, valoraciones, reseñas, listas personalizadas, selector, preferencias y logros se guardan únicamente en tu dispositivo mediante localStorage e IndexedDB.</span>
+                                        </div>
+                                    </li>
+                                    <li class="tvst-compat-row">
+                                        <div class="tvst-compat-main">
+                                            <span class="tvst-compat-name">Sin cuentas centrales ni analíticas</span>
+                                            <span class="tvst-compat-meta">El servidor de SeenIt no mantiene base de datos central de usuarios, no utiliza cookies publicitarias, no recopila telemetría sobre lo que ves o puntúas y las notificaciones PWA se programan localmente en tu navegador sin servidores push externos.</span>
+                                        </div>
+                                    </li>
+                                    <li class="tvst-compat-row">
+                                        <div class="tvst-compat-main">
+                                            <span class="tvst-compat-name">Permisos de Google Drive (Opcional)</span>
+                                            <span class="tvst-compat-meta">Si conectas tu cuenta de Google, solo se solicita el alcance restringido <code>drive.file</code> para leer y actualizar el archivo de respaldo creado por la app (<code>tv_showtime_data.json</code>), sin acceso al resto de tu Drive. El token de sesión se guarda en tu navegador y puedes desconectarlo cuando quieras.</span>
+                                        </div>
+                                    </li>
+                                </ul>
+                            </div>
+                        </details>
 
-                        <div class="tvst-section-card tvst-info-doc-card">
-                            <h3 class="tvst-settings-card-title">Servicios externos y atribución</h3>
-                            <p class="tvst-settings-desc">Para mostrar fichas técnicas, carátulas y disponibilidad en plataformas se consultan servicios externos bajo sus respectivas condiciones.</p>
-                            <ul class="tvst-compat-list">
-                                <li class="tvst-compat-row">
-                                    <div class="tvst-compat-main">
-                                        <span class="tvst-compat-name">The Movie Database (TMDB)</span>
-                                        <span class="tvst-compat-meta">Las fichas, sinopsis, reparto, calendarios de emisión, imágenes y catálogos por país proceden de la API de TMDB. Este producto utiliza la API de TMDB, pero no está respaldado ni certificado por TMDB.</span>
-                                    </div>
-                                </li>
-                                <li class="tvst-compat-row">
-                                    <div class="tvst-compat-main">
-                                        <span class="tvst-compat-name">Proxy temporal de consultas e imágenes</span>
-                                        <span class="tvst-compat-meta">Las peticiones a TMDB y las imágenes usadas en el generador de tarjetas Wrapped pasan de forma efímera por el servidor de la app para proteger las credenciales de API y permitir exportar el PNG localmente sin almacenar imágenes ni historiales.</span>
-                                    </div>
-                                </li>
-                                <li class="tvst-compat-row">
-                                    <div class="tvst-compat-main">
-                                        <span class="tvst-compat-name">Tráileres y enlaces externos</span>
-                                        <span class="tvst-compat-meta">Al pulsar «Ver tráiler» se carga un reproductor incrustado de YouTube bajo demanda. La información de plataformas de streaming por país se muestra con carácter orientativo y puede cambiar según el catálogo de cada servicio.</span>
-                                    </div>
-                                </li>
-                            </ul>
-                        </div>
+                        <details class="tvst-section-card tvst-info-doc-card tvst-doc-accordion">
+                            <summary class="tvst-doc-accordion-summary">
+                                <div class="tvst-doc-accordion-title-wrap">
+                                    <h3 class="tvst-settings-card-title">Servicios externos y atribución</h3>
+                                    <p class="tvst-settings-desc">Para mostrar fichas técnicas, carátulas y disponibilidad en plataformas se consultan servicios externos bajo sus respectivas condiciones.</p>
+                                </div>
+                                <span class="tvst-doc-accordion-icon" aria-hidden="true">
+                                    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+                                </span>
+                            </summary>
+                            <div class="tvst-doc-accordion-content">
+                                <ul class="tvst-compat-list">
+                                    <li class="tvst-compat-row">
+                                        <div class="tvst-compat-main">
+                                            <span class="tvst-compat-name">The Movie Database (TMDB)</span>
+                                            <span class="tvst-compat-meta">Las fichas, sinopsis, reparto, calendarios de emisión, imágenes y catálogos por país proceden de la API de TMDB. Este producto utiliza la API de TMDB, pero no está respaldado ni certificado por TMDB.</span>
+                                        </div>
+                                    </li>
+                                    <li class="tvst-compat-row">
+                                        <div class="tvst-compat-main">
+                                            <span class="tvst-compat-name">Proxy temporal de consultas e imágenes</span>
+                                            <span class="tvst-compat-meta">Las peticiones a TMDB y las imágenes usadas en el generador de tarjetas Wrapped pasan de forma efímera por el servidor de la app para proteger las credenciales de API y permitir exportar el PNG localmente sin almacenar imágenes ni historiales.</span>
+                                        </div>
+                                    </li>
+                                    <li class="tvst-compat-row">
+                                        <div class="tvst-compat-main">
+                                            <span class="tvst-compat-name">Tráileres y enlaces externos</span>
+                                            <span class="tvst-compat-meta">Al pulsar «Ver tráiler» se carga un reproductor incrustado de YouTube bajo demanda. La información de plataformas de streaming por país se muestra con carácter orientativo y puede cambiar según el catálogo de cada servicio.</span>
+                                        </div>
+                                    </li>
+                                </ul>
+                            </div>
+                        </details>
 
-                        <div class="tvst-section-card tvst-info-doc-card">
-                            <h3 class="tvst-settings-card-title">Condiciones de uso y control del usuario</h3>
-                            <p class="tvst-settings-desc">Conservas el control absoluto sobre tus datos en todo momento.</p>
-                            <ul class="tvst-compat-list">
-                                <li class="tvst-compat-row">
-                                    <div class="tvst-compat-main">
-                                        <span class="tvst-compat-name">Uso personal y propiedad intelectual</span>
-                                        <span class="tvst-compat-meta">SeenIt se ofrece para uso personal y no comercial de organización audiovisual. Los títulos, pósters, logotipos y marcas de plataformas pertenecen a sus respectivos propietarios.</span>
-                                    </div>
-                                </li>
-                                <li class="tvst-compat-row">
-                                    <div class="tvst-compat-main">
-                                        <span class="tvst-compat-name">Portabilidad y derecho de borrado</span>
-                                        <span class="tvst-compat-meta">Puedes exportar tu biblioteca completa en formato JSON o CSV en cualquier momento desde la pestaña Ajustes, o eliminar todos tus datos locales de forma irreversible mediante «Borrar todo».</span>
-                                    </div>
-                                </li>
-                                <li class="tvst-compat-row">
-                                    <div class="tvst-compat-main">
-                                        <span class="tvst-compat-name">Responsabilidad sobre respaldos</span>
-                                        <span class="tvst-compat-meta">Si no vinculas Google Drive ni realizas exportaciones periódicas, borrar la caché o los datos del navegador eliminará tu biblioteca local. Te recomendamos activar la sincronización o guardar copias JSON regularmente.</span>
-                                    </div>
-                                </li>
-                            </ul>
-                        </div>
+                        <details class="tvst-section-card tvst-info-doc-card tvst-doc-accordion">
+                            <summary class="tvst-doc-accordion-summary">
+                                <div class="tvst-doc-accordion-title-wrap">
+                                    <h3 class="tvst-settings-card-title">Condiciones de uso y control del usuario</h3>
+                                    <p class="tvst-settings-desc">Conservas el control absoluto sobre tus datos en todo momento.</p>
+                                </div>
+                                <span class="tvst-doc-accordion-icon" aria-hidden="true">
+                                    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+                                </span>
+                            </summary>
+                            <div class="tvst-doc-accordion-content">
+                                <ul class="tvst-compat-list">
+                                    <li class="tvst-compat-row">
+                                        <div class="tvst-compat-main">
+                                            <span class="tvst-compat-name">Uso personal y propiedad intelectual</span>
+                                            <span class="tvst-compat-meta">SeenIt se ofrece para uso personal y no comercial de organización audiovisual. Los títulos, pósters, logotipos y marcas de plataformas pertenecen a sus respectivos propietarios.</span>
+                                        </div>
+                                    </li>
+                                    <li class="tvst-compat-row">
+                                        <div class="tvst-compat-main">
+                                            <span class="tvst-compat-name">Portabilidad y derecho de borrado</span>
+                                            <span class="tvst-compat-meta">Puedes exportar tu biblioteca completa en formato JSON (SeenIt, Trakt o SeriesGuide) o CSV (Universal y Letterboxd) en cualquier momento desde Ajustes, o eliminar tu biblioteca mediante «Borrar todos los datos» (lo que también vacía el respaldo sincronizado si Google Drive está conectado).</span>
+                                        </div>
+                                    </li>
+                                    <li class="tvst-compat-row">
+                                        <div class="tvst-compat-main">
+                                            <span class="tvst-compat-name">Responsabilidad sobre respaldos</span>
+                                            <span class="tvst-compat-meta">Si no vinculas Google Drive ni realizas exportaciones periódicas, borrar la caché o los datos del navegador eliminará tu biblioteca local. Te recomendamos activar la sincronización o guardar copias JSON regularmente.</span>
+                                        </div>
+                                    </li>
+                                </ul>
+                            </div>
+                        </details>
                     </div>
                 </div>
             </div>
@@ -926,6 +955,25 @@
         </div>
     </div>
 
+    <!-- Modal Exportador Universal -->
+    <div id="universal-export-modal" class="tvst-modal tvst-modal-elevated hidden" role="dialog" aria-modal="true" aria-labelledby="universal-export-modal-title">
+        <div class="tvst-modal-backdrop" onclick="closeUniversalExportModal()"></div>
+        <div class="tvst-modal-sheet tvst-export-sheet">
+            <div class="tvst-modal-scroll">
+                <header class="tvst-list-modal-header tvst-export-header">
+                    <button type="button" class="tvst-hero-close" onclick="closeUniversalExportModal()" aria-label="Cerrar">
+                        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+                    </button>
+                    <div class="tvst-export-header-copy">
+                        <h2 id="universal-export-modal-title" class="tvst-list-modal-title">Exportar biblioteca</h2>
+                        <p class="tvst-export-header-sub">Elige para quién o en qué formato exportar tus datos</p>
+                    </div>
+                </header>
+                <div id="universal-export-modal-body" class="tvst-export-body"></div>
+            </div>
+        </div>
+    </div>
+
     <div id="loading-overlay" class="tvst-loading-overlay hidden" role="status" aria-live="polite">
         <div class="tvst-loading-card">
             <div class="tvst-loading-spinner"></div>
@@ -943,6 +991,25 @@
             <span id="gamif-toast-kicker" class="tvst-gamif-toast-kicker">Logro desbloqueado</span>
             <strong id="gamif-toast-title" class="tvst-gamif-toast-title"></strong>
             <span id="gamif-toast-sub" class="tvst-gamif-toast-sub"></span>
+        </div>
+    </div>
+
+    <!-- Modal Elección del Selector ("¿Qué vemos hoy?") -->
+    <div id="selector-winner-modal" class="tvst-modal tvst-modal-elevated hidden" role="dialog" aria-modal="true" aria-labelledby="selector-winner-modal-title">
+        <div class="tvst-modal-backdrop" onclick="closeSelectorWinnerModal()"></div>
+        <div class="tvst-modal-sheet tvst-selector-winner-sheet">
+            <div class="tvst-modal-scroll">
+                <header class="tvst-list-modal-header tvst-selector-winner-header">
+                    <button type="button" class="tvst-hero-close" onclick="closeSelectorWinnerModal()" aria-label="Cerrar ventana">
+                        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+                    </button>
+                    <div class="tvst-selector-winner-header-copy">
+                        <h2 id="selector-winner-modal-title" class="tvst-list-modal-title">¡Tenemos elección!</h2>
+                        <p id="selector-winner-modal-sub" class="tvst-selector-winner-header-sub">Selección al azar de tu lista</p>
+                    </div>
+                </header>
+                <div id="selector-winner-modal-body" class="tvst-selector-winner-body"></div>
+            </div>
         </div>
     </div>
 

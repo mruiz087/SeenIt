@@ -6,112 +6,79 @@
 
 ## Propósito
 
-Cómo se organizan pestañas, scroll y el “chrome” sticky (subnav, filtros, bottom nav, banner SW) para que no queden huecos ni el contenido quede bajo barras fijas.
+Cómo se organizan las 5 pestañas principales, subnavegación, scroll y “chrome” sticky para que no queden huecos ni el contenido quede tapado bajo barras fijas.
 
 ---
 
 ## Estructura DOM (resumen)
 
 ```
-#sw-update-banner          → encima del bottom nav (z-index alto)
-#drive-gate                → login a pantalla completa
+#sw-update-banner            → encima del bottom nav (z-index alto)
+#drive-gate                  → pantalla inicial (Drive o modo local)
 #app
   .tvst-app-shell
-    main.tvst-main         ← contenedor de SCROLL principal
+    main.tvst-main           ← contenedor de SCROLL principal
       #content-series
       #content-movies
       #content-explore
       #content-profile
-    nav.tvst-bottom-nav    ← fijo abajo
-  #detail-modal            ← sheet sobre el contenido
-  #episode-modal
-  …
+      #content-settings
+    nav.tvst-bottom-nav      ← 5 tabs fijas abajo
+  #detail-modal              ← ficha de serie/película
+  #episode-modal             ← detalle de episodio
+  #person-modal              ← ficha de actor/director
+  #list-modal / #list-picker-modal
+  #collectible-modal         ← entrada vintage de saga
+  #wrapped-modal             ← generador de tarjeta PNG
+  #universal-import-modal / #universal-export-modal
+  #selector-winner-modal     ← modal del selector "¿Qué vemos?"
+  #app-dialog-modal          ← confirmaciones/prompts integrados
 ```
 
-**Regla de oro:** el scroll vertical de las listas vive en **`.tvst-main`**, no en `window`. Funciones `getScrollTop` / `setScrollTop` / listeners de timeline usan ese nodo.
+**Regla de oro:** el scroll vertical de las vistas principales vive en **`.tvst-main`**, no en `window`. Helpers `getScrollTop` / `setScrollTop` operan sobre ese nodo.
 
 ---
 
 ## Tabs principales
 
-`switchTab(tab)` con `tab ∈ { series, movies, explore, profile }`:
+`switchTab(tab)` con `tab ∈ { series, movies, explore, profile, settings }`:
 
-1. Cierra modales de detalle/episodio si están abiertos.
+1. Cierra modales de detalle, episodio, persona, listas, colección o selector si están abiertos.
 2. Actualiza `AppState.currentTab`.
-3. En series: resetea historial visible a 0 (ancla en «Ver a continuación»).
-4. Muestra `#content-${tab}`, marca botón bottom nav.
+3. En `series`: resetea historial visible a 0 (ancla en «Ver a continuación»).
+4. Muestra `#content-${tab}` y marca activo el botón en `.tvst-bottom-nav`.
 5. `renderCurrentView` + `scheduleSyncMobileChromeHeights`.
-6. Series pending → `resetPendingListScroll`; perfil → scroll 0.
-
-Bottom nav: botones `.tvst-bottom-nav-btn[data-tab="…"]` en `index.html`.
 
 ---
 
-## Subnavegación
+## Subnavegación y Ajustes
 
-| Zona | Estado | Función |
-|------|--------|---------|
-| Series | `currentSubTab`: `pending-list` \| `upcoming` | `switchSubTab` |
-| Películas | `currentMoviesSubTab` | `switchMoviesSubTab` |
-| Perfil | `currentProfileTab` | `switchProfileTab` |
+| Zona | Estado | Valores | Función |
+|------|--------|---------|---------|
+| Series | `currentSubTab` | `pending-list` \| `upcoming` | `switchSubTab` |
+| Películas | `currentMoviesSubTab` | `pending-list` \| `upcoming` | `switchMoviesSubTab` |
+| Perfil | `currentProfileTab` | `series` \| `movies` \| `picker` \| `achievements` | `switchProfileTab` |
+| Ajustes | `currentSettingsSubTab` | `general` \| `guide` \| `legal` | `switchSettingsSubTab` |
 
-Subnavs usan clase `.tvst-subnav` sticky; altura medida → CSS var `--tvst-subnav-h`.
+En Ajustes, las subpestañas **Funcionamiento** (`guide`) y **Legal y datos** (`legal`) se presentan como bloques `<details class="tvst-doc-accordion">` **colapsados por defecto** para facilitar la lectura en móvil y escritorio.
 
 ---
 
 ## Sticky chrome y medición
 
-`syncMobileChromeHeights()`:
+`syncMobileChromeHeights()` mide el subnav activo, tabs de perfil y bottom nav, escribiendo en `:root`:
+- `--tvst-subnav-h`
+- `--tvst-profile-tabs-h`
+- `--tvst-bottom-nav-h`
 
-- Mide subnav activo, tabs de perfil y bottom nav.
-- Escribe en `:root`:
-  - `--tvst-subnav-h`
-  - `--tvst-profile-tabs-h`
-  - `--tvst-bottom-nav-h`
-- Se llama **también en desktop** (antes solo móvil → huecos sticky).
-
-`scheduleSyncMobileChromeHeights` hace doble `rAF` para medir tras layout.
-
-Elementos sticky secundarios (filtros películas, toolbar perfil, cabecera favoritos) usan `top: calc(var(--tvst-subnav-h) - 2px)` (o equivalente con profile tabs) y a veces `box-shadow: 0 -2px 0 #000` para tapar el gap de 1px del border.
-
-Ver [13 CSS](13-ui-css-convenciones.md).
+Se ejecuta tras cada cambio de tab/render mediante `scheduleSyncMobileChromeHeights` (doble `rAF`).
 
 ---
 
-## Bottom nav + modal
+## Safe areas y atajos
 
-- `padding-bottom` del main incluye `--tvst-bottom-nav-h` + safe area.
-- El sheet del detalle se alinea **por encima** del nav (CSS del modal).
-- Banner SW: `z-index: 90`, también sobre el nav; no debe taparse al cambiar de tab.
-
-Al cambiar de tab se cierran modales para no dejar estado huérfano.
-
----
-
-## Safe areas
-
-Variables `--tvst-safe-top` / `--tvst-safe-bottom` desde `env(safe-area-inset-*)` (notch / home indicator). Viewport: `viewport-fit=cover` en `index.html`.
-
----
-
-## Diagrama de capas sticky (series / películas)
-
-```mermaid
-flowchart TB
-  subgraph fixed["Fixed / sticky"]
-    Sub[Subnav --tvst-subnav-h]
-    Extra[Filtros / profile toolbar]
-    Ban[SW banner]
-    Bot[Bottom nav]
-  end
-  subgraph scroll[".tvst-main scroll"]
-    Content[Listas / grids]
-  end
-  Sub --> Extra
-  Extra --> Content
-  Content --> Bot
-  Ban -.-> Bot
-```
+- `--tvst-safe-top` / `--tvst-safe-bottom` desde `env(safe-area-inset-*)` (`viewport-fit=cover`).
+- Tecla `Escape` cierra el modal superior activo (`selector-winner-modal`, `universal-import-modal`, `universal-export-modal`, `wrapped-modal`, `collectible-modal`, `list-picker-modal`, `list-modal`, `episode-modal`, `person-modal`, `detail-modal`).
 
 ---
 
@@ -119,7 +86,6 @@ flowchart TB
 
 | Cambio | Dónde |
 |--------|--------|
-| Nueva tab bottom | `index.html` + `switchTab` + `renderCurrentView` + CSS activo |
+| Nueva tab bottom | `index.html` + `switchTab` + `renderCurrentView` + `VALID_START_TABS` |
+| Nuevo modal | `index.html` + `styles.css` + Escape handler + `switchTab` en `app.js` |
 | Hueco bajo sticky | `syncMobileChromeHeights` + `top` del sticky + sombra anti-gap |
-| Scroll anclado mal en timeline | [07](07-timeline-series.md) (`resetPendingListScroll`, observer) |
-| Modal tapado por nav | CSS `#detail-modal` / sheet + padding bottom |

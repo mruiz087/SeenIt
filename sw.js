@@ -6,8 +6,8 @@
  * - APIs externas: red directa
  */
 
-const STATIC_CACHE = 'seenit-static-v109';
-const DYNAMIC_CACHE = 'seenit-dynamic-v109';
+const STATIC_CACHE = 'seenit-static-v0.112';
+const DYNAMIC_CACHE = 'seenit-dynamic-v0.112';
 
 const STATIC_FILES = [
     './',
@@ -170,8 +170,226 @@ async function fetchAndCache(request, cacheName) {
     return response;
 }
 
+// ============================================
+// NOTIFICACIONES PWA LOCALES Y SEGUNDO PLANO
+// ============================================
+
+const NOTIF_DB_NAME = 'seenit_notifications_db';
+const NOTIF_DB_VERSION = 1;
+const NOTIF_STORE = 'state';
+const NOTIF_SCHEDULE_KEY = 'schedule';
+
+function openNotifDb() {
+    return new Promise((resolve, reject) => {
+        if (typeof indexedDB === 'undefined') {
+            reject(new Error('IndexedDB no disponible'));
+            return;
+        }
+        const req = indexedDB.open(NOTIF_DB_NAME, NOTIF_DB_VERSION);
+        req.onupgradeneeded = () => {
+            const db = req.result;
+            if (!db.objectStoreNames.contains(NOTIF_STORE)) {
+                db.createObjectStore(NOTIF_STORE);
+            }
+        };
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+    });
+}
+
+async function readNotifSchedule() {
+    try {
+        const db = await openNotifDb();
+        return await new Promise((resolve) => {
+            const tx = db.transaction(NOTIF_STORE, 'readonly');
+            const req = tx.objectStore(NOTIF_STORE).get(NOTIF_SCHEDULE_KEY);
+            req.onsuccess = () => resolve(req.result || null);
+            req.onerror = () => resolve(null);
+        });
+    } catch (_) {
+        return null;
+    }
+}
+
+async function writeNotifSchedule(schedule) {
+    try {
+        const db = await openNotifDb();
+        await new Promise((resolve) => {
+            const tx = db.transaction(NOTIF_STORE, 'readwrite');
+            tx.objectStore(NOTIF_STORE).put(schedule, NOTIF_SCHEDULE_KEY);
+            tx.oncomplete = () => resolve();
+            tx.onerror = () => resolve();
+        });
+    } catch (_) {
+        /* ignore */
+    }
+}
+
+function getLocalDateKey(dateObj = new Date()) {
+    const y = dateObj.getFullYear();
+    const m = String(dateObj.getMonth() + 1).padStart(2, '0');
+    const d = String(dateObj.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+}
+
+function getCurrentTimeHHMM(dateObj = new Date()) {
+    const hh = String(dateObj.getHours()).padStart(2, '0');
+    const mm = String(dateObj.getMinutes()).padStart(2, '0');
+    return `${hh}:${mm}`;
+}
+
+async function checkAndShowDueNotifications({ forceIgnoreHour = false } = {}) {
+    if (!self.registration || typeof self.registration.showNotification !== 'function') {
+        return 0;
+    }
+    const schedule = await readNotifSchedule();
+    if (!schedule || !schedule.enabled) return 0;
+
+    const now = new Date();
+    const todayKey = getLocalDateKey(now);
+    const preferredHour = typeof schedule.notifyHour === 'string' && /^\d{2}:\d{2}$/.test(schedule.notifyHour)
+        ? schedule.notifyHour
+        : '10:00';
+
+    if (!forceIgnoreHour && getCurrentTimeHHMM(now) < preferredHour) {
+        return 0;
+    }
+
+    const items = Array.isArray(schedule.items) ? schedule.items : [];
+    const sentSet = new Set(Array.isArray(schedule.sentKeys) ? schedule.sentKeys : []);
+
+    const due = items.filter((item) => {
+        if (!item || item.date !== todayKey || !item.key) return false;
+        if (sentSet.has(item.key)) return false;
+        if (item.kind === 'tv' && schedule.notifyEpisodeReleases === false) return false;
+        if (item.kind === 'movie' && schedule.notifyMovieReleases === false) return false;
+        return true;
+    });
+
+    if (!due.length) return 0;
+
+    const maxIndividual = 4;
+    const toDisplay = due.slice(0, maxIndividual);
+    for (const item of toDisplay) {
+        const isShow = item.kind === 'tv';
+        const title = isShow
+            ? `Nuevo episodio hoy · ${item.title}`
+            : `Estreno hoy · ${item.title}`;
+        const body = isShow
+            ? (item.subtitle || 'Nuevo episodio disponible hoy.')
+            : (item.subtitle || 'Tu película pendiente se estrena hoy.');
+        await self.registration.showNotification(title, {
+            body,
+            icon: './icons/icon-192.png',
+            badge: './icons/icon-192.png',
+            tag: `seenit-${item.key}`,
+            data: {
+                tipo: isShow ? 'tv' : 'movie',
+                id_tmdb: Number(item.id_tmdb) || 0,
+                key: item.key,
+            },
+        });
+    }
+
+    if (due.length > maxIndividual) {
+        const extra = due.length - maxIndividual;
+        await self.registration.showNotification(`+${extra} estreno(s) más hoy en SeenIt`, {
+            body: 'Abre SeenIt para consultar tu calendario de Próximamente.',
+            icon: './icons/icon-192.png',
+            badge: './icons/icon-192.png',
+            tag: `seenit-summary-${todayKey}`,
+            data: {
+                tipo: due[maxIndividual]?.kind === 'tv' ? 'tv' : 'movie',
+                id_tmdb: Number(due[maxIndividual]?.id_tmdb) || 0,
+            },
+        });
+    }
+
+    for (const item of due) {
+        sentSet.add(item.key);
+    }
+    const trimmedSent = [...sentSet].slice(-250);
+    await writeNotifSchedule({
+        ...schedule,
+        sentKeys: trimmedSent,
+        lastCheckedAt: now.toISOString(),
+    });
+
+    const windowClients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    windowClients.forEach((client) => {
+        client.postMessage({ type: 'NOTIF_SENT_KEYS_UPDATED', sentKeys: trimmedSent });
+    });
+
+    return due.length;
+}
+
+self.addEventListener('periodicsync', (event) => {
+    if (event.tag === 'seenit-release-check') {
+        event.waitUntil(checkAndShowDueNotifications({ forceIgnoreHour: false }));
+    }
+});
+
+self.addEventListener('notificationclick', (event) => {
+    event.notification.close();
+    const data = event.notification?.data || {};
+    const tipo = data.tipo === 'movie' ? 'movie' : (data.tipo === 'tv' ? 'tv' : '');
+    const idTmdb = Number(data.id_tmdb) || 0;
+    const openParam = tipo && idTmdb ? `?open=${tipo}:${idTmdb}` : './';
+
+    event.waitUntil((async () => {
+        const windowClients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+        for (const client of windowClients) {
+            if ('focus' in client) {
+                await client.focus();
+                if (tipo && idTmdb) {
+                    client.postMessage({ type: 'OPEN_DETAIL_FROM_NOTIFICATION', tipo, id_tmdb: idTmdb });
+                }
+                return;
+            }
+        }
+        if (self.clients.openWindow) {
+            await self.clients.openWindow(tipo && idTmdb ? `./${openParam}` : './');
+        }
+    })());
+});
+
 self.addEventListener('message', (event) => {
-    if (event.data && event.data.type === 'SKIP_WAITING') {
+    const msg = event.data;
+    if (!msg || typeof msg !== 'object') return;
+    if (msg.type === 'SKIP_WAITING') {
         self.skipWaiting();
+        return;
+    }
+    if (msg.type === 'SYNC_NOTIF_SCHEDULE' && msg.payload) {
+        event.waitUntil((async () => {
+            const existing = await readNotifSchedule();
+            const mergedSent = [...new Set([
+                ...(Array.isArray(existing?.sentKeys) ? existing.sentKeys : []),
+                ...(Array.isArray(msg.payload.sentKeys) ? msg.payload.sentKeys : []),
+            ])].slice(-250);
+            await writeNotifSchedule({
+                ...msg.payload,
+                sentKeys: mergedSent,
+            });
+            if (msg.checkNow) {
+                await checkAndShowDueNotifications({ forceIgnoreHour: Boolean(msg.forceIgnoreHour) });
+            }
+        })());
+        return;
+    }
+    if (msg.type === 'CHECK_NOTIFICATIONS_NOW') {
+        event.waitUntil(checkAndShowDueNotifications({ forceIgnoreHour: Boolean(msg.forceIgnoreHour) }));
+        return;
+    }
+    if (msg.type === 'SEND_TEST_NOTIFICATION') {
+        event.waitUntil(
+            self.registration.showNotification('SeenIt · Avisos activos', {
+                body: 'Tus notificaciones de estrenos de series y películas funcionan correctamente.',
+                icon: './icons/icon-192.png',
+                badge: './icons/icon-192.png',
+                tag: 'seenit-test-notification',
+                data: { tipo: '', id_tmdb: 0 },
+            }),
+        );
     }
 });

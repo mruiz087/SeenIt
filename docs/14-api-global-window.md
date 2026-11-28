@@ -6,70 +6,61 @@
 
 ## Propósito
 
-Sin bundler ni módulos ES en runtime: las funciones que el HTML llama con `onclick="..."` y las que se usan entre ficheros se cuelgan de **`window`**.
+SeenIt no usa bundler ni módulos ES en runtime del navegador: las funciones invocadas desde atributos `onclick="..."` en `index.html` y las compartidas entre scripts se exponen explícitamente en **`window`**.
 
-Si añades un handler en HTML y “no hace nada”, casi seguro falta el `window.foo = foo` al final de `app.js` (o del servicio).
+Si añades un botón con `onclick` en HTML y no responde, verifica que la función esté exportada al final de `app.js` o del servicio correspondiente.
 
 ---
 
 ## Servicios
 
-### `window.TMDBService` (+ aliases)
+### `window.TMDBService` (+ aliases directos)
 
-`searchMulti`, `searchMovies`, `searchTV`, `getMovieDetails`, `getTVDetails`, `getTVShowMeta`, `getSeasonDetails`, `clearSeasonDetailsCache`, `findByExternalId`, `findMovieByTitleYear`, `findTVByTitleYear`, `getImageUrl`, `normalizeMovieData`, `normalizeTVData`, `normalizeSearchResult`, `getWatchProviders`, `searchWithDebounce`, `hasTmdbConfig`, …
+`searchMulti`, `searchMovies`, `searchTV`, `getTrending`, `getMovieDetails`, `getTVDetails`, `getTVShowMeta`, `getSeasonDetails`, `getCollectionDetails`, `getPersonDetails`, `getMovieVideos`, `getTVVideos`, `clearSeasonDetailsCache`, `findByExternalId`, `findMovieByTitleYear`, `findTVByTitleYear`, `getImageUrl`, `normalizeMovieData`, `normalizeTVData`, `normalizeSearchResult`, `getWatchProviders`, `searchWithDebounce`, `hasTmdbConfig`, `clearPersistentTmdbCache`, etc.
 
-### `window.DriveService` (+ aliases)
+### `window.DriveService` (+ aliases directos)
 
-`initDriveService`, `authenticate`, `ensureValidAccessToken`, `signOut`, `isAuthenticated`, `hasGoogleConfig`, `formatDriveError`, `loadUserData`, `saveUserData`, `getUserInfo`, `findOrCreateDataFile`, `resetDriveDataFileCache`, …
+`initDriveService`, `isDriveServiceReady`, `authenticate`, `ensureValidAccessToken`, `signOut`, `isAuthenticated`, `hasGoogleConfig`, `formatDriveError`, `loadUserData`, `saveUserData`, `getUserInfo`, `findOrCreateDataFile`, `resetDriveDataFileCache`.
 
-### TV Time
+### `window.SeenItMigration` y `migration-service.js`
 
-- `window.importTvTimeLibrary`
-- `window.importTvTimeLists`
+API unificada que sustituye al antiguo `tvtime-import.js`:
 
----
-
-## `window.App` (subconjunto)
-
-Objeto con API “pública” reducida: `initApp`, `addMovie`, `addShow`, `removeMovie`, `removeShow`, `updateRating`, `updateStatus`, `toggleEpisode`, `switchTab`, `openDetail`, `connectDrive`, `exportData`, `importData`, …
-
-Muchas funciones existen **además** como `window.nombreDirecto` porque el HTML las necesita sueltas.
+- Objeto `window.SeenItMigration` (`PLATFORM_DIRECTORY`, `EXPORT_TARGETS`, modales y exportadores).
+- Modales y flujo: `openUniversalImportModal`, `closeUniversalImportModal`, `openUniversalExportModal`, `closeUniversalExportModal`, `triggerUniversalFileInput`, `triggerExportFromModal`, `resetUniversalImportWizard`, `onUniversalFileInputChange`, `onUniversalMappingChange`, `setUniversalDuplicateMode`, `setUniversalSeenItMode`, `startUniversalImport`, `cancelUniversalImport`.
+- Exportadores: `exportUniversalCsv`, `exportLetterboxdCsv`, `exportTraktJson`, `exportSeriesGuideJson`.
+- Incidencias: `exportIssuesCsv`, `copyIssuesToClipboard`, `searchIssueInExplore`.
 
 ---
 
-## Handlers HTML frecuentes (`app.js` → `window.*`)
+## `window.App` (subconjunto público)
 
-Navegación: `switchTab`, `switchSubTab`, `switchMoviesSubTab`, `switchProfileTab`, `scrollToNowAnchor`, `toggleProfileExpanded`.
-
-Detalle: `openDetail`, `closeModal`, `openEpisodeDetail`, `closeEpisodeModal`, `setPersonalRating`, `startEditCritica`, `saveItemCritica`, `toggleDetailMenu`, `runDetailMenuAction`, `toggleFavorite*`, `addFromDetail`, `addItem`.
-
-Películas: `setMoviesPendingGenreFilter`, `setMoviesPendingPlatformFilter`, `setMoviesPendingMaxRuntime`, `toggleMoviesPendingFilters`, `toggleMovieWatched`.
-
-Series: `toggleEpisode`, `toggleSeasonWatched`, `toggleSeasonAccordion`, `toggleEpisodeAndUpdateSeason`.
-
-Perfil / listas: `createProfileList`, `openListModal`, `closeListModal`, `renameSelectedList`, `deleteSelectedList`, `exportSelectedList`, `removeItemFromList`, `openListPicker`, `toggleSelectedInList`, `createListFromPicker`, `onListSortChange`, `onProfilePlatformChange`, `toggleListCoverPickMode`, `setListCover`.
-
-Drive / datos: `connectDrive`, `connectDriveFromGate`, `disconnectDrive`, `loadFromDrive`, `exportData`, `importData`, `handleImport`, `clearAllData`, `onTvTimeFileSelected`, `startTvTimeImport`.
-
-La lista exacta está al final de `app.js` (bloque “EXPORTACIONES”). **Al añadir UI nueva, exporta ahí.**
+Objeto reducido en `app.js`: `initApp`, `addMovie`, `addShow`, `removeMovie`, `removeShow`, `updateRating`, `updateStatus`, `toggleEpisode`, `switchTab`, `scrollToNowAnchor`, `switchDetailTab`, `openDetail`, `closeModal`, `removeContent`, `handleSearch`, `addItem`, `connectDrive`, `disconnectDrive`, `exportData`, `importData`, `handleImport`, `clearAllData`.
 
 ---
 
-## Config global
+## Handlers HTML principales (`app.js` → `window.*`)
 
-Definidas en `config.js` (no documentar valores reales):
-
-- `CONFIG_TMDB_API_KEY`
-- `CONFIG_GOOGLE_CLIENT_ID`
-- `CONFIG_GOOGLE_API_KEY`
+- **Navegación:** `switchTab`, `switchSubTab`, `switchMoviesSubTab`, `switchProfileTab`, `switchSettingsSubTab`, `scrollToNowAnchor`, `toggleProfileExpanded`, `switchExploreTrendingTab`.
+- **Calendarios de Próximamente:** `shiftUpcomingCalendarWeek`, `selectUpcomingCalendarDate`, `resetUpcomingCalendar`, `jumpToUpcomingCalendarDate`.
+- **Detalle, episodios y personas:** `openDetail`, `closeModal`, `openEpisodeDetail`, `closeEpisodeModal`, `navigateEpisode`, `openPersonDetail`, `closePersonModal`, `openDetailFromPerson`, `setPersonalRating`, `startEditCritica`, `saveItemCritica`, `toggleDetailMenu`, `runDetailMenuAction`, `closeDetailMenu`, `toggleFavorite`, `toggleFavoriteFromHero`, `toggleFavoriteFromCard`, `addFromDetail`, `addItem`, `playDetailTrailer`, `stopDetailTrailer`, `jumpToDetailTrailer`, `revealCurrentEpisodeSpoilers`.
+- **Series:** `toggleEpisode`, `toggleEpisodeSkipped`, `toggleSeasonWatched`, `toggleSeasonSkipped`, `toggleSeasonAccordion`, `toggleEpisodeAndUpdateSeason`, `toggleEpisodeFromDetail`, `toggleEpisodeSkippedFromDetail`.
+- **Películas:** `setMoviesPendingSort`, `toggleMoviesPendingGenre`, `toggleMoviesPendingPlatform`, `setMoviesPendingMaxRuntime`, `toggleMoviesPendingFilters`, `resetMoviesPendingFilters`, `pickRandomPendingMovie`, `toggleMovieWatched`.
+- **Perfil y listas:** `onProfileSearchInput`, `clearProfileSearch`, `resetProfileFilters`, `createProfileList`, `openListModal`, `closeListModal`, `renameSelectedList`, `deleteSelectedList`, `exportSelectedList`, `removeItemFromList`, `openDetailFromList`, `onListItemClick`, `toggleListCoverPickMode`, `setListCover`, `openListPicker`, `closeListPicker`, `toggleSelectedInList`, `createListFromPicker`, `onListSortChange`, `onProfilePlatformChange`.
+- **Selector (“¿Qué vemos?”):** `setSelectorFilter`, `spinSelectorPicker`, `openSelectorWinnerModal`, `closeSelectorWinnerModal`, `openDetailFromSelectorModal`, `discardFromSelectorModal`, `toggleSelectorSuggestions`, `onSelectorSearchInput`, `clearSelectorSearch`, `addToSelectorFromSearch`, `removeFromSelector`, `clearSelectorItems`, `toggleItemInSelector`.
+- **Logros, coleccionables y Wrapped:** `selectGamificationTheme`, `selectPosterStyle`, `setAchievementsFilter`, `setAchievementsCategory`, `toggleAchievementsExpanded`, `toggleRewardsExpanded`, `toggleTicketsExpanded`, `toggleWrappedExpanded`, `openWrappedSectionFromStats`, `openWrappedGenerator`, `openWrappedCardModal`, `closeWrappedModal`, `setWrappedStudioPeriod`, `setWrappedStudioFocus`, `setWrappedStudioStyle`, `setWrappedStudioPalette`, `selectWrappedBannerByKey`, `clearWrappedStudioBanner`, `pickRandomWrappedBanner`, `setWrappedBannerLayout`, `onWrappedBannerSearchInput`, `copyWrappedImage`, `downloadWrappedImage`, `shareWrappedImage`, `setTicketsGenreFilter`, `setTicketsStatusFilter`, `recheckVintageSagas`, `openVintageTicketModal`, `closeCollectibleModal`, `openCollectibleLibraryDetail`, `addSagaPartFromTicket`, `onGamificationToastClick`.
+- **Drive, ajustes y notificaciones:** `connectDrive`, `connectDriveFromGate`, `continueWithoutDrive`, `disconnectDrive`, `loadFromDrive`, `exportData`, `importData`, `handleImport`, `clearAllData`, `resolveAppDialog`, `updatePreference`, `toggleSubscriptionPreference`, `clearTmdbCachesFromSettings`, `getPreferredProviderCountry`, `toggleNotificationsPreference`, `sendTestNotificationFromSettings`.
 
 ---
 
-## Flags / debug en `window`
+## Config global inyectada (`/config.js`)
 
-Usados internamente (no API estable): `__seenitHistoryLoadReady`, `__seenitLastScrollY`, `__seenitAnchorTimers`, `__seenitMoviesFilterMetaHydrating`, …
+Servida dinámicamente por `server.js` (no versionar claves reales en git):
 
-No dependas de ellos fuera de `app.js`.
+- `CONFIG_TMDB_PROXY` (`true` cuando pasa por `/api/tmdb`)
+- `CONFIG_TMDB_CONFIGURED` (`boolean`)
+- `CONFIG_GOOGLE_CLIENT_ID` (`string`)
+- `CONFIG_ADS_CLIENT_ID` / `CONFIG_ADS_SLOT_ID` / `CONFIG_AFFILIATE_AMAZON_TAG` (opcionales, actualmente sin uso activo en UI)
 
 ---
 
@@ -77,6 +68,5 @@ No dependas de ellos fuera de `app.js`.
 
 | Cambio | Dónde |
 |--------|--------|
-| Nuevo `onclick` en HTML | Función + `window.fn = fn` |
-| Llamar TMDB desde consola | `TMDBService.*` o aliases |
-| Reducir superficie global | Migrar a módulos ES (fuera de alcance actual; rompería onclick) |
+| Nuevo `onclick` en HTML | Definir función y añadir `window.fn = fn` al final de `app.js` o `migration-service.js` |
+| Nuevo servicio TMDB/Drive | Añadir al objeto `window.TMDBService` / `window.DriveService` + alias |

@@ -6,66 +6,54 @@
 
 ## Propósito
 
-Registro del *por qué* de decisiones de producto y técnicas recientes, para no reintroducir bugs ya cerrados ni “arreglar” comportamientos intencionados.
+Registro del *por qué* de decisiones de producto y arquitectura, para no reintroducir problemas resueltos ni deshacer comportamientos intencionados.
 
 ---
 
 ## Producto
 
 ### Series nuevas en `pending`
-Al añadir desde Explorar/detalle, la serie queda **Pendiente**, no Viendo. Solo entra en la lista pendiente de episodios cuando pasa a `watching` (p.ej. al marcar un episodio). Evita ensuciar el timeline con títulos “para más adelante”.
+Al añadir desde Explorar/detalle, la serie queda **Pendiente**, no Viendo. Solo entra en la lista pendiente cuando pasa a `watching` (p. ej. al marcar un episodio). Evita saturar el timeline con títulos guardados para más adelante.
 
-### Continue vs stale (14 días)
-Separa “lo que estoy viendo ahora” de “lo tengo a medias pero abandoné un tiempo”. El boost por temporada nueva evita que un estreno quede enterrado en stale.
+### Continue vs stale (`inactivityDays`: 7 / 14 / 30 / 60)
+Separa “lo que sigo activamente” de “lo que tengo aparcado”. Por defecto son 14 días, pero el usuario puede ajustarlo en Ajustes (`VALID_INACTIVITY_DAYS`). El campo `continueBoostAt` garantiza que una serie completada que recibe temporada nueva suba automáticamente a *Ver a continuación*.
 
-### `continueBoostAt` (no solo actividad de visionado)
-Una temporada nueva no implica episodio marcado. Sin boost, `isShowInContinueSection` la mandaría a stale. El campo ISO ≤14 días fuerza continue + toast al reabrir completed→watching.
+### Episodios saltados (`capitulos_saltados`) y especiales
+Permitir marcar episodios o temporadas como saltados resuelve series con especiales o capítulos que el usuario no quiere ver sin quedar atascado en la lista pendiente ni impedir el estado `completed`.
 
 ### Historial por scroll-up + ancla
-En lugar de una lista plana infinito-hacia-abajo, el “ahora” es el ancla. El historial se descubre tirando hacia arriba; al entrar, el scroll se calcula por **contenido encima del ancla − offset sticky**, no solo `scrollIntoView` ingenuo (fallaba con sticky).
+En lugar de mezclar pasado y futuro en una sola lista descendente, el “ahora” es el ancla. Al entrar, el scroll se calcula por **contenido encima del ancla − offset sticky** para que el historial quede accesible arriba sin estorbar.
 
-### Filtros de películas colapsables
-Género + plataforma + duración sin ocupar siempre viewport. Slider en modo **live** solo re-filtra el grid (si se re-renderiza el panel entero, el range input pierde el gesto).
+### Filtros multi-selección en películas + Mis suscripciones
+Géneros y plataformas admiten selección múltiple, junto a búsqueda rápida, ordenación, slider de duración en modo *live* (no reconstruye el panel mientras se arrastra) y filtro por suscripciones configuradas.
 
-### Providers featured + Otros
-TMDB devuelve decenas de nombres casi duplicados. Canonicalizar a una lista corta mejora UX; **Otros** cubre el long-tail sin 40 chips.
+### Ajustes como pestaña principal + subpestañas colapsables
+Sacar **Ajustes** de Perfil a su propia pestaña en el nav inferior deja 4 subpestañas limpias en Perfil (`Series`, `Películas`, `Selector`, `Logros`). En **Funcionamiento** y **Legal y datos**, las secciones usan `<details>` colapsables cerrados por defecto para evitar muros de texto en móvil.
 
-### Crítica personal
-Nota numérica no basta para recuerdo cualitativo. Flujo Añadir → Guardar → Modificar reduce edición accidental.
-
-### Badge de estado en hero
-El estado de *usuario* debe verse sin abrir menús; colores coherentes con progreso.
+### Selector compacto con modal de resultado (`#selector-winner-modal`)
+En **Perfil → Selector**, la configuración (filtros, buscador y candidatas) va arriba y al pulsar **Elegir al azar** se abre un modal dedicado (`#selector-winner-modal`) en lugar de un toast efímero o tarjeta gigante fija, permitiendo abrir ficha, volver a girar o descartar en un toque.
 
 ---
 
 ## Técnica
 
-### Sin backend / Drive `drive.file`
-Cada usuario es su propio backend. Scope mínimo. Fichero único `tv_showtime_data.json` (nombre histórico; no renombrar a la ligera).
+### Proxy TMDB en `server.js` + `/api/tmdb-image`
+Mover las peticiones TMDB a `server.js` (`/api/tmdb/*`) evita exponer `TMDB_API_KEY` en el cliente, añade caché LRU en servidor (600 entradas) y deduplicación *in-flight*. `/api/tmdb-image` sirve imágenes TMDB con CORS abierto para que **Wrapped Studio** pueda dibujar pósters y backdrops en Canvas 2D sin *tainted canvas*.
 
-### LWW de documento completo
-Unir a ciegas `capitulos_vistos` de dos forks produce inconsistencias difíciles. Gana el `updatedAt` más nuevo del ítem entero + tombstones para borrados.
+### Drive opcional (`continueWithoutDrive`) + IndexedDB
+Permitir entrar sin cuenta de Google reduce la fricción inicial (y evita bloqueos si falta configurar OAuth). `localStorage` mantiene el arranque síncrono y `IndexedDB` (`seenit_local_db` + `seenit_tmdb_cache_db`) evita alcanzar el límite de ~5 MB de `localStorage` en bibliotecas grandes.
 
-### Debounce 2 s + flush on hide
-Equilibrio entre escrituras Drive y no perder datos al cerrar la pestaña.
+### `migration-service.js` unificado + SeriesGuide (2 archivos)
+Sustituye al antiguo `tvtime-import.js` con un único asistente de importación (SeenIt, SeriesGuide, Trakt, Letterboxd, IMDb, TV Time, CSV/JSON personalizado) y un modal de exportación dedicado. Para **SeriesGuide**, se generan 2 JSON compatibles (`seriesguide-shows-*.json` y `seriesguide-movies-*.json`) siguiendo el formato oficial de exportación de la app.
 
-### Medir chrome siempre (también desktop)
-Sticky gaps no son solo un bug móvil; `syncMobileChromeHeights` escribe vars en todos los viewports.
+### Notificaciones PWA locales y en segundo plano (sin VAPID)
+Como SeenIt no tiene base de datos central ni backend con tareas cron de usuarios, las notificaciones se programan en el dispositivo mediante `IndexedDB` (`seenit_notifications_db`) + `Service Worker` (`periodicsync` y comprobación al abrir). Esto mantiene coste 0, privacidad total y cero infraestructura push, asumiendo las limitaciones de ejecución en segundo plano de cada navegador/iOS.
 
-### Sticky `top: calc(var − 2px)` + sombra
-Compensa el borde de 1px del subnav que dejaba una línea de contenido “escapando”.
+### LWW de documento completo + tombstones
+En sincronización con Drive (`tv_showtime_data.json`), gana el `updatedAt` más reciente de cada ítem completo y se usan tombstones (`deleted*Ids`) para propagar borrados entre dispositivos sin resucitar títulos.
 
-### SW cache-first + banner (coexiste con bottom nav)
-Tras deploys, usuarios instalados no ven cambios sin bump + UI de recarga. El banner debe quedar **sobre** el nav (`z-index: 90`) y el reload forzar tras `SKIP_WAITING`.
-
-### `config.js` network-first
-Permite rotar secrets en CI sin quedar atrapado en cache del shell.
-
-### Cerrar modales al `switchTab`
-Evita detalle “fantasma” sobre otra sección y estados de scroll raros.
-
-### Concurrencia limitada en timelines
-`mapPool` / `TIMELINE_FETCH_CONCURRENCY` protege rate limits TMDB al abrir la lista pendiente.
+### `config.js` y `/api/*` fuera de caché SW
+El Service Worker nunca cachea `/config.js` ni `/api/*`, permitiendo rotar variables de entorno o proxy sin quedar atrapado en caché offline.
 
 ---
 
@@ -73,13 +61,7 @@ Evita detalle “fantasma” sobre otra sección y estados de scroll raros.
 
 | Observación | Explicación |
 |-------------|-------------|
-| Serie añadida no sale en Lista pendiente | Está en `pending`; marca un episodio o cambia a Viendo |
-| Tras marcar visto, el ancla “no se mueve al historial” | Se mantiene ancla en continue a propósito; historial gana ≥1 fila |
-| Slider de duración no “reinicia” chips | Live path intencional |
-| Fichero Drive no se llama `seenit-data.json` | Nombre real `tv_showtime_data.json` |
-
----
-
-## Si documentas una decisión nueva
-
-Añade aquí: problema → alternativas → decisión → ficheros tocados. Enlaza desde el doc de feature.
+| Serie añadida no sale en Lista pendiente | Entra en `pending`; marca un episodio o cámbiala a `watching` |
+| Tras marcar visto, el ancla no “salta” al historial | Se mantiene el ancla en *Ver a continuación*; el historial suma filas arriba |
+| Fichero Drive se llama `tv_showtime_data.json` | Nombre histórico mantenido para no romper bibliotecas existentes |
+| En iPhone no llegan avisos sin instalar | iOS exige añadir la PWA a pantalla de inicio para habilitar Web Notifications |

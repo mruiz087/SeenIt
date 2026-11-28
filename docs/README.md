@@ -1,8 +1,8 @@
 # Manual técnico de SeenIt
 
-Documentación en español para **mantener** la app sin depender de un asistente y para **aprender** cómo está diseñada (PWA vanilla, sync Drive, TMDB, timelines).
+Documentación en español para **mantener** la app sin depender de un asistente y para **aprender** cómo está diseñada (PWA vanilla, servidor Express/proxy TMDB, sync opcional en Google Drive, IndexedDB, notificaciones locales y migración universal).
 
-La guía de instalación rápida y el checklist de Google Cloud / GitHub Pages siguen en el [README raíz](../README.md). Aquí está el “por qué” y el “dónde tocar”.
+La guía de instalación rápida y configuración inicial siguen en el [README raíz](../README.md). Aquí está el “por qué” y el “dónde tocar”.
 
 ---
 
@@ -38,25 +38,32 @@ flowchart TB
   subgraph Services["Servicios"]
     TMDB["tmdb-service.js"]
     DRIVE["drive-service.js"]
-    TVT["tvtime-import.js"]
+    MIG["migration-service.js"]
+  end
+  subgraph Server["Node / Express (server.js)"]
+    CFG["/config.js"]
+    PROXY["/api/tmdb/* + /api/tmdb-image"]
   end
   subgraph Persist["Persistencia"]
-    LS["localStorage"]
-    GD["Google Drive\ntv_showtime_data.json"]
+    IDB["IndexedDB + localStorage"]
+    GD["Google Drive (opcional)\ntv_showtime_data.json"]
   end
   subgraph PWA["PWA"]
-    SW["sw.js"]
+    SW["sw.js (v0.112)"]
     MF["manifest.json"]
   end
   HTML --> APP
   CSS --> HTML
   APP --> TMDB
   APP --> DRIVE
-  APP --> TVT
-  APP --> LS
+  APP --> MIG
+  TMDB --> PROXY
+  CFG --> HTML
+  APP --> IDB
   DRIVE --> GD
   SW --> HTML
   SW --> APP
+  SW --> IDB
 ```
 
 ---
@@ -65,38 +72,28 @@ flowchart TB
 
 | # | Documento | Tema |
 |---|-----------|------|
-| 01 | [Visión y arquitectura](01-vision-y-arquitectura.md) | Qué es, capas, scripts, `AppState` |
-| 02 | [Modelo de datos](02-modelo-de-datos.md) | Movie, Show, List, tombstones, campos |
-| 03 | [Persistencia y sync](03-persistencia-y-sync.md) | localStorage, LWW, debounce, flush |
-| 04 | [TMDB](04-tmdb.md) | Endpoints, normalización, caché, providers |
-| 05 | [Drive OAuth](05-drive-oauth.md) | GIS, token, find/create/save JSON |
-| 06 | [Navegación y layout](06-navegacion-y-layout.md) | Tabs, scroll, sticky chrome, modal |
-| 07 | [Timeline series](07-timeline-series.md) | Pending/upcoming, ancla, continue vs stale |
-| 08 | [Películas y filtros](08-peliculas-y-filtros.md) | Chips, providers, duración, colapso |
-| 09 | [Perfil, listas, favoritos](09-perfil-listas-favoritos.md) | Biblioteca, stats, listas |
-| 10 | [Ficha detalle](10-ficha-detalle.md) | Hero, nota, crítica, episodios, menú |
-| 11 | [Import / export / TV Time](11-import-export-tvtime.md) | JSON backup, importadores |
-| 12 | [PWA / Service Worker](12-pwa-service-worker.md) | Caché, bump, banner update |
-| 13 | [UI / CSS](13-ui-css-convenciones.md) | Variables `--tvst-*`, sticky, componentes |
-| 14 | [API global `window`](14-api-global-window.md) | `window.App`, handlers onclick |
+| 01 | [Visión y arquitectura](01-vision-y-arquitectura.md) | Qué es, capas, servidor Express, scripts, `AppState` |
+| 02 | [Modelo de datos](02-modelo-de-datos.md) | Movie, Show, List, Selector, Preferencias, Gamificación, tombstones |
+| 03 | [Persistencia y sync](03-persistencia-y-sync.md) | IndexedDB, localStorage, LWW, debounce, modo local sin Drive |
+| 04 | [TMDB](04-tmdb.md) | Proxy `/api/tmdb`, endpoints, normalización, caché IDB, providers |
+| 05 | [Drive OAuth](05-drive-oauth.md) | GIS, token, alcance `drive.file`, find/create/save JSON |
+| 06 | [Navegación y layout](06-navegacion-y-layout.md) | 5 tabs, subnavs, scroll, sticky chrome, modales, desplegables |
+| 07 | [Timeline series](07-timeline-series.md) | Pending/upcoming, minicalendario, ancla, continue vs stale |
+| 08 | [Películas y filtros](08-peliculas-y-filtros.md) | Chips multi-selección, suscripciones, duración, ordenar, azar |
+| 09 | [Perfil, listas, favoritos y logros](09-perfil-listas-favoritos.md) | Biblioteca, listas, selector «¿Qué vemos?», logros, Wrapped |
+| 10 | [Ficha detalle](10-ficha-detalle.md) | Hero, tráiler, nota, crítica, episodios saltados, menú |
+| 11 | [Import / export y migración](11-import-export-tvtime.md) | `migration-service.js`: SeenIt, SeriesGuide, Trakt, Letterboxd, IMDb, TV Time, CSV |
+| 12 | [PWA / Service Worker](12-pwa-service-worker.md) | Caché `v0.112`, notificaciones PWA locales/segundo plano, banner update |
+| 13 | [UI / CSS](13-ui-css-convenciones.md) | Variables `--tvst-*`, temas desbloqueables, sticky, componentes |
+| 14 | [API global `window`](14-api-global-window.md) | `window.App`, `SeenItMigration`, handlers onclick |
 | 15 | [Decisiones e historial](15-decisiones-y-historial.md) | Producto / técnica |
 | 16 | [Guía de mantenimiento](16-guia-mantenimiento.md) | Features, SW, sync, deploy, traps |
-| 17 | [Glosario](17-glosario.md) | LWW, tombstone, flatrate, continueBoost… |
+| 17 | [Glosario](17-glosario.md) | LWW, tombstone, flatrate, continueBoost, Selector, Wrapped… |
 
 ---
 
 ## Criterios de esta documentación
 
-- Cita archivos reales (`app.js`, `drive-service.js`, …).
-- No incluye secrets ni el contenido de `config.js`.
+- Cita archivos reales (`server.js`, `app.js`, `migration-service.js`, `drive-service.js`, `tmdb-service.js`, `sw.js`, `index.html`, `styles.css`).
+- No incluye secrets ni credenciales reales.
 - Si el código y un doc discrepan, **gana el código**; actualiza el doc.
-
----
-
-## Correcciones frente a docs antiguos
-
-| Antes (incorrecto / desfasado) | Ahora |
-|---|---|
-| Fichero Drive `seenit-data.json` | `tv_showtime_data.json` |
-| Series nuevas como *Viendo* | Se añaden como **`pending`**; al marcar episodio → `watching` |
-| SW sin versión documentada | Cachés `seenit-static-v52` / `seenit-dynamic-v52` |
