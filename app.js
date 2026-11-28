@@ -3969,27 +3969,28 @@ async function buildWatchingPendingEntries(watchingShows) {
             await ensureShowSeasonMeta(show);
         }
 
-        const watchedSeasons = getWatchedSeasonNumbers(show);
-        const upcomingSeasons = getUpcomingSeasonNumbers(show);
+        const watchedSeasons = getWatchedSeasonNumbers(show).filter(n => Number(n) > 0);
+        const upcomingSeasons = getUpcomingSeasonNumbers(show).filter(n => Number(n) > 0);
         const latestSeason = getLatestRegularSeasonNumber(show);
         const seasonHint = [...new Set([
             ...watchedSeasons.slice(-2),
             ...upcomingSeasons,
-            ...(latestSeason != null ? [latestSeason] : []),
+            ...(latestSeason != null && Number(latestSeason) > 0 ? [latestSeason] : []),
             1,
         ])];
+        const isRegularAiredEpisode = (ep) => isEpisodeAired(ep) && Number(ep.seasonNumber) > 0 && !ep.especial;
 
         let episodes = await getOrderedEpisodes(show, {
-            includeSpecials: shouldIncludeSpecials(),
+            includeSpecials: false,
             seasonNumbers: seasonHint,
         });
-        let airedEpisodes = episodes.filter(isEpisodeAired);
+        let airedEpisodes = episodes.filter(isRegularAiredEpisode);
         let nextEpisode = airedEpisodes.find(ep => !isEpisodeConsumed(show, ep.id));
 
         // Si no hay siguiente en el recorte, cargar todas las temporadas
         if (!nextEpisode) {
-            episodes = await getOrderedEpisodes(show, { includeSpecials: shouldIncludeSpecials() });
-            airedEpisodes = episodes.filter(isEpisodeAired);
+            episodes = await getOrderedEpisodes(show, { includeSpecials: false });
+            airedEpisodes = episodes.filter(isRegularAiredEpisode);
             nextEpisode = airedEpisodes.find(ep => !isEpisodeConsumed(show, ep.id));
         }
 
@@ -4005,18 +4006,18 @@ async function buildWatchingPendingEntries(watchingShows) {
                 const latest = getLatestRegularSeasonNumber(show);
                 const retryHint = [...new Set([
                     ...watchedSeasons.slice(-2),
-                    ...getUpcomingSeasonNumbers(show),
-                    ...(latest != null ? [latest] : []),
+                    ...getUpcomingSeasonNumbers(show).filter(n => Number(n) > 0),
+                    ...(latest != null && Number(latest) > 0 ? [latest] : []),
                 ])];
                 episodes = await getOrderedEpisodes(show, {
-                    includeSpecials: shouldIncludeSpecials(),
+                    includeSpecials: false,
                     seasonNumbers: retryHint.length ? retryHint : undefined,
                 });
-                airedEpisodes = episodes.filter(isEpisodeAired);
+                airedEpisodes = episodes.filter(isRegularAiredEpisode);
                 nextEpisode = airedEpisodes.find(ep => !isEpisodeConsumed(show, ep.id));
                 if (!nextEpisode) {
-                    episodes = await getOrderedEpisodes(show, { includeSpecials: shouldIncludeSpecials() });
-                    airedEpisodes = episodes.filter(isEpisodeAired);
+                    episodes = await getOrderedEpisodes(show, { includeSpecials: false });
+                    airedEpisodes = episodes.filter(isRegularAiredEpisode);
                     nextEpisode = airedEpisodes.find(ep => !isEpisodeConsumed(show, ep.id));
                 }
             }
@@ -8385,10 +8386,11 @@ function invalidateOrderedEpisodesCache(tvId = null) {
 
 async function getOrderedEpisodes(show, options = {}) {
     const includeSpecials = options.includeSpecials !== false;
-    const seasonNumbers = Array.isArray(options.seasonNumbers) && options.seasonNumbers.length
-        ? [...new Set(options.seasonNumbers.map(Number).filter(n => Number.isFinite(n)))]
+    const rawSeasonNumbers = Array.isArray(options.seasonNumbers) && options.seasonNumbers.length
+        ? [...new Set(options.seasonNumbers.map(Number).filter(n => Number.isFinite(n) && (includeSpecials || n !== 0)))]
             .sort((a, b) => a - b)
         : null;
+    const seasonNumbers = rawSeasonNumbers && rawSeasonNumbers.length ? rawSeasonNumbers : null;
     const cacheKey = `${show.id_tmdb}:${includeSpecials ? 1 : 0}:${seasonNumbers ? seasonNumbers.join(',') : 'all'}`;
 
     if (orderedEpisodesCache.has(cacheKey)) {
@@ -8399,7 +8401,7 @@ async function getOrderedEpisodes(show, options = {}) {
     }
 
     const fetchPromise = (async () => {
-        let seasons = (show.temporadas || []).filter(season => includeSpecials || !season.especial);
+        let seasons = (show.temporadas || []).filter(season => includeSpecials || (!season.especial && Number(season.numero) !== 0));
         if (seasonNumbers) {
             const wanted = new Set(seasonNumbers);
             seasons = seasons.filter(season => wanted.has(Number(season.numero)));
