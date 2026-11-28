@@ -45,6 +45,13 @@
             details: 'Series por tvdb_id, episodios exactos (S/E) y películas vistas',
         },
         {
+            id: 'seriesguide',
+            name: 'SeriesGuide (.json)',
+            importLabel: 'Automático',
+            exportLabel: 'Vía Trakt JSON o CSV',
+            details: 'Copia sg-shows / sg-movies JSON con episodios, notas e IDs TMDB/TVDB',
+        },
+        {
             id: 'custom',
             name: 'Simkl / Excel / Otros CSV o JSON',
             importLabel: 'Mapeador de columnas',
@@ -61,6 +68,7 @@
         trakt_csv: 'Trakt.tv / Simkl (CSV)',
         tvtime_csv: 'TV Time (CSV)',
         tvtime_json: 'TV Time (JSON)',
+        seriesguide_json: 'SeriesGuide (JSON)',
         universal_csv: 'CSV Universal SeenIt',
         custom_csv: 'CSV personalizado',
         custom_json: 'JSON personalizado',
@@ -299,7 +307,7 @@
         const num = Number(s);
         if (!Number.isFinite(num) || num <= 0) return 0;
         if (scale === '5') {
-            return Math.min(10, Math.max(0.5, Math.round(num * 2)));
+            return Math.min(10, Math.max(1, Math.round(num * 2)));
         }
         return Math.min(10, Math.max(1, Math.round(num)));
     }
@@ -330,7 +338,13 @@
         if (s === 'pending' || s === 'pendiente' || s === 'watchlist' || s === 'to_watch' || s === 'plan_to_watch' || s === 'planned' || s === 'not_started') {
             return 'pending';
         }
-        if (s === 'watching' || s === 'viendo' || s === 'in_progress' || s === 'current' || s === 'standby' || s === 'en espera') {
+        if (s === 'standby' || s === 'en espera' || s === 'on_hold' || s === 'paused') {
+            return 'standby';
+        }
+        if (s === 'dropped' || s === 'abandonada' || s === 'abandoned' || s === 'cancelada') {
+            return 'dropped';
+        }
+        if (s === 'watching' || s === 'viendo' || s === 'in_progress' || s === 'current') {
             return 'watching';
         }
         if (s === 'completed' || s === 'vista' || s === 'visto' || s === 'watched' || s === 'finished' || s === 'done') {
@@ -352,8 +366,36 @@
         return '';
     }
 
-    function guessMappingFromHeaders(headers) {
-        const title = findHeader(headers, ['title', 'titulo', 'name', 'nombre', 'show_name', 'series_name', 'movie_title', 'original_title']);
+    function detectRatingScaleFromSamples(headers, rows, ratingCol) {
+        if (!ratingCol) return '10';
+        const normCol = normalizeHeaderKey(ratingCol);
+        if (normCol === 'rating10' || normCol === 'your_rating' || normCol === 'puntuacion' || normCol === 'score') {
+            return '10';
+        }
+        if (normCol === 'stars') return '5';
+        const keySet = new Set(headers.map(normalizeHeaderKey));
+        if (keySet.has('letterboxd_uri')) return '5';
+
+        let maxVal = 0;
+        let hasHalfStarDecimal = false;
+        const limit = Math.min(rows.length, 200);
+        for (let i = 0; i < limit; i += 1) {
+            const raw = String(rows[i]?.[ratingCol] ?? '').replace(',', '.').trim();
+            if (!raw) continue;
+            const num = Number(raw);
+            if (!Number.isFinite(num) || num <= 0) continue;
+            if (num > maxVal) maxVal = num;
+            if (num <= 5 && Math.abs((num * 2) - Math.round(num * 2)) < 0.01 && Math.abs(num - Math.round(num)) > 0.01) {
+                hasHalfStarDecimal = true;
+            }
+        }
+        if (maxVal > 5) return '10';
+        if (hasHalfStarDecimal) return '5';
+        return '10';
+    }
+
+    function guessMappingFromHeaders(headers, rows = []) {
+        const title = findHeader(headers, ['title', 'titulo', 'name', 'nombre', 'show_name', 'series_name', 'tv_show_name', 'show_title', 'series_title', 'movie_title', 'movie_name', 'original_title', 'pelicula', 'serie']);
         const typeCol = findHeader(headers, ['type', 'tipo', 'title_type', 'media_type', 'kind', 'category']);
         const year = findHeader(headers, ['year', 'ano', 'release_year', 'first_air_year', 'release_date']);
         const tmdbCol = findHeader(headers, ['tmdbid', 'tmdb_id', 'tmdb', 'id_tmdb']);
@@ -362,12 +404,12 @@
         const externalId = tmdbCol || imdbCol || tvdbCol;
         const externalIdKind = tmdbCol ? 'tmdb' : (imdbCol ? 'imdb' : (tvdbCol ? 'tvdb' : 'auto'));
         const statusCol = findHeader(headers, ['status', 'estado', 'state', 'watch_status']);
-        const rating10Col = findHeader(headers, ['rating10', 'your_rating', 'puntuacion', 'score', 'user_rating', 'rating']);
+        const rating10Col = findHeader(headers, ['rating10', 'your_rating', 'puntuacion', 'score', 'user_rating', 'rating_user', 'rating']);
         const ratingCol = rating10Col || findHeader(headers, ['rating', 'stars']);
         const review = findHeader(headers, ['review', 'critica', 'notes', 'comment', 'resena']);
-        const season = findHeader(headers, ['season', 'season_number', 'temporada', 's']);
+        const season = findHeader(headers, ['season', 'season_number', 'episode_season_number', 'temporada', 's']);
         const episode = findHeader(headers, ['episode', 'episode_number', 'episodio', 'capitulo', 'e']);
-        const watchedAt = findHeader(headers, ['watcheddate', 'watched_date', 'watched_at', 'date_rated', 'updated_at', 'updatedat', 'created_at', 'date']);
+        const watchedAt = findHeader(headers, ['watcheddate', 'watched_date', 'watched_at', 'watchedat', 'fecha_visto', 'last_watched_at', 'date_rated', 'updated_at', 'updatedat', 'created_at', 'date']);
 
         return {
             title,
@@ -379,7 +421,7 @@
             statusMode: statusCol ? 'column' : 'completed',
             statusCol,
             rating: ratingCol,
-            ratingScale: normalizeHeaderKey(ratingCol) === 'rating' ? '5' : '10',
+            ratingScale: detectRatingScaleFromSamples(headers, rows, ratingCol),
             review,
             season,
             episode,
@@ -407,7 +449,7 @@
         }
         if (
             (keySet.has('tvdb_id') || keySet.has('series_id') || lowerName.includes('tracking-prod') || lowerName.includes('followed_tv_show') || lowerName.includes('tvtime'))
-            && (keySet.has('season') || keySet.has('season_number') || keySet.has('episode') || keySet.has('episode_number') || keySet.has('series_name') || keySet.has('tvdb_id'))
+            && (keySet.has('season') || keySet.has('season_number') || keySet.has('episode_season_number') || keySet.has('episode') || keySet.has('episode_number') || keySet.has('series_name') || keySet.has('tv_show_name') || keySet.has('movie_name') || keySet.has('tvdb_id'))
         ) {
             return 'tvtime_csv';
         }
@@ -520,13 +562,14 @@
     function buildRecordsFromCsvRows(sourceId, headers, rows, customMapping = null) {
         const lowerName = String(migrationState.fileName || '').toLowerCase();
         const isWatchlistFile = lowerName.includes('watchlist');
-        const map = customMapping || guessMappingFromHeaders(headers);
+        const map = customMapping || guessMappingFromHeaders(headers, rows);
 
         const rawRecords = [];
         for (const row of rows) {
             if (sourceId === 'universal_csv') {
                 const typeParsed = parseTypeValue(row[findHeader(headers, ['type'])]);
                 const epList = parseEpisodeCodeList(row[findHeader(headers, ['watchedepisodes', 'watched_episodes'])]);
+                const watchedCol = findHeader(headers, ['watchedat', 'watched_at', 'watcheddate', 'watched_date', 'fecha_visto', 'updatedat', 'updated_at']);
                 rawRecords.push({
                     tipo: typeParsed.tipo,
                     unsupportedType: typeParsed.unsupported,
@@ -539,7 +582,7 @@
                     rating10: parseRating(row[findHeader(headers, ['rating10'])], '10'),
                     favorite: parseBooleanFlag(row[findHeader(headers, ['favorite'])]),
                     review: row[findHeader(headers, ['review'])] || '',
-                    watchedAt: parseIsoDate(row[findHeader(headers, ['updatedat', 'updated_at'])]),
+                    watchedAt: watchedCol ? parseIsoDate(row[watchedCol]) : null,
                     episodes: epList,
                 });
                 continue;
@@ -602,8 +645,8 @@
                 const tvdbCol = findHeader(headers, ['tvdb_id', 'series_id', 'show_id']);
                 const tmdbCol = findHeader(headers, ['tmdb_id', 'tmdbid']);
                 const imdbCol = findHeader(headers, ['imdb_id', 'imdbid']);
-                const titleCol = findHeader(headers, ['series_name', 'show_name', 'title', 'name', 'movie_name']);
-                const seasonCol = findHeader(headers, ['season', 'season_number']);
+                const titleCol = findHeader(headers, ['series_name', 'tv_show_name', 'show_name', 'show_title', 'series_title', 'title', 'name', 'movie_name']);
+                const seasonCol = findHeader(headers, ['season', 'season_number', 'episode_season_number']);
                 const episodeCol = findHeader(headers, ['episode', 'episode_number']);
                 const dateCol = findHeader(headers, ['updated_at', 'watched_at', 'created_at', 'date']);
                 const ratingCol = findHeader(headers, ['rating', 'score']);
@@ -618,7 +661,8 @@
                     : [];
 
                 let tipo = typeCol ? parseTypeValue(row[typeCol]).tipo : 'tv';
-                if (lowerName.includes('movie') && !episodes.length && !tvdbCol) {
+                const hasMovieTitleOnly = Boolean(findHeader(headers, ['movie_name'])) && !findHeader(headers, ['series_name', 'show_name', 'tv_show_name']);
+                if ((lowerName.includes('movie') || hasMovieTitleOnly) && !episodes.length && !tvdbCol) {
                     tipo = 'movie';
                 }
 
@@ -736,12 +780,16 @@
             if (movieNode) {
                 const ids = extractTraktIds(movieNode.ids);
                 const watchedAt = parseIsoDate(item.last_watched_at || item.watched_at || item.rated_at || item.listed_at);
+                const hasWatchedSignal = Number(item.plays) > 0 || Boolean(item.last_watched_at || item.watched_at);
+                const isExplicitPending = (item.watchlist === true && !hasWatchedSignal)
+                    || (item.plays === 0 && !item.last_watched_at && !item.watched_at)
+                    || (isWatchlist && !hasWatchedSignal && !item.rating);
                 entries.push({
                     tipo: 'movie',
                     ...ids,
                     title: movieNode.title || '',
                     year: parseYear(movieNode.year),
-                    status: fallbackStatus || (isWatchlist && !item.plays && !item.last_watched_at && !item.rating ? 'pending' : 'completed'),
+                    status: fallbackStatus || (isExplicitPending ? 'pending' : 'completed'),
                     rating10: parseRating(item.rating, '10'),
                     favorite: false,
                     review: '',
@@ -781,12 +829,14 @@
                 }
 
                 const watchedAt = parseIsoDate(item.last_watched_at || item.watched_at || item.rated_at || item.listed_at);
+                const isExplicitPendingShow = item.watchlist === true
+                    || (Array.isArray(item.seasons) && item.seasons.length === 0 && !item.last_watched_at && !item.watched_at && !(Number(item.plays) > 0));
                 entries.push({
                     tipo: 'tv',
                     ...ids,
                     title: showNode.title || '',
                     year: parseYear(showNode.year),
-                    status: fallbackStatus || (episodes.length ? 'watching' : (isWatchlist ? 'pending' : 'completed')),
+                    status: fallbackStatus || (episodes.length ? 'watching' : ((isWatchlist || isExplicitPendingShow) ? 'pending' : 'completed')),
                     rating10: parseRating(item.rating, '10'),
                     favorite: false,
                     review: '',
@@ -813,8 +863,12 @@
             return parsed.some(item => item && typeof item === 'object' && (item.movie || item.show));
         }
         if (parsed && typeof parsed === 'object') {
+            if (parsed.source === 'seenit' && parsed.exported_at && (Array.isArray(parsed.movies) || Array.isArray(parsed.shows))) {
+                return true;
+            }
             if (Array.isArray(parsed.movies) && parsed.movies.some(m => m?.ids || m?.movie)) return true;
             if (Array.isArray(parsed.shows) && parsed.shows.some(s => s?.ids || s?.show || Array.isArray(s?.seasons))) return true;
+            if (Array.isArray(parsed.watchlist) && parsed.watchlist.some(w => w?.ids || w?.movie || w?.show)) return true;
             if (Array.isArray(parsed.history) && parsed.history.some(h => h?.movie || h?.show)) return true;
         }
         return false;
@@ -830,7 +884,129 @@
         const firstShow = Array.isArray(parsed.shows) ? parsed.shows[0] : null;
         if (firstMovie && firstMovie.ids && !('id_tmdb' in firstMovie)) return false;
         if (firstShow && firstShow.ids && !('id_tmdb' in firstShow)) return false;
+        if (firstMovie && !('id_tmdb' in firstMovie) && ('tmdb_id' in firstMovie || 'in_watchlist' in firstMovie)) return false;
+        if (firstShow && !('id_tmdb' in firstShow) && ('tmdb_id' in firstShow || 'tvdb_id' in firstShow)) return false;
         return true;
+    }
+
+    function isSeriesGuideShowItem(item) {
+        if (!item || typeof item !== 'object') return false;
+        if ('id_tmdb' in item || item.ids || item.show) return false;
+        const hasId = Boolean(item.tmdb_id || item.tvdb_id);
+        const hasSeasons = Array.isArray(item.seasons)
+            && (item.seasons.length === 0 || item.seasons.some(s => s && typeof s === 'object' && ('season' in s || Array.isArray(s.episodes))));
+        return hasId && hasSeasons;
+    }
+
+    function isSeriesGuideMovieItem(item) {
+        if (!item || typeof item !== 'object') return false;
+        if ('id_tmdb' in item || item.ids || item.movie || Array.isArray(item.seasons)) return false;
+        const hasId = Boolean(item.tmdb_id || item.imdb_id);
+        const hasSgMovieKeys = 'in_watchlist' in item || 'in_collection' in item || 'released_utc_ms' in item || 'rating_user' in item || 'watched' in item;
+        return hasId && hasSgMovieKeys;
+    }
+
+    function isSeriesGuideJsonShape(parsed, fileName = '') {
+        if (!parsed || typeof parsed !== 'object') return false;
+        if (isTraktJsonShape(parsed) || isSeenItBackupShape(parsed)) return false;
+        const lowerName = String(fileName || '').toLowerCase();
+        const list = Array.isArray(parsed)
+            ? parsed
+            : (Array.isArray(parsed.shows) ? parsed.shows : (Array.isArray(parsed.movies) ? parsed.movies : []));
+        if (list.some(isSeriesGuideShowItem) || list.some(isSeriesGuideMovieItem)) return true;
+        if ((lowerName.includes('sg-shows') || lowerName.includes('sg-movies') || lowerName.includes('seriesguide')) && Array.isArray(list)) {
+            return true;
+        }
+        return false;
+    }
+
+    function parseMsToIso(ms) {
+        const n = Number(ms);
+        if (!Number.isFinite(n) || n <= 0) return null;
+        const d = new Date(n);
+        return Number.isNaN(d.getTime()) ? null : d.toISOString();
+    }
+
+    function parseSeriesGuideJsonPayload(parsed, fileName = '') {
+        const lowerName = String(fileName || '').toLowerCase();
+        const entries = [];
+
+        const pushShow = (s) => {
+            if (!s || typeof s !== 'object') return;
+            const episodes = [];
+            if (Array.isArray(s.seasons)) {
+                for (const season of s.seasons) {
+                    const sNum = parseNonNegativeInt(season?.season ?? season?.number);
+                    if (sNum == null || !Array.isArray(season?.episodes)) continue;
+                    for (const ep of season.episodes) {
+                        const eNum = parsePositiveInt(ep?.episode ?? ep?.number);
+                        if (eNum == null) continue;
+                        if (ep?.skipped) continue;
+                        if (ep?.watched === true || Number(ep?.plays) > 0) {
+                            episodes.push({
+                                season: sNum,
+                                episode: eNum,
+                                watchedAt: parseMsToIso(ep?.last_watched_ms) || parseIsoDate(ep?.watched_at),
+                            });
+                        }
+                    }
+                }
+            }
+
+            entries.push({
+                tipo: 'tv',
+                tmdbId: parsePositiveInt(s.tmdb_id),
+                imdbId: parseImdbId(s.imdb_id),
+                tvdbId: parsePositiveInt(s.tvdb_id),
+                title: s.title || s.name || '',
+                year: parseYear(s.first_aired || s.year || s.release_year),
+                status: episodes.length > 0 ? 'watching' : 'pending',
+                rating10: parseRating(s.rating_user ?? s.rating, '10'),
+                favorite: Boolean(s.favorite),
+                review: '',
+                watchedAt: parseMsToIso(s.last_watched_ms) || parseIsoDate(s.last_watched_at),
+                episodes,
+            });
+        };
+
+        const pushMovie = (m) => {
+            if (!m || typeof m !== 'object') return;
+            let year = parseYear(m.release_date || m.year);
+            if (!year && Number(m.released_utc_ms) > 0) {
+                const d = new Date(Number(m.released_utc_ms));
+                if (!Number.isNaN(d.getTime())) year = d.getUTCFullYear();
+            }
+            const watched = m.watched === true || Number(m.plays) > 0;
+            entries.push({
+                tipo: 'movie',
+                tmdbId: parsePositiveInt(m.tmdb_id),
+                imdbId: parseImdbId(m.imdb_id),
+                tvdbId: null,
+                title: m.title || m.name || '',
+                year,
+                status: watched ? 'completed' : 'pending',
+                rating10: parseRating(m.rating_user ?? m.rating, '10'),
+                favorite: false,
+                review: '',
+                watchedAt: parseMsToIso(m.last_updated_ms) || parseIsoDate(m.watched_at),
+                episodes: [],
+            });
+        };
+
+        if (Array.isArray(parsed)) {
+            for (const item of parsed) {
+                if (isSeriesGuideShowItem(item) || (lowerName.includes('show') && !isSeriesGuideMovieItem(item))) {
+                    pushShow(item);
+                } else {
+                    pushMovie(item);
+                }
+            }
+        } else if (parsed && typeof parsed === 'object') {
+            if (Array.isArray(parsed.shows)) parsed.shows.forEach(pushShow);
+            if (Array.isArray(parsed.movies)) parsed.movies.forEach(pushMovie);
+        }
+
+        return mergeRawRecords(entries);
     }
 
     function flattenJsonRows(parsed) {
@@ -1130,10 +1306,16 @@
         showObj.puntuacion = rec.rating10 > 0 ? rec.rating10 : 0;
         showObj.critica = rec.review || '';
         showObj.favorito = Boolean(rec.favorite);
+        if (rec.status === 'dropped' || rec.status === 'standby') {
+            showObj.estado = rec.status;
+        }
 
         let episodesMarked = 0;
         if (rec.episodes && rec.episodes.length > 0) {
             episodesMarked = await applyShowEpisodes(showObj, rec, unmatchedIssues);
+            if (rec.status === 'standby' && showObj.estado === 'watching') {
+                showObj.estado = 'standby';
+            }
         } else if (rec.status === 'completed') {
             const episodes = await getOrderedEpisodes(showObj, { includeSpecials: shouldIncludeSpecials() });
             const airedIds = episodes.filter(isEpisodeAired).map(ep => ep.id);
@@ -1141,8 +1323,10 @@
             episodesMarked = airedIds.length;
             if (airedIds.length) recordEpisodesWatched(showObj, airedIds);
             await refreshShowStatus(showObj);
+        } else if (rec.status === 'dropped' || rec.status === 'standby' || rec.status === 'watching') {
+            showObj.estado = rec.status;
         } else {
-            showObj.estado = rec.status === 'watching' ? 'watching' : 'pending';
+            showObj.estado = 'pending';
         }
 
         touchUpdatedAt(showObj);
@@ -1156,6 +1340,18 @@
     // ============================================
 
     async function executeSeenItImport(data, mode) {
+        if (typeof closeListPicker === 'function') closeListPicker();
+        if (typeof closeListModal === 'function') closeListModal();
+        if (typeof closeCollectibleModal === 'function') closeCollectibleModal();
+        if (typeof closeEpisodeModal === 'function') closeEpisodeModal();
+        if (typeof closePersonModal === 'function') closePersonModal();
+        if (typeof closeModal === 'function') closeModal();
+        AppState.selectedItem = null;
+        AppState.selectedListId = null;
+        AppState.selectedEpisode = null;
+        AppState.selectedPerson = null;
+        AppState.selectorWinnerKey = null;
+
         if (mode === 'replace') {
             AppState.movies = (data.movies || []).map(normalizeStoredMovie);
             AppState.shows = (data.shows || []).map(normalizeStoredShow);
@@ -1207,6 +1403,11 @@
             AppState.deletedIds = merged.deletedIds;
             AppState.deletedListIds = merged.deletedListIds;
             AppState.deletedSelectorKeys = merged.deletedSelectorKeys;
+            AppState.preferences = merged.preferences;
+            if (typeof window.clearWatchProvidersCache === 'function') {
+                window.clearWatchProvidersCache();
+            }
+            AppState.gamification = merged.gamification;
 
             migrationState.progress.addedMovies = AppState.movies.filter(m => !prevMovieIds.has(Number(m.id_tmdb))).length;
             migrationState.progress.mergedMovies = (data.movies || []).filter(m => prevMovieIds.has(Number(m.id_tmdb))).length;
@@ -1219,7 +1420,11 @@
         invalidateTimelineCaches();
         flushSaveLocalData();
         saveLocalDataImmediate();
-        await syncToDriveNow();
+        try {
+            await syncToDriveNow({ skipGateOnAuthError: true });
+        } catch (_) {
+            /* local save already succeeded */
+        }
         await renderCurrentView();
         migrationState.step = 'summary';
         renderUniversalImportModalBody();
@@ -1282,6 +1487,19 @@
         renderUniversalImportModalBody();
 
         let cursor = 0;
+        const applyLocks = new Map();
+        const runLockedByKey = async (key, fn) => {
+            const prev = applyLocks.get(key) || Promise.resolve();
+            const current = prev.then(fn, fn);
+            applyLocks.set(key, current);
+            try {
+                return await current;
+            } finally {
+                if (applyLocks.get(key) === current) {
+                    applyLocks.delete(key);
+                }
+            }
+        };
 
         async function worker() {
             while (cursor < queue.length && !migrationState.cancelled) {
@@ -1314,12 +1532,12 @@
                             searchableTitle: rec.title || '',
                         });
                     } else if (resolved.tipo === 'movie') {
-                        const res = await applyMovieRecord(resolved.id_tmdb, rec, migrationState.duplicateMode);
+                        const res = await runLockedByKey(`movie:${resolved.id_tmdb}`, () => applyMovieRecord(resolved.id_tmdb, rec, migrationState.duplicateMode));
                         if (res.action === 'added') migrationState.progress.addedMovies += 1;
                         else if (res.action === 'merged') migrationState.progress.mergedMovies += 1;
                         else if (res.action === 'skipped_existing') migrationState.progress.skippedExisting += 1;
                     } else if (resolved.tipo === 'tv') {
-                        const res = await applyShowRecord(resolved.id_tmdb, rec, migrationState.duplicateMode, migrationState.issues);
+                        const res = await runLockedByKey(`tv:${resolved.id_tmdb}`, () => applyShowRecord(resolved.id_tmdb, rec, migrationState.duplicateMode, migrationState.issues));
                         if (res.action === 'added') migrationState.progress.addedShows += 1;
                         else if (res.action === 'merged') migrationState.progress.mergedShows += 1;
                         else if (res.action === 'skipped_existing') migrationState.progress.skippedExisting += 1;
@@ -1370,7 +1588,7 @@
         flushSaveLocalData();
         saveLocalDataImmediate();
         try {
-            await syncToDriveNow();
+            await syncToDriveNow({ skipGateOnAuthError: true });
         } catch (_) {
             /* sync debounce fallback */
         }
@@ -1414,8 +1632,11 @@
         const a = document.createElement('a');
         a.href = url;
         a.download = filename;
+        a.style.display = 'none';
+        document.body.appendChild(a);
         a.click();
-        URL.revokeObjectURL(url);
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 4000);
     }
 
     function exportUniversalCsv() {
@@ -1430,6 +1651,7 @@
             'Review',
             'WatchedEpisodes',
             'TotalEpisodes',
+            'WatchedAt',
             'UpdatedAt',
         ];
         const lines = [headers.join(',')];
@@ -1448,6 +1670,7 @@
                 m.critica || '',
                 '',
                 '',
+                m.fecha_visto || '',
                 m.updatedAt || '',
             ];
             lines.push(row.map(sanitizeCsvCell).join(','));
@@ -1468,6 +1691,7 @@
                 s.critica || '',
                 watchedEps,
                 Number(s.episodios_emitidos) || '',
+                '',
                 s.updatedAt || '',
             ];
             lines.push(row.map(sanitizeCsvCell).join(','));
@@ -1481,17 +1705,19 @@
     async function exportLetterboxdCsv() {
         const movies = AppState.movies || [];
         const watched = movies.filter(m => normalizeStatus(m.estado) === 'completed' || Number(m.puntuacion) > 0 || Boolean((m.critica || '').trim()));
-        const pending = movies.filter(m => normalizeStatus(m.estado) === 'pending' && !(Number(m.puntuacion) > 0));
+        const pending = movies.filter(m => normalizeStatus(m.estado) === 'pending' && !(Number(m.puntuacion) > 0) && !((m.critica || '').trim()));
 
         let exportMode = 'watched';
         if (pending.length > 0 && watched.length > 0) {
-            const exportPendingOnly = await showConfirmDialog({
+            const exportChoice = await showConfirmDialog({
                 title: 'Exportar para Letterboxd',
                 message: `Tienes ${watched.length} películas vistas/puntuadas y ${pending.length} pendientes. Letterboxd importa vistas y watchlist en archivos separados: ¿qué quieres exportar ahora?`,
                 confirmText: `Vistas y notas (${watched.length})`,
                 cancelText: `Solo pendientes (${pending.length})`,
+                allowDismiss: true,
             });
-            exportMode = exportPendingOnly ? 'watched' : 'watchlist';
+            if (exportChoice === null) return;
+            exportMode = exportChoice ? 'watched' : 'watchlist';
         } else if (watched.length === 0 && pending.length > 0) {
             exportMode = 'watchlist';
         }
@@ -1700,6 +1926,15 @@
                         renderUniversalImportModalBody();
                         return;
                     }
+                    if (isSeriesGuideJsonShape(parsed, file.name)) {
+                        migrationState.sourceId = 'seriesguide_json';
+                        const res = parseSeriesGuideJsonPayload(parsed, file.name);
+                        migrationState.records = res.records;
+                        migrationState.issues = res.invalidIssues;
+                        migrationState.step = 'preview';
+                        renderUniversalImportModalBody();
+                        return;
+                    }
                     const flattened = flattenJsonRows(parsed);
                     if (!flattened.rows.length) {
                         showToast('El JSON no contiene registros reconocibles', 'error');
@@ -1708,7 +1943,7 @@
                     migrationState.sourceId = 'custom_json';
                     migrationState.rawHeaders = flattened.headers;
                     migrationState.rawRows = flattened.rows;
-                    migrationState.mapping = guessMappingFromHeaders(flattened.headers);
+                    migrationState.mapping = guessMappingFromHeaders(flattened.headers, flattened.rows);
                     rebuildRecordsFromCurrentMapping();
                     migrationState.step = 'preview';
                     renderUniversalImportModalBody();
@@ -1731,7 +1966,7 @@
             migrationState.sourceId = detected;
             migrationState.rawHeaders = headers;
             migrationState.rawRows = rows;
-            migrationState.mapping = guessMappingFromHeaders(headers);
+            migrationState.mapping = guessMappingFromHeaders(headers, rows);
 
             const built = buildRecordsFromCsvRows(detected, headers, rows, migrationState.mapping);
             migrationState.records = built.records;
@@ -1803,8 +2038,8 @@
                             <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4"/><path d="M7 9l5-5 5 5"/><path d="M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2"/></svg>
                         </span>
                         <strong class="tvst-import-drop-title">Selecciona o arrastra tu archivo (.csv o .json)</strong>
-                        <span class="tvst-import-drop-sub">Si tu copia viene en .zip (Trakt o TV Time), extrae el archivo .csv o .json interior antes de subirlo.</span>
-                        <input type="file" id="univ-import-file" accept=".csv,.json,text/csv,application/json" class="hidden" onchange="onUniversalFileInputChange(event)">
+                        <span class="tvst-import-drop-sub">Si tu copia viene en .zip (Trakt, TV Time o SeriesGuide), extrae el archivo .csv o .json interior antes de subirlo.</span>
+                        <input type="file" id="univ-import-file" accept=".csv,.json,text/csv,text/plain,application/json" class="tvst-sr-only-input" onchange="onUniversalFileInputChange(event)">
                     </label>
 
                     <div class="tvst-import-compat-box">

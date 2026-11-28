@@ -1754,10 +1754,16 @@ async function syncToDriveNow(options = {}) {
         return;
     }
 
+    const skipGateOnAuthError = Boolean(options.skipGateOnAuthError);
+
     if (!isAuthenticated()) {
         updateDriveStatus(false);
-        setDriveGateVisible(true, 'Sesión de Drive caducada. Vuelve a conectar.');
-        showToast('Sesión de Drive caducada. Vuelve a conectar.', 'error');
+        if (skipGateOnAuthError) {
+            showToast('Guardado en este dispositivo. Reconecta Google Drive en Ajustes para sincronizar.', 'info');
+        } else {
+            setDriveGateVisible(true, 'Sesión de Drive caducada. Vuelve a conectar.');
+            showToast('Sesión de Drive caducada. Vuelve a conectar.', 'error');
+        }
         return;
     }
 
@@ -1780,8 +1786,12 @@ async function syncToDriveNow(options = {}) {
         console.error('[App] Error sincronizando con Drive:', error);
         if (!isAuthenticated()) {
             updateDriveStatus(false);
-            setDriveGateVisible(true, 'Sesión de Drive caducada. Vuelve a conectar.');
-            showToast('Sesión de Drive caducada. Vuelve a conectar.', 'error');
+            if (skipGateOnAuthError) {
+                showToast('Guardado en este dispositivo. Reconecta Google Drive en Ajustes para sincronizar.', 'info');
+            } else {
+                setDriveGateVisible(true, 'Sesión de Drive caducada. Vuelve a conectar.');
+                showToast('Sesión de Drive caducada. Vuelve a conectar.', 'error');
+            }
         }
     } finally {
         AppState.isSyncing = false;
@@ -5652,8 +5662,11 @@ function exportSelectedList() {
     const a = document.createElement('a');
     a.href = url;
     a.download = `seenit_lista_${safeName}_${date}.json`;
+    a.style.display = 'none';
+    document.body.appendChild(a);
     a.click();
-    URL.revokeObjectURL(url);
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
     showToast('Lista exportada', 'success');
 }
 
@@ -5759,9 +5772,10 @@ function openAppDialog({
     confirmText = 'Aceptar',
     cancelText = 'Cancelar',
     danger = false,
+    allowDismiss = false,
 } = {}) {
     if (activeDialogResolve) {
-        resolveAppDialog(mode === 'prompt' ? null : false);
+        resolveAppDialog(mode === 'prompt' || allowDismiss ? null : false);
     }
 
     const modal = document.getElementById('app-dialog-modal');
@@ -5772,7 +5786,7 @@ function openAppDialog({
     const confirmBtn = document.getElementById('app-dialog-confirm');
 
     if (!modal || !titleEl || !msgEl || !inputEl || !cancelBtn || !confirmBtn) {
-        return Promise.resolve(mode === 'prompt' ? null : false);
+        return Promise.resolve(mode === 'prompt' || allowDismiss ? null : false);
     }
 
     titleEl.textContent = title;
@@ -5792,6 +5806,8 @@ function openAppDialog({
         activeDialogResolve = (raw) => {
             if (isPrompt) {
                 resolve(typeof raw === 'string' ? raw : null);
+            } else if (allowDismiss && raw === null) {
+                resolve(null);
             } else {
                 resolve(Boolean(raw));
             }
@@ -5811,7 +5827,7 @@ function openAppDialog({
         modal.onkeydown = (e) => {
             if (e.key === 'Escape') {
                 e.preventDefault();
-                resolveAppDialog(isPrompt ? null : false);
+                resolveAppDialog(isPrompt || allowDismiss ? null : false);
             }
         };
 
@@ -9628,8 +9644,11 @@ function exportData() {
     const a = document.createElement('a');
     a.href = url;
     a.download = `seenit_backup_${new Date().toISOString().split('T')[0]}.json`;
+    a.style.display = 'none';
+    document.body.appendChild(a);
     a.click();
-    URL.revokeObjectURL(url);
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
     
     showToast('Datos exportados', 'success');
 }
@@ -9696,7 +9715,7 @@ function handleImport(event) {
                 invalidateTimelineCaches();
                 flushSaveLocalData();
                 saveLocalDataImmediate();
-                await syncToDriveNow();
+                await syncToDriveNow({ skipGateOnAuthError: true });
                 await renderCurrentView();
                 showToast('Datos importados correctamente', 'success');
             } else {
