@@ -6,8 +6,8 @@
  * - APIs externas: red directa
  */
 
-const STATIC_CACHE = 'seenit-static-v0.113';
-const DYNAMIC_CACHE = 'seenit-dynamic-v0.113';
+const STATIC_CACHE = 'seenit-static-v0.114';
+const DYNAMIC_CACHE = 'seenit-dynamic-v0.114';
 
 const STATIC_FILES = [
     './',
@@ -57,7 +57,11 @@ self.addEventListener('install', (event) => {
                 await Promise.all(
                     STATIC_FILES.map(async (file) => {
                         try {
-                            await cache.add(file);
+                            const req = new Request(file, { cache: 'no-cache' });
+                            const res = await fetch(req);
+                            if (res && res.ok) {
+                                await cache.put(file, res);
+                            }
                         } catch (error) {
                             console.warn('[SW] No se pudo cachear', file, error);
                         }

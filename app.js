@@ -10180,16 +10180,43 @@ function importData() {
     document.getElementById('import-file').click();
 }
 
-function openUniversalImportModal() {
+let migrationScriptLoadPromise = null;
+
+function ensureMigrationServiceLoaded() {
+    if (window.SeenItMigration && typeof window.SeenItMigration.openUniversalImportModal === 'function') {
+        return Promise.resolve(true);
+    }
+    if (migrationScriptLoadPromise) return migrationScriptLoadPromise;
+
+    migrationScriptLoadPromise = new Promise((resolve) => {
+        const script = document.createElement('script');
+        script.src = `migration-service.js?v=${Date.now()}`;
+        script.async = true;
+        script.onload = () => {
+            const loaded = Boolean(window.SeenItMigration && typeof window.SeenItMigration.openUniversalImportModal === 'function');
+            if (!loaded) migrationScriptLoadPromise = null;
+            resolve(loaded);
+        };
+        script.onerror = () => {
+            migrationScriptLoadPromise = null;
+            resolve(false);
+        };
+        document.head.appendChild(script);
+    });
+    return migrationScriptLoadPromise;
+}
+
+async function openUniversalImportModal() {
     if (window.SeenItMigration && typeof window.SeenItMigration.openUniversalImportModal === 'function') {
         window.SeenItMigration.openUniversalImportModal();
         return;
     }
-    const modal = document.getElementById('universal-import-modal');
-    if (modal) {
-        modal.classList.remove('hidden');
-        document.body.classList.add('modal-open');
+    const ok = await ensureMigrationServiceLoaded();
+    if (ok && window.SeenItMigration?.openUniversalImportModal) {
+        window.SeenItMigration.openUniversalImportModal();
+        return;
     }
+    showToast('No se pudo cargar el módulo de importación (migration-service.js)', 'error');
 }
 
 function closeUniversalImportModal() {
@@ -10202,8 +10229,13 @@ function closeUniversalImportModal() {
     document.body.classList.remove('modal-open');
 }
 
-function openUniversalExportModal() {
+async function openUniversalExportModal() {
     if (window.SeenItMigration && typeof window.SeenItMigration.openUniversalExportModal === 'function') {
+        window.SeenItMigration.openUniversalExportModal();
+        return;
+    }
+    const ok = await ensureMigrationServiceLoaded();
+    if (ok && window.SeenItMigration?.openUniversalExportModal) {
         window.SeenItMigration.openUniversalExportModal();
         return;
     }

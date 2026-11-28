@@ -3,7 +3,22 @@
   "builds": [
     {
       "src": "server.js",
-      "use": "@vercel/node"
+      "use": "@vercel/node",
+      "config": {
+        "includeFiles": [
+          "index.html",
+          "styles.css",
+          "app.js",
+          "migration-service.js",
+          "drive-service.js",
+          "tmdb-service.js",
+          "manifest.json",
+          "sw.js",
+          "config.example.js",
+          "ads.txt",
+          "icons/**"
+        ]
+      }
     }
   ],
   "routes": [
